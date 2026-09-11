@@ -1,0 +1,99 @@
+# UltraStar / UltraSinger batch stack
+#
+#   docker compose up                          # build (CPU) + run all pending jobs
+#   docker compose --profile rocm up ultrasinger-rocm   # AMD-GPU (ROCm) variant
+#
+# See stack/README.md for full documentation.
+name: ultrastar-stack
+
+x-common-env: &common-env
+  SONGS_FILE: /data/input/songs.csv
+  INPUT_DIR: /data/input
+  OUTPUT_DIR: /data/output
+  NEW_SONGS_DIR: /data/output/new
+  REPAIRED_DIR: /data/output/repaired
+  STATE_DIR: /data/state
+  LOGS_DIR: /data/logs
+  WORK_DIR: /data/work
+  # Leave WHISPER_MODEL/DEMUCS_MODEL/WHISPER_BATCH_SIZE unset (empty) to let
+  # them be auto-selected from the STACK_* resource budget below; set any
+  # of them explicitly to force that value regardless of the budget.
+  WHISPER_MODEL: ${WHISPER_MODEL:-}
+  DEMUCS_MODEL: ${DEMUCS_MODEL:-}
+  WHISPER_BATCH_SIZE: ${WHISPER_BATCH_SIZE:-}
+  REPAIR_MODE: ${REPAIR_MODE:-sync}
+  ROMANIZE: ${ROMANIZE:-1}
+  LYRICS_ENABLED: ${LYRICS_ENABLED:-1}
+  GENIUS_API_KEY: ${GENIUS_API_KEY:-}
+  ULTRASINGER_ARGS: ${ULTRASINGER_ARGS:-}
+  MAX_ATTEMPTS: ${MAX_ATTEMPTS:-3}
+  JOB_TIMEOUT_MIN: ${JOB_TIMEOUT_MIN:-90}
+  TZ: ${TZ:-Europe/Berlin}
+  # Declared resource budget for this stack - drives model auto-selection
+  # (see stack/orchestrator/resource_profile.py). Defaults match this
+  # host's actual measured budget (see 05-LESSONS.md): ~8 GB RAM set aside
+  # for the stack, 250 GB zram0 swap, 16 CPU threads (Ryzen 7 9800X3D).
+  # Override in .env if you move this stack to different hardware.
+  STACK_RAM_GB: ${STACK_RAM_GB:-8}
+  STACK_SWAP_GB: ${STACK_SWAP_GB:-250}
+  STACK_CPU_CORES: ${STACK_CPU_CORES:-16}
+
+x-common-volumes: &common-volumes
+  - ./input:/data/input
+  - ./output:/data/output
+  - ./state:/data/state
+  - ./logs:/data/logs
+  - ./models:/data/models
+  - ./work:/data/work
+  - ./cookies:/data/cookies
+  - ./orchestrator:/app/orchestrator
+
+services:
+  # Default service: CPU image (works everywhere, uses zram swap for spikes)
+  ultrasinger:
+    build:
+      context: ..
+      dockerfile: stack/Dockerfile
+      args:
+        TORCH_INDEX: "https://download.pytorch.org/whl/cpu"
+    image: ultrasinger-stack:cpu
+    container_name: ultrasinger
+    stdin_open: true   # allows `docker compose attach ultrasinger` for
+    tty: true          # interactive commands (status/skip/stop)
+    environment:
+      <<: *common-env
+      DEVICE: cpu
+    volumes: *common-volumes
+    # No hard memory limit on purpose: the host has ~8 GB RAM free for this
+    # stack plus 250 GB zram0 swap; the kernel swaps out spikes automatically.
+    command: ["python", "/app/orchestrator/orchestrator.py"]
+
+  # AMD GPU variant (ROCm). Start with:
+  #   docker compose --profile rocm up ultrasinger-rocm
+  # Whisper always runs on CPU (CTranslate2 has no ROCm support) - demucs
+  # separation uses the GPU via torch.
+  ultrasinger-rocm:
+    profiles: ["rocm"]
+    build:
+      context: ..
+      dockerfile: stack/Dockerfile
+      args:
+        TORCH_INDEX: "https://download.pytorch.org/whl/rocm6.4"
+    image: ultrasinger-stack:rocm
+    container_name: ultrasinger-rocm
+    stdin_open: true
+    tty: true
+    environment:
+      <<: *common-env
+      DEVICE: cuda
+      WHISPER_ON_CPU: "1"
+      MIOPEN_USER_DB_PATH: /data/models/miopen
+      # only the ROCm service actually uses a GPU (for demucs separation -
+      # whisper is always forced to CPU above); default matches the RX
+      # 9070's 16 GB VRAM (see 05-LESSONS.md). Override in .env if different.
+      STACK_VRAM_GB: ${STACK_VRAM_GB:-16}
+    volumes: *common-volumes
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    command: ["python", "/app/orchestrator/orchestrator.py"]

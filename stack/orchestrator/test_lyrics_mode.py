@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""Tests for repair.py's "lyrics" mode (force-align trusted external
+lyrics to audio, replacing the existing/transcribed lyrics text).
+
+About me: plain assert-based checks for the pure/mockable logic (file
+parsing, line-to-window seeding, hyphenation-based syllable building,
+output writing) - the actual whisperx alignment calls are stubbed out, so
+this does NOT validate real alignment quality (see test_repair.py for
+that style of check on the sibling sync-mode pipeline). Needs the heavy
+deps repair.py imports - run inside the image:
+
+    docker compose run --rm ultrasinger python /app/orchestrator/test_lyrics_mode.py
+"""
+
+import json
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import repair  # noqa: E402
+
+failures = []
+
+
+def check(name, condition):
+    status = "PASS" if condition else "FAIL"
+    print(f"[{status}] {name}")
+    if not condition:
+        failures.append(name)
+
+
+class FakeTxt:
+    """gap=0, real_bpm=60 -> beat_to_sec(beat) == beat."""
+
+    real_bpm = 60.0
+
+    def note_start_sec(self, note):
+        return note.beat
+
+    def note_end_sec(self, note):
+        return note.beat + note.dur
+
+
+def make_notes(count, start=0, dur=1.0):
+    return [repair.Note(":", float(start + i), dur, 0, f"w{i} ")
+            for i in range(count)]
+
+
+def make_scaffold_lines(notes, per_line):
+    return [{"notes": notes[i:i + per_line]}
+            for i in range(0, len(notes), per_line)]
+
+
+# --------------------------------------------------------------------------
+# load_lyrics_file: JSON (lyrics_fetch.py output) vs plain text
+# --------------------------------------------------------------------------
+
+tmp_json = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+json.dump({"source": "genius", "lines": [
+    {"text": "First line", "start": 1.0},
+    {"text": "Second line", "start": 4.0},
+]}, tmp_json)
+tmp_json.close()
+source, lines = repair.load_lyrics_file(tmp_json.name)
+check("load_lyrics_file reads the JSON source label", source == "genius")
+check("load_lyrics_file reads JSON lines with timing",
+      lines == [{"text": "First line", "start": 1.0},
+                {"text": "Second line", "start": 4.0}])
+os.unlink(tmp_json.name)
+
+tmp_plain = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8")
+tmp_plain.write("First line\n\nSecond line\n   \nThird line\n")
+tmp_plain.close()
+source2, lines2 = repair.load_lyrics_file(tmp_plain.name)
+check("load_lyrics_file falls back to plain text for a non-JSON file",
+      source2 == "lyrics-file")
+check("load_lyrics_file plain lines skip blanks, carry no timing",
+      lines2 == [{"text": "First line", "start": None},
+                 {"text": "Second line", "start": None},
+                 {"text": "Third line", "start": None}])
+os.unlink(tmp_plain.name)
+
+# --------------------------------------------------------------------------
+# parse_lyrics_lines
+# --------------------------------------------------------------------------
+
+units = repair.parse_lyrics_lines([
+    {"text": "  Hello world  ", "start": 1.5},
+    {"text": "   ", "start": 2.0},  # blank -> dropped
+    {"text": "Second line here", "start": None},
+])
+check("parse_lyrics_lines drops blank lines", len(units) == 2)
+check("parse_lyrics_lines splits words", units[0]["words"] == ["Hello", "world"])
+check("parse_lyrics_lines keeps start time", units[0]["start"] == 1.5)
+check("parse_lyrics_lines keeps None start", units[1]["start"] is None)
+
+# --------------------------------------------------------------------------
+# seed_lyric_windows: three priority tiers
+# --------------------------------------------------------------------------
+
+txt = FakeTxt()
+
+# tier 1: every unit has its own start time (synced lyrics) -> used directly
+units_timed = repair.parse_lyrics_lines([
+    {"text": "one two", "start": 5.0},
+    {"text": "three four five", "start": 10.0},
+])
+repair.seed_lyric_windows(units_timed, [], txt, audio_dur=60.0)
+check("seed_lyric_windows (timed): uses the real start directly",
+      units_timed[0]["seed_start"] == 5.0)
+check("seed_lyric_windows (timed): end = next line's start",
+      units_timed[0]["seed_end"] == 10.0)
+check("seed_lyric_windows (timed): last line gets a default span",
+      units_timed[1]["seed_end"] == min(60.0, 10.0 + 8.0))
+
+# tier 2: no timing, but scaffold line count matches -> map 1:1
+notes = make_notes(6, start=0, dur=1.0)  # beats 0..5, note i spans [i, i+1]
+scaffold_lines = make_scaffold_lines(notes, per_line=3)  # 2 scaffold lines
+units_untimed = repair.parse_lyrics_lines([
+    {"text": "a b c", "start": None},
+    {"text": "d e f", "start": None},
+])
+repair.seed_lyric_windows(units_untimed, scaffold_lines, txt, audio_dur=60.0)
+check("seed_lyric_windows (matched count): unit 0 uses scaffold line 0's span",
+      units_untimed[0]["seed_start"] == 0.0 and units_untimed[0]["seed_end"] == 3.0)
+check("seed_lyric_windows (matched count): unit 1 uses scaffold line 1's span",
+      units_untimed[1]["seed_start"] == 3.0 and units_untimed[1]["seed_end"] == 6.0)
+
+# tier 3: no timing, MISMATCHED line count (3 lyric lines vs. 2 scaffold
+# lines) -> proportional by word count instead of 1:1 mapping
+units_mismatched = repair.parse_lyrics_lines([
+    {"text": "one word line", "start": None},
+    {"text": "a much longer line with six words", "start": None},
+    {"text": "final", "start": None},
+])
+repair.seed_lyric_windows(units_mismatched, scaffold_lines, txt, audio_dur=60.0)
+total_span = 6.0  # scaffold spans [0, 6]
+w0 = len(units_mismatched[0]["words"])  # 3
+w1 = len(units_mismatched[1]["words"])  # 7
+w2 = len(units_mismatched[2]["words"])  # 1
+check("seed_lyric_windows (proportional): unit 0 starts at scaffold start",
+      units_mismatched[0]["seed_start"] == 0.0)
+check(f"seed_lyric_windows (proportional): span split by word count "
+      f"(got {units_mismatched[0]['seed_end']})",
+      abs(units_mismatched[0]["seed_end"] - total_span * w0 / (w0 + w1 + w2)) < 1e-6)
+
+# no scaffold at all -> spread across the whole audio
+units_no_scaffold = repair.parse_lyrics_lines([
+    {"text": "one two", "start": None},
+    {"text": "three four", "start": None},
+])
+repair.seed_lyric_windows(units_no_scaffold, [], txt, audio_dur=20.0)
+check("seed_lyric_windows (no scaffold): spreads across the whole audio",
+      units_no_scaffold[0]["seed_start"] == 0.0 and
+      units_no_scaffold[-1]["seed_end"] <= 20.0)
+
+# --------------------------------------------------------------------------
+# build_syllables_from_lyric_units: hyphenation reuse + line grouping
+# --------------------------------------------------------------------------
+
+units_for_syl = repair.parse_lyrics_lines([
+    {"text": "hello world", "start": 0.0},
+    {"text": "goodbye", "start": 4.0},
+])
+# fully-aligned words (no interpolation needed), one per unit's word list
+aligned_for_syl = [
+    {"words": [{"start": 0.0, "end": 1.0}, {"start": 1.0, "end": 2.0}],
+     "word_orig_starts": [0.0, 1.0], "word_orig_ends": [1.0, 2.0]},
+    {"words": [{"start": 4.0, "end": 5.0}],
+     "word_orig_starts": [4.0], "word_orig_ends": [5.0]},
+]
+# language=None -> no hyphenation, each whole word is its own "syllable"
+per_unit = repair.build_syllables_from_lyric_units(
+    units_for_syl, aligned_for_syl, language=None)
+check("build_syllables_from_lyric_units returns one list per unit",
+      len(per_unit) == 2)
+check("build_syllables_from_lyric_units (no hyphenation): unit 0 has 2 words",
+      len(per_unit[0]) == 2)
+check("build_syllables_from_lyric_units (no hyphenation): unit 1 has 1 word",
+      len(per_unit[1]) == 1)
+check("build_syllables_from_lyric_units keeps real aligned timing",
+      per_unit[0][0][1] == 0.0 and per_unit[0][0][2] == 1.0)
+check("build_syllables_from_lyric_units marks word end with a trailing space",
+      per_unit[0][0][0] == "hello " and per_unit[1][0][0] == "goodbye ")
+
+# --------------------------------------------------------------------------
+
+print()
+if failures:
+    print(f"{len(failures)} check(s) FAILED: {failures}")
+    sys.exit(1)
+print("all checks passed")
+sys.exit(0)

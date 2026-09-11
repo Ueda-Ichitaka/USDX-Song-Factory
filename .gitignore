@@ -18,3 +18,12 @@ output
 
 # agent knowledge files (not for git)
 knowledge/
+test data/
+
+# stack: generated/cached data, not source - see git-add-hang advice
+stack/models/
+stack/work/
+stack/output/
+stack/input/
+stack/logs/
+stack/state/
