@@ -23,6 +23,7 @@ from modules.Audio.separation import DemucsModel
 from modules.Audio.convert_audio import convert_audio_to_mono_wav, convert_audio_format
 from modules.Audio.youtube import (
     download_from_youtube,
+    resolve_song_identity,
 )
 from modules.Audio.bpm import get_bpm_from_file
 
@@ -177,7 +178,7 @@ def run() -> tuple[str, Score, Score]:
 
     # Detect key
     detected_key, detected_mode = detect_key_from_audio(process_data.process_data_paths.processing_audio_path)
-    if process_data.media_info.music_key is None:
+    if process_data.media_info.music_key is None and detected_key is not None:
         process_data.media_info.music_key = f"{detected_key} {detected_mode}"
 
     # Audio transcription
@@ -482,7 +483,8 @@ def InitProcessData():
             settings.output_folder_path,
             process_data.process_data_paths.audio_output_file_path,
             process_data.media_info
-        ) = download_from_youtube(settings.input_file_path, settings.output_folder_path, settings.cookiefile)
+        ) = download_from_youtube(settings.input_file_path, settings.output_folder_path, settings.cookiefile,
+                                  settings.forced_artist, settings.forced_title)
     else:
         # Audio/Video File
         print(f"{ULTRASINGER_HEAD} {gold_highlighted('Full Automatic Mode')}")
@@ -656,6 +658,8 @@ def infos_from_audio_video_input_file() -> tuple[str, str, str, MediaInfo]:
         title = basename_without_ext
 
     song_info = search_musicbrainz(title, artist)
+    song_info.artist, song_info.title = resolve_song_identity(
+        song_info.artist, song_info.title, settings.forced_artist, settings.forced_title)
     basename_without_ext = f"{song_info.artist} - {song_info.title}"
 
     song_folder_output_path = os.path.join(settings.output_folder_path, basename_without_ext)
@@ -849,6 +853,10 @@ def init_settings(argv: list[str]) -> Settings:
                 sys.exit()
         elif opt in ("--cookiefile"):
             settings.cookiefile = arg
+        elif opt in ("--force_artist"):
+            settings.forced_artist = arg
+        elif opt in ("--force_title"):
+            settings.forced_title = arg
         elif opt in ("--interactive"):
             settings.interactive_mode = True
         elif opt in ("--quantize_to_key"):
@@ -896,7 +904,9 @@ def arg_options():
         "quantize_to_key",
         "interactive",
         "cookiefile=",
-        "ffmpeg="
+        "ffmpeg=",
+        "force_artist=",
+        "force_title=",
     ]
     return long, short
 

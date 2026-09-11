@@ -58,6 +58,15 @@ class Settings:
     # yt-dlp
     cookiefile = None
 
+    # Trusted metadata overrides: when given, these win over YouTube/local
+    # filename metadata and MusicBrainz's returned artist/title, so a
+    # YouTube channel name or a MusicBrainz alternate-release match can
+    # never rename a song away from what the caller already knows to be
+    # correct. MusicBrainz is still queried for supplementary data
+    # (cover art, year, genres).
+    forced_artist = None
+    forced_title = None
+
     # UltraSinger Evaluation Configuration
     test_songs_input_folder = None
     cache_override_path = None #"C:\\UltraSinger\\test_output"

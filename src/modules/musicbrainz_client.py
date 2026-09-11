@@ -1,4 +1,5 @@
 import musicbrainzngs
+import re
 import string
 import time
 from urllib.error import URLError
@@ -34,6 +35,22 @@ def __clean_string(s: str) -> str:
     return s.translate(str.maketrans('', '', string.punctuation)).lower().strip()
 
 
+def __strip_bracketed(s: str) -> str:
+    """Remove bracketed/parenthetical annotations, e.g. '(Official Video)'
+    or '[Full HD]', repeatedly so nested brackets are removed completely.
+
+    Used before Levenshtein-ratio comparisons: raw video/release titles
+    routinely carry such annotations, and a strict length-sensitive ratio
+    would otherwise reject an otherwise-correct match.
+    """
+    cleaned = s
+    previous = None
+    while previous != cleaned:
+        previous = cleaned
+        cleaned = re.sub(r"[\[\(\{][^\[\]\(\)\}]*[\]\)\}]", " ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def __musicbrainz_request(func):
     for i in range(MAX_RETRIES):
         try:
@@ -52,10 +69,15 @@ def search_musicbrainz(title: str, artist) -> SongInfo:
     # remove from search_string "official video"
     # todo: do we need filter?
     origin_title = title
+    origin_artist = artist
     for filter in title_filter:
         title = title.lower().replace(filter.lower(), "").strip()
         if artist is not None:
             artist = artist.lower().replace(filter.lower(), "").strip()
+
+    if not __clean_string(title or ""):
+        # nothing to search for - keep the given (e.g. youtube) names
+        return SongInfo(title=origin_title, artist=origin_artist or "Unknown Artist")
 
     if artist is None:
         recording = __single_line_search(title)
@@ -63,8 +85,9 @@ def search_musicbrainz(title: str, artist) -> SongInfo:
         recording = __multi_line_search(artist, title)
 
     if recording is None:
-        print(f"{ULTRASINGER_HEAD} {red_highlighted('No match found')}")
-        return SongInfo(title=origin_title, artist="Unknown Artist")
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('No match found')} "
+              f"- keeping the given artist/title")
+        return SongInfo(title=origin_title, artist=origin_artist or "Unknown Artist")
 
     artist = recording['artist-credit-phrase']
     title = recording['title']
@@ -140,36 +163,46 @@ def __multi_line_search(artist: str, title: str):
     if result2 is None:
         result2 = {'recording-count': 0, 'recording-list': []}
 
-    # Filter result to ['artist-credit-phrase'] == artist
-    record1 = [x for x in result1['recording-list'] if
-               __clean_string(x['artist-credit-phrase']) == __clean_string(artist1)]
-    record2 = [x for x in result2['recording-list'] if
-               __clean_string(x['artist-credit-phrase']) == __clean_string(artist2)]
+    # Only accept recordings whose title is similar enough to the searched
+    # title AND whose artist matches - musicbrainz fulltext search returns
+    # very loose fuzzy hits that must not be used blindly.
+    min_similarity = 0.6
 
+    def candidates(result, searched_title, searched_artist):
+        found = []
+        clean_searched_title = __strip_bracketed(searched_title)
+        for record in result['recording-list']:
+            if ratio(__clean_string(record['title']),
+                     __clean_string(clean_searched_title)) < min_similarity:
+                continue
+            if __clean_string(record['artist-credit-phrase']) == \
+                    __clean_string(searched_artist):
+                found.append(record)
+        return found
+
+    record1 = candidates(result1, title1, artist1)
+    record2 = candidates(result2, title2, artist2)
+
+    def best(records, searched_title):
+        clean_searched_title = __strip_bracketed(searched_title)
+        return max(records, key=lambda x: ratio(
+            __clean_string(x['title']), __clean_string(clean_searched_title)))
+
+    def match_ratio(records, searched_title):
+        clean_searched_title = __strip_bracketed(searched_title)
+        return ratio(__clean_string(clean_searched_title),
+                     __clean_string(best(records, searched_title)['title']))
+
+    recording = None
     if len(record1) > 0 and len(record2) > 0:
-        best_match1 = max(record1, key=lambda x: ratio(__clean_string(x['title']), __clean_string(title1)))
-        best_match2 = max(record2, key=lambda x: ratio(__clean_string(x['title']), __clean_string(title2)))
-
-        is_match1 = ratio(__clean_string(title1), __clean_string(best_match1['title'])) > ratio(__clean_string(title2),
-                                                                                                __clean_string(
-                                                                                                    best_match2[
-                                                                                                        'title']))
-
-        if is_match1:
-            recording = record1[0]
+        if match_ratio(record1, title1) >= match_ratio(record2, title2):
+            recording = best(record1, title1)
         else:
-            recording = record2[0]
-
+            recording = best(record2, title2)
     elif len(record1) > 0:
-        recording = record1[0]
+        recording = best(record1, title1)
     elif len(record2) > 0:
-        recording = record2[0]
-    elif result1['recording-count'] > 0:  # Artist = Title
-        recording = result1['recording-list'][0]
-    elif result2['recording-count'] > 0:  # Artist = Title
-        recording = result2['recording-list'][0]
-    else:
-        recording = None
+        recording = best(record2, title2)
 
     return recording
 

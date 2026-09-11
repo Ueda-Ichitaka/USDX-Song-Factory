@@ -5,7 +5,8 @@ import numpy as np
 
 from modules.console_colors import (
     ULTRASINGER_HEAD,
-blue_highlighted)
+    blue_highlighted,
+    red_highlighted)
 
 # scales (in semitones relative to root note)
 MAJOR_SCALE = [0, 2, 4, 5, 7, 9, 11]
@@ -70,8 +71,13 @@ def get_allowed_notes_for_key(key_note: str, mode: str) -> set[str]:
         mode: 'major' or 'minor'
 
     Returns:
-        Set of allowed note names (e.g., {'C', 'D', 'E', ...})
+        Set of allowed note names (e.g., {'C', 'D', 'E', ...}) or None if
+        no key was detected (key quantization is then skipped).
     """
+    if key_note is None or mode is None or key_note not in NOTE_NAMES:
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('No key detected')} "
+              f"- skipping key quantization")
+        return None
     root_idx = NOTE_NAMES.index(key_note)
     scale = MAJOR_SCALE if mode == 'major' else MINOR_SCALE
 

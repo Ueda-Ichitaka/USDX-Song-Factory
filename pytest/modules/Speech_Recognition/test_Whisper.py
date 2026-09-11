@@ -2,7 +2,59 @@
 
 import unittest
 from src.modules.Speech_Recognition.TranscribedData import TranscribedData
-from src.modules.Speech_Recognition.Whisper import convert_to_transcribed_data, number_to_words
+from src.modules.Speech_Recognition.Whisper import (
+    convert_to_transcribed_data, drop_trailing_speech_blurb, number_to_words,
+)
+
+
+def _word(word, start, end):
+    return TranscribedData(word=word, start=start, end=end)
+
+
+class DropTrailingSpeechBlurbTest(unittest.TestCase):
+    def test_drops_a_short_isolated_blurb_after_a_long_silence(self):
+        # a normal song ending around 180s, then a 12s silence gap, then a
+        # short 3-word spoken end-card ("thanks for watching")
+        data = [
+            _word("last ", 175.0, 176.0),
+            _word("chorus ", 176.0, 178.0),
+            _word("thanks ", 190.0, 191.0),
+            _word("for ", 191.0, 191.5),
+            _word("watching ", 191.5, 192.5),
+        ]
+        result = drop_trailing_speech_blurb(data)
+        self.assertEqual([w.word for w in result], ["last ", "chorus "])
+
+    def test_keeps_lyrics_with_no_large_trailing_gap(self):
+        data = [_word("a ", 0.0, 1.0), _word("b ", 1.0, 2.0), _word("c ", 2.0, 3.0)]
+        result = drop_trailing_speech_blurb(data)
+        self.assertEqual(result, data)
+
+    def test_keeps_a_long_trailing_section_even_after_a_big_gap(self):
+        # a real verse/outro after a long instrumental break must NOT be
+        # dropped just because it is isolated - only short blurbs are
+        data = [_word("a ", 0.0, 1.0)] + [
+            _word(f"w{i} ", 20.0 + i * 2.0, 20.0 + i * 2.0 + 1.5) for i in range(20)
+        ]
+        result = drop_trailing_speech_blurb(data)
+        self.assertEqual(result, data)
+
+    def test_keeps_everything_when_fewer_than_two_words(self):
+        self.assertEqual(drop_trailing_speech_blurb([]), [])
+        one = [_word("solo ", 0.0, 1.0)]
+        self.assertEqual(drop_trailing_speech_blurb(one), one)
+
+    def test_small_gap_does_not_trigger_even_near_the_end(self):
+        # a gap below the threshold is normal song phrasing, not an
+        # isolated end-card - must never be dropped
+        data = [
+            _word("last ", 175.0, 176.0),
+            _word("chorus ", 176.0, 178.0),
+            _word("fade ", 183.5, 184.5),  # 5.5s gap, under the 8s default
+            _word("out ", 184.5, 185.0),
+        ]
+        result = drop_trailing_speech_blurb(data)
+        self.assertEqual(result, data)
 
 class ConvertToTranscribedDataTest(unittest.TestCase):
     def test_convert_to_transcribed_data(self):

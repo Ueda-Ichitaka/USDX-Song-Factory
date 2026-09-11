@@ -40,6 +40,12 @@ re_split_preserve_space = re.compile(r'(\d+|\W+|\w+)')
 
 MEMORY_ERROR_MESSAGE = f"{ULTRASINGER_HEAD} {blue_highlighted('whisper')} ran out of GPU memory; reduce --whisper_batch_size or force usage of cpu with --force_cpu"
 
+# a trailing run of words isolated by at least this many seconds of
+# silence from the rest of the song, and no longer than this many
+# seconds itself, is treated as a spoken video end-card rather than lyrics
+ENDCARD_MIN_GAP_S = float(os.environ.get("ENDCARD_MIN_GAP_S", "8.0"))
+ENDCARD_MAX_DUR_S = float(os.environ.get("ENDCARD_MAX_DUR_S", "20.0"))
+
 class WhisperModel(Enum):
     """Whisper model"""
     TINY = "tiny"
@@ -159,6 +165,7 @@ def transcribe_with_whisper(
         )
 
         transcribed_data = convert_to_transcribed_data(result_aligned)
+        transcribed_data = drop_trailing_speech_blurb(transcribed_data)
 
         return TranscriptionResult(transcribed_data, detected_language)
     except ValueError as value_error:
@@ -218,3 +225,49 @@ def convert_to_transcribed_data(result_aligned):
                 print(f"{red_highlighted(msg)}")
             transcribed_data.append(vtd)  # and add it to list
     return transcribed_data
+
+
+def drop_trailing_speech_blurb(
+        transcribed_data: list,
+        min_gap_s: float = ENDCARD_MIN_GAP_S,
+        max_blurb_dur_s: float = ENDCARD_MAX_DUR_S,
+) -> list:
+    """Drop a trailing run of words isolated by a long silence gap from
+    the rest of the song - typically a spoken video end-card/outro
+    ("thanks for watching", "subscribe", ...) that whisper transcribes
+    despite it not being part of the song's actual lyrics. Whisper detects
+    the song's language once for the whole file and is well known to
+    hallucinate generic English phrases on quiet/unclear non-musical
+    audio, so such a blurb can come out in the wrong language too.
+
+    Only drops the run when it is genuinely isolated (a real verse/outro
+    after a long instrumental break is usually much longer than a blurb,
+    so the max_blurb_dur_s cap keeps those intact) - a heuristic, not a
+    certainty; set ENDCARD_MIN_GAP_S<=0 to disable.
+    """
+    if min_gap_s <= 0 or len(transcribed_data) < 2:
+        return transcribed_data
+
+    cut = None
+    for i in range(len(transcribed_data) - 1, 0, -1):
+        gap = transcribed_data[i].start - transcribed_data[i - 1].end
+        if gap < 0:
+            return transcribed_data  # out-of-order timestamps: don't guess
+        if gap >= min_gap_s:
+            cut = i
+            break
+
+    if cut is None:
+        return transcribed_data
+
+    blurb = transcribed_data[cut:]
+    blurb_dur = blurb[-1].end - blurb[0].start
+    if blurb_dur > max_blurb_dur_s:
+        return transcribed_data
+
+    gap = transcribed_data[cut].start - transcribed_data[cut - 1].end
+    blurb_text = "".join(w.word for w in blurb).strip()
+    print(f"{ULTRASINGER_HEAD} {red_highlighted('dropping trailing speech blurb')} "
+          f"after a {gap:.1f}s silence gap ({len(blurb)} words, {blurb_dur:.1f}s): "
+          f"{blurb_text!r} - likely a spoken video end-card, not part of the song")
+    return transcribed_data[:cut]

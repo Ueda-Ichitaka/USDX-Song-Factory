@@ -13,8 +13,18 @@ venv
 # test data
 test_input
 test_output
+test data
 
 # default output folder
 output
 /UltraSinger*.spec
 /registry_path.txt
+
+# stack data volumes (mounted at runtime, not baked into the image)
+stack/output
+stack/state
+stack/logs
+stack/models
+stack/work
+stack/input
+stack/cookies

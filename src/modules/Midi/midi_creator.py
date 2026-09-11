@@ -28,7 +28,11 @@ def create_midi_instrument(midi_segments: list[MidiSegment]) -> object:
     velocity = 100
 
     for i, midi_segment in enumerate(midi_segments):
-        note = pretty_midi.Note(velocity, librosa.note_to_midi(midi_segment.note), midi_segment.start, midi_segment.end)
+        start = midi_segment.start
+        end = midi_segment.end
+        if end <= start:
+            end = start + 0.01  # pretty_midi requires end > start
+        note = pretty_midi.Note(velocity, librosa.note_to_midi(midi_segment.note), start, end)
         instrument.notes.append(note)
 
     return instrument
