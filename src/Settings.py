@@ -67,6 +67,14 @@ class Settings:
     forced_artist = None
     forced_title = None
 
+    # An explicit MusicBrainz recording or release ID (csv musicbrainz_id
+    # column): tried first via direct lookup - more reliable supplementary
+    # metadata (cover art, year, genres) than the fuzzy title/artist
+    # search. Does not affect artist/title naming (forced_artist/
+    # forced_title above still win); falls back to the fuzzy search when
+    # not given or when the ID doesn't resolve.
+    musicbrainz_id = None
+
     # UltraSinger Evaluation Configuration
     test_songs_input_folder = None
     cache_override_path = None #"C:\\UltraSinger\\test_output"

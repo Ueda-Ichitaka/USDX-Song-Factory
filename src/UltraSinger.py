@@ -65,7 +65,7 @@ from modules.Ultrastar.ultrastar_parser import parse_ultrastar_txt
 from modules.common_print import print_support, print_help, print_version
 from modules.os_helper import check_file_exists, get_unused_song_output_dir
 from modules.plot import create_plots
-from modules.musicbrainz_client import search_musicbrainz
+from modules.musicbrainz_client import get_song_info
 from modules.sheet import create_sheet
 from modules.ProcessData import ProcessData, ProcessDataPaths, MediaInfo
 from modules.DeviceDetection.device_detection import check_gpu_support
@@ -484,7 +484,7 @@ def InitProcessData():
             process_data.process_data_paths.audio_output_file_path,
             process_data.media_info
         ) = download_from_youtube(settings.input_file_path, settings.output_folder_path, settings.cookiefile,
-                                  settings.forced_artist, settings.forced_title)
+                                  settings.forced_artist, settings.forced_title, settings.musicbrainz_id)
     else:
         # Audio/Video File
         print(f"{ULTRASINGER_HEAD} {gold_highlighted('Full Automatic Mode')}")
@@ -657,7 +657,7 @@ def infos_from_audio_video_input_file() -> tuple[str, str, str, MediaInfo]:
     else:
         title = basename_without_ext
 
-    song_info = search_musicbrainz(title, artist)
+    song_info = get_song_info(title, artist, settings.musicbrainz_id)
     song_info.artist, song_info.title = resolve_song_identity(
         song_info.artist, song_info.title, settings.forced_artist, settings.forced_title)
     basename_without_ext = f"{song_info.artist} - {song_info.title}"
@@ -857,6 +857,8 @@ def init_settings(argv: list[str]) -> Settings:
             settings.forced_artist = arg
         elif opt in ("--force_title"):
             settings.forced_title = arg
+        elif opt in ("--musicbrainz_id"):
+            settings.musicbrainz_id = arg
         elif opt in ("--interactive"):
             settings.interactive_mode = True
         elif opt in ("--quantize_to_key"):
@@ -907,6 +909,7 @@ def arg_options():
         "ffmpeg=",
         "force_artist=",
         "force_title=",
+        "musicbrainz_id=",
     ]
     return long, short
 

@@ -11,7 +11,7 @@ from modules.ProcessData import MediaInfo
 from modules.Audio.bpm import get_bpm_from_file
 from modules.console_colors import ULTRASINGER_HEAD
 from modules.Image.image_helper import save_image
-from modules.musicbrainz_client import search_musicbrainz
+from modules.musicbrainz_client import get_song_info
 from modules.ffmpeg_helper import separate_audio_video
 
 
@@ -49,9 +49,9 @@ def get_youtube_title(url: str, cookiefile: str = None) -> tuple[str | None, str
         return parts[0], " ".join(parts[1:])
     if result.get("channel"):
         return result["channel"].strip(), cleaned
-    # no artist known at all - None (not "") so search_musicbrainz() takes
-    # the title-only __single_line_search path instead of a doomed
-    # __multi_line_search("", cleaned)
+    # no artist known at all - None (not "") so the eventual fuzzy search
+    # (search_musicbrainz(), inside get_song_info()) takes the title-only
+    # __single_line_search path instead of a doomed __multi_line_search("", cleaned)
     return None, cleaned
 
 
@@ -127,12 +127,15 @@ def resolve_song_identity(mb_artist: str, mb_title: str,
 
 
 def download_from_youtube(input_url: str, output_folder_path: str, cookiefile: str = None,
-                          forced_artist: str = None, forced_title: str = None) -> tuple[str, str, str, MediaInfo]:
+                          forced_artist: str = None, forced_title: str = None,
+                          musicbrainz_id: str = None) -> tuple[str, str, str, MediaInfo]:
     """Download from YouTube"""
     (artist, title) = get_youtube_title(input_url, cookiefile)
 
-    # Get additional data for song (cover art, year, genres)
-    song_info = search_musicbrainz(title, artist)
+    # Get additional data for song (cover art, year, genres) - a given
+    # musicbrainz_id (csv column) is tried first for more reliable
+    # metadata, falling back to the fuzzy search when not given/not found
+    song_info = get_song_info(title, artist, musicbrainz_id)
     song_info.artist, song_info.title = resolve_song_identity(
         song_info.artist, song_info.title, forced_artist, forced_title)
 

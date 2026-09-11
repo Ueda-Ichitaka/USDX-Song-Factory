@@ -170,6 +170,21 @@ cmd_no_lang = orch.ultrasinger_command(url, language="")
 check("ultrasinger_command omits --language when the csv doesn't give one",
       "--language" not in cmd_no_lang)
 
+cmd_with_mbid = orch.ultrasinger_command(url, musicbrainz_id="abc-123-mbid")
+check("ultrasinger_command passes --musicbrainz_id when the csv gives one",
+      "--musicbrainz_id" in cmd_with_mbid and
+      cmd_with_mbid[cmd_with_mbid.index("--musicbrainz_id") + 1] == "abc-123-mbid")
+cmd_no_mbid = orch.ultrasinger_command(url, musicbrainz_id="")
+check("ultrasinger_command omits --musicbrainz_id when the csv doesn't give one",
+      "--musicbrainz_id" not in cmd_no_mbid)
+
+fake_new_job_mbid = {"id": "new|u", "kind": "new", "url": url, "band": "",
+                     "title": "", "language": "", "musicbrainz_id": "abc-123-mbid"}
+built_cmd_mbid = orch.JobRunner(fake_new_job_mbid).command()
+check("JobRunner.command() passes the job's musicbrainz_id through",
+      "--musicbrainz_id" in built_cmd_mbid and
+      built_cmd_mbid[built_cmd_mbid.index("--musicbrainz_id") + 1] == "abc-123-mbid")
+
 # --------------------------------------------------------------------------
 # resource-budget config: WHISPER_MODEL/DEMUCS_MODEL/WHISPER_BATCH_SIZE fall
 # back to the historical hardcoded defaults when no STACK_*/override env
@@ -417,6 +432,36 @@ with open(lyrics_txt, "w", encoding="utf-8") as f:
 check("run_lyrics_step: no band/title -> stays transcribed, no subprocess call",
       orch.run_lyrics_step({"id": "new|x", "band": "", "title": ""}, lyrics_txt)
       == "transcribed")
+
+lyrics_url_calls = []
+orig_subprocess_run1b = orch.subprocess.run
+
+
+def fake_subprocess_run1b(cmd, **kwargs):
+    lyrics_url_calls.append(cmd)
+    return _FakeCompleted(1)
+
+
+orch.subprocess.run = fake_subprocess_run1b
+try:
+    orch.run_lyrics_step(
+        {"id": "new|u", "band": "Some Band", "title": "Some Song",
+         "lyrics_url": "https://example.com/trusted.txt"}, lyrics_txt)
+    fetch_call = next(c for c in lyrics_url_calls if c[1] == orch.LYRICS_FETCH_PY)
+    check("run_lyrics_step passes --lyrics-url when the job has one",
+          "--lyrics-url" in fetch_call and
+          fetch_call[fetch_call.index("--lyrics-url") + 1] ==
+          "https://example.com/trusted.txt")
+
+    lyrics_url_calls.clear()
+    orch.run_lyrics_step(
+        {"id": "new|v", "band": "Some Band", "title": "Some Song"}, lyrics_txt)
+    fetch_call_no_url = next(
+        c for c in lyrics_url_calls if c[1] == orch.LYRICS_FETCH_PY)
+    check("run_lyrics_step omits --lyrics-url when the job has none",
+          "--lyrics-url" not in fetch_call_no_url)
+finally:
+    orch.subprocess.run = orig_subprocess_run1b
 
 orig_subprocess_run2 = orch.subprocess.run
 lyrics_calls = []

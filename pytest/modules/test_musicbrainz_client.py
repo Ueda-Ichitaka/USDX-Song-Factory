@@ -2,7 +2,9 @@
 
 import unittest
 from unittest.mock import patch
-from src.modules.musicbrainz_client import search_musicbrainz
+import musicbrainzngs
+from src.modules.musicbrainz_client import (
+    search_musicbrainz, lookup_musicbrainz_by_id, get_song_info)
 
 
 class TestGetMusicInfos(unittest.TestCase):
@@ -205,6 +207,147 @@ class TestGetMusicInfos(unittest.TestCase):
             print(f'\t{search_string}\t -> {song_info.artist}, {song_info.title}, {song_info.year}, {song_info.genres}')
             print('-------------------------------')
         print(f"Faild: {failed} | Success: {success} Count: {count}")
+
+
+class TestLookupMusicbrainzById(unittest.TestCase):
+    """musicbrainz_id (csv column): a direct-by-id lookup that skips the
+    fuzzy search entirely - accepts either a recording or a release MBID
+    (auto-detected: recording tried first, release is the fallback), and
+    returns None (not an exception) when neither resolves, so the caller
+    can fall back to the fuzzy search rather than aborting the song."""
+
+    @patch('musicbrainzngs.get_image_list')
+    @patch('musicbrainzngs.get_image_front')
+    @patch('musicbrainzngs.get_release_group_by_id')
+    @patch('musicbrainzngs.get_recording_by_id')
+    def test_recording_id_resolves_directly(
+            self, mock_get_recording_by_id, mock_get_release_group_by_id,
+            mock_get_image_front, mock_get_image_list):
+        mock_get_recording_by_id.return_value = {
+            'recording': {
+                'title': "That's Rocking!",
+                'artist-credit-phrase': 'UltraSinger',
+                'release-list': [
+                    {'id': 'fake_release_id',
+                     'release-group': {'id': 'fake_group_id'}},
+                ],
+                'tag-list': [{'name': 'Genre 1'}],
+            }
+        }
+        mock_get_release_group_by_id.return_value = {
+            'release-group': {'first-release-date': '2023-01-01'}
+        }
+        mock_get_image_front.return_value = b'fake image data'
+        mock_get_image_list.return_value = {
+            'images': [{'front': True, 'image': 'https://example.com/image.jpg'}]
+        }
+
+        info = lookup_musicbrainz_by_id('fake-recording-mbid')
+
+        self.assertEqual(info.title, "That's Rocking!")
+        self.assertEqual(info.artist, 'UltraSinger')
+        self.assertEqual(info.year, '2023')
+        self.assertEqual(info.genres, 'Genre 1,')
+        self.assertEqual(info.cover_image_data, b'fake image data')
+        mock_get_recording_by_id.assert_called_once()
+
+    @patch('musicbrainzngs.get_image_list')
+    @patch('musicbrainzngs.get_image_front')
+    @patch('musicbrainzngs.get_release_by_id')
+    @patch('musicbrainzngs.get_recording_by_id')
+    def test_falls_back_to_release_id_when_not_a_recording(
+            self, mock_get_recording_by_id, mock_get_release_by_id,
+            mock_get_image_front, mock_get_image_list):
+        mock_get_recording_by_id.side_effect = musicbrainzngs.ResponseError()
+        mock_get_release_by_id.return_value = {
+            'release': {
+                'title': 'A Release Title',
+                'artist-credit-phrase': 'UltraSinger',
+                'date': '2019-05-01',
+                'tag-list': [{'name': 'Genre 2'}],
+            }
+        }
+        mock_get_image_front.return_value = b'release cover data'
+        mock_get_image_list.return_value = {
+            'images': [{'front': True, 'image': 'https://example.com/release.jpg'}]
+        }
+
+        info = lookup_musicbrainz_by_id('fake-release-mbid')
+
+        self.assertEqual(info.title, 'A Release Title')
+        self.assertEqual(info.artist, 'UltraSinger')
+        self.assertEqual(info.year, '2019')
+        self.assertEqual(info.genres, 'Genre 2,')
+        self.assertEqual(info.cover_image_data, b'release cover data')
+        mock_get_release_by_id.assert_called_once()
+
+    @patch('musicbrainzngs.get_release_by_id')
+    @patch('musicbrainzngs.get_recording_by_id')
+    def test_returns_none_when_id_resolves_as_neither(
+            self, mock_get_recording_by_id, mock_get_release_by_id):
+        mock_get_recording_by_id.side_effect = musicbrainzngs.ResponseError()
+        mock_get_release_by_id.side_effect = musicbrainzngs.ResponseError()
+
+        self.assertIsNone(lookup_musicbrainz_by_id('totally-unknown-mbid'))
+
+    def test_returns_none_for_empty_id(self):
+        self.assertIsNone(lookup_musicbrainz_by_id(''))
+        self.assertIsNone(lookup_musicbrainz_by_id(None))
+
+
+class TestGetSongInfo(unittest.TestCase):
+    """get_song_info(): the single entry point callers (UltraSinger.py,
+    youtube.py) use - tries musicbrainz_id first when given, only falls
+    back to the fuzzy search_musicbrainz() when no id was given or the id
+    didn't resolve to anything."""
+
+    @patch('musicbrainzngs.get_recording_by_id')
+    @patch('musicbrainzngs.search_recordings')
+    @patch('musicbrainzngs.search_artists')
+    def test_skips_fuzzy_search_when_id_resolves(
+            self, mock_search_artists, mock_search_recordings,
+            mock_get_recording_by_id):
+        mock_get_recording_by_id.return_value = {
+            'recording': {'title': 'ID Title', 'artist-credit-phrase': 'ID Artist'}
+        }
+
+        info = get_song_info('Some Title', 'Some Artist', 'fake-mbid')
+
+        self.assertEqual(info.title, 'ID Title')
+        self.assertEqual(info.artist, 'ID Artist')
+        mock_search_recordings.assert_not_called()
+        mock_search_artists.assert_not_called()
+
+    @patch('musicbrainzngs.get_release_by_id')
+    @patch('musicbrainzngs.get_recording_by_id')
+    @patch('musicbrainzngs.search_recordings')
+    @patch('musicbrainzngs.search_artists')
+    def test_falls_back_to_fuzzy_search_when_id_does_not_resolve(
+            self, mock_search_artists, mock_search_recordings,
+            mock_get_recording_by_id, mock_get_release_by_id):
+        mock_get_recording_by_id.side_effect = musicbrainzngs.ResponseError()
+        mock_get_release_by_id.side_effect = musicbrainzngs.ResponseError()
+        mock_search_artists.return_value = {'artist-list': []}
+        mock_search_recordings.return_value = {'recording-list': []}
+
+        info = get_song_info('Some Title', 'Some Artist', 'bad-mbid')
+
+        # no MusicBrainz match found for either the id or the fuzzy
+        # search - keeps the given artist/title, same as search_musicbrainz()
+        # alone would (see test_get_empty_artist_music_infos above)
+        self.assertEqual(info.artist, 'Some Artist')
+        mock_search_recordings.assert_called()
+
+    @patch('musicbrainzngs.search_recordings')
+    @patch('musicbrainzngs.search_artists')
+    def test_uses_fuzzy_search_directly_when_no_id_given(
+            self, mock_search_artists, mock_search_recordings):
+        mock_search_artists.return_value = {'artist-list': []}
+        mock_search_recordings.return_value = {'recording-list': []}
+
+        get_song_info('Some Title', 'Some Artist', None)
+
+        mock_search_recordings.assert_called()
 
 
 if __name__ == '__main__':

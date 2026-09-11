@@ -119,6 +119,30 @@ Local Band,A Song I Already Have,media/local-band-a-song.mp3
   (cover art, year, genres). Leave a cell empty to fall back to the old
   YouTube/MusicBrainz-derived naming for that row.
 
+Three more columns are optional (append them after `url` - omit entirely for
+rows/files that don't need them):
+
+```csv
+band,title,url,language,musicbrainz_id,lyrics_url
+Lacrimosa,Lichtgestalt,https://www.youtube.com/watch?v=XYZ,de,,
+```
+
+* **`language`** - an ISO 639-1 code (`de`, `en`, ...). Passed as
+  `--language`, pinning whisper's language detection instead of letting it
+  guess - fixes mis-detections on short/ambiguous audio (a purely German
+  song was once auto-detected as English at 0.41 confidence).
+* **`musicbrainz_id`** - a MusicBrainz recording or release ID. Tried first
+  via a direct lookup (recording, falling back to release) instead of the
+  fuzzy title/artist search - more reliable supplementary metadata (cover
+  art, year, genres). Does **not** affect naming - `band`/`title` above
+  still always win.
+* **`lyrics_url`** - a link to known-good lyrics for the song, tried first
+  (and used directly if found) before the normal online lyrics lookup.
+  `genius.com` URLs are scraped directly; anything else must point straight
+  at plain text or an `.lrc` file - arbitrary lyrics-site HTML pages are not
+  supported (falls back to the normal lyrics search if the URL doesn't
+  yield anything usable).
+
 Alternatively `input/songs.txt` (plain lines):
 
 ```
@@ -489,18 +513,35 @@ want to be strict, add to the service:
 If memory gets tight, use a smaller whisper model
 (`WHISPER_MODEL=medium`).
 
-## YouTube: "Sign in to confirm you're not a bot"
+## YouTube: "Sign in to confirm you're not a bot" / age-restricted videos
 
-yt-dlp occasionally hits YouTube bot protection. If downloads fail with that
-error, export your browser cookies once:
+yt-dlp occasionally hits YouTube bot protection, and age-restricted videos
+always need this. Export your browser's YouTube cookies once, on the host
+(not inside the container - the container has no browser):
 
 ```bash
-yt-dlp --cookies ~/cookies.txt --cookies-from-browser firefox
-cp ~/cookies.txt stack/cookies/cookies.txt
+# close the browser first - it locks its cookie DB while running, which
+# makes yt-dlp fail with "database is locked"
+yt-dlp --cookies-from-browser firefox --cookies stack/cookies/cookies.txt \
+  --skip-download "https://www.youtube.com/watch?v=<any-video-id>"
 ```
 
+- `--cookies-from-browser` also accepts `chrome`, `brave`, `edge`, ... - and
+  a specific profile if you have more than one: `firefox:default-release`,
+  `chrome:Profile 2`.
+- The trailing URL is required (yt-dlp refuses to run with none) and is only
+  used to trigger the extraction - `--skip-download` means nothing is
+  downloaded. Using the actual blocked video's URL here also confirms the
+  cookies work for that specific video before you retry the batch.
+- The output file must be in Mozilla/Netscape format (first line `# Netscape
+  HTTP Cookie File`) - `--cookies-from-browser` + `--cookies <file>` writes
+  it in that format automatically, don't hand-edit it.
+- Cookies expire - if bot-check errors come back after a while, just re-run
+  the command above.
+
 The orchestrator automatically passes `--cookiefile` to UltraSinger when
-`cookies/cookies.txt` exists.
+`cookies/cookies.txt` exists - no further config needed once the file is in
+place.
 
 ## Troubleshooting
 

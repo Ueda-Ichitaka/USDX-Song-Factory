@@ -665,6 +665,9 @@ def run_lyrics_step(job: dict, output_path: str) -> str:
     fetch_log_path = os.path.join(LOGS_DIR, slug + "-lyrics-fetch.log")
     fetch_cmd = [sys.executable, LYRICS_FETCH_PY,
                 "--artist", band, "--title", title, "--out", lyrics_json]
+    lyrics_url = (job.get("lyrics_url") or "").strip()
+    if lyrics_url:
+        fetch_cmd += ["--lyrics-url", lyrics_url]
     try:
         with open(fetch_log_path, "wb") as logfile:
             proc = subprocess.run(fetch_cmd, stdout=logfile, stderr=subprocess.STDOUT,
@@ -773,7 +776,7 @@ def quarantine_partial_output(kind: str, before_names: set, output_dir: str) -> 
 
 
 def ultrasinger_command(url: str, band: str = None, title: str = None,
-                        language: str = None) -> list:
+                        language: str = None, musicbrainz_id: str = None) -> list:
     cmd = [sys.executable, ULTRASINGER_PY, "-i", resolve_song_input(url), "-o", NEW_SONGS_DIR]
     if WHISPER_MODEL:
         cmd += ["--whisper", WHISPER_MODEL]
@@ -799,6 +802,11 @@ def ultrasinger_command(url: str, band: str = None, title: str = None,
     # purely German song)
     if language and language.strip():
         cmd += ["--language", language.strip()]
+    # a csv-provided musicbrainz_id gets more reliable supplementary
+    # metadata (cover art, year, genres) than the fuzzy search - does not
+    # affect naming, --force_artist/--force_title above still win
+    if musicbrainz_id and musicbrainz_id.strip():
+        cmd += ["--musicbrainz_id", musicbrainz_id.strip()]
     if EXTRA_ARGS:
         cmd += shlex.split(EXTRA_ARGS)
     return cmd
@@ -829,7 +837,7 @@ class JobRunner:
         if self.job["kind"] == "new":
             return ultrasinger_command(
                 self.job["url"], self.job.get("band"), self.job.get("title"),
-                self.job.get("language"))
+                self.job.get("language"), self.job.get("musicbrainz_id"))
         return repair_command(
             self.job["song_dir"], self.job.get("mode"), self.job.get("lyrics_file"))
 

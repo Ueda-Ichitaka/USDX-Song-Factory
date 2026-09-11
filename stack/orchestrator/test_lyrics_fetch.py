@@ -258,6 +258,143 @@ del sys.modules["syncedlyrics"]
 del sys.modules["lyricsgenius"]
 
 # --------------------------------------------------------------------------
+# fetch_from_url: a csv-supplied lyrics_url is trusted, fetched directly -
+# genius.com urls are scraped via lyricsgenius' lyrics(song_url=...);
+# anything else is fetched as raw plain text or LRC. Arbitrary HTML lyrics
+# sites are NOT scraped (see 06-IDEAS.md's darklyrics lesson) - only
+# Genius, since lyricsgenius already provides/maintains that scraper.
+# --------------------------------------------------------------------------
+
+check("fetch_from_url returns None for an empty url",
+      lf.fetch_from_url("", "fake-key") is None)
+
+
+class FakeGeniusClientUrl:
+    def __init__(self, token):
+        self.token = token
+
+    def lyrics(self, song_url=None):
+        assert song_url == "https://genius.com/Some-artist-song-lyrics"
+        return "Some Song Lyrics\nReal genius line one\nReal genius line two\n5Embed"
+
+
+fake_lyricsgenius.Genius = FakeGeniusClientUrl
+_install_fake_module("lyricsgenius", fake_lyricsgenius)
+
+result_url_genius = lf.fetch_from_url(
+    "https://genius.com/Some-artist-song-lyrics", "fake-key")
+check("fetch_from_url scrapes a genius.com url via lyricsgenius",
+      result_url_genius is not None and
+      result_url_genius["source"] == "lyrics_url (genius)")
+check("fetch_from_url (genius) strips page artifacts",
+      result_url_genius["lines"] == [
+          {"text": "Real genius line one", "start": None},
+          {"text": "Real genius line two", "start": None}])
+check("fetch_from_url (genius) is fully trusted (confidence 1.0)",
+      result_url_genius["confidence"] == 1.0)
+
+check("fetch_from_url returns None for a genius url with no api key",
+      lf.fetch_from_url("https://genius.com/x-lyrics", None) is None)
+
+del sys.modules["lyricsgenius"]
+
+
+class FakeResponse:
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+
+fake_requests = types.ModuleType("requests")
+fake_requests.get = lambda url, timeout=None: FakeResponse(
+    "[00:05.00]Timed line one\n[00:09.00]Timed line two\n")
+_install_fake_module("requests", fake_requests)
+
+result_url_lrc = lf.fetch_from_url("https://example.com/lyrics.lrc", None)
+check("fetch_from_url parses a plain url's LRC-formatted body",
+      result_url_lrc is not None and
+      result_url_lrc["source"] == "lyrics_url (lrc)" and
+      result_url_lrc["lines"][0]["start"] == 5.0)
+
+fake_requests.get = lambda url, timeout=None: FakeResponse(
+    "Plain line one\nPlain line two\n")
+result_url_plain = lf.fetch_from_url("https://example.com/lyrics.txt", None)
+check("fetch_from_url falls back to plain-text parsing when not LRC",
+      result_url_plain is not None and
+      result_url_plain["source"] == "lyrics_url (plain)" and
+      result_url_plain["lines"][0]["start"] is None)
+
+fake_requests.get = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom"))
+check("fetch_from_url survives a network failure",
+      lf.fetch_from_url("https://example.com/lyrics.txt", None) is None)
+
+del sys.modules["requests"]
+
+# --------------------------------------------------------------------------
+# fetch_lyrics(lyrics_url=...): a supplied lyrics_url is trusted and used
+# directly, short-circuiting the multi-source query entirely; only falls
+# back to querying every source if the url itself doesn't yield anything
+# --------------------------------------------------------------------------
+
+fake_requests2 = types.ModuleType("requests")
+fake_requests2.get = lambda url, timeout=None: FakeResponse("Trusted lyrics line\n")
+_install_fake_module("requests", fake_requests2)
+
+genius_search_calls = []
+
+
+class FakeGeniusClientShouldNotBeCalled(FakeGeniusClient):
+    def search_song(self, title, artist):
+        genius_search_calls.append((title, artist))
+        return FakeSong()
+
+
+fake_lyricsgenius.Genius = FakeGeniusClientShouldNotBeCalled
+_install_fake_module("lyricsgenius", fake_lyricsgenius)
+fake_syncedlyrics.search = lambda *a, **kw: (_ for _ in ()).throw(
+    AssertionError("syncedlyrics must not be queried when lyrics_url succeeds"))
+_install_fake_module("syncedlyrics", fake_syncedlyrics)
+
+result_short_circuit = lf.fetch_lyrics(
+    "Artist", "Title", genius_api_key="fake-key",
+    lyrics_url="https://example.com/trusted.txt")
+check("fetch_lyrics uses a working lyrics_url directly "
+      "(source 'lyrics_url (plain)')",
+      result_short_circuit is not None and
+      result_short_circuit["source"] == "lyrics_url (plain)")
+check("fetch_lyrics does NOT query genius search when lyrics_url already succeeded",
+      len(genius_search_calls) == 0)
+
+del sys.modules["requests"]
+del sys.modules["syncedlyrics"]
+del sys.modules["lyricsgenius"]
+
+# lyrics_url given but fails to fetch anything -> falls back to the normal
+# multi-source query instead of giving up entirely
+fake_requests3 = types.ModuleType("requests")
+fake_requests3.get = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("404"))
+_install_fake_module("requests", fake_requests3)
+
+fake_syncedlyrics.search = lambda query, plain_only=False, **kw: (
+    "[00:00.00]Fallback line\n" if not plain_only else None)
+_install_fake_module("syncedlyrics", fake_syncedlyrics)
+fake_lyricsgenius.Genius = FakeGeniusClientNoResult
+_install_fake_module("lyricsgenius", fake_lyricsgenius)
+
+result_fallback = lf.fetch_lyrics(
+    "Artist", "Title", genius_api_key="fake-key",
+    lyrics_url="https://example.com/broken.txt")
+check("fetch_lyrics falls back to the normal query-all when lyrics_url fails",
+      result_fallback is not None and
+      result_fallback["source"] == "syncedlyrics (synced)")
+
+del sys.modules["requests"]
+del sys.modules["syncedlyrics"]
+del sys.modules["lyricsgenius"]
+
+# --------------------------------------------------------------------------
 
 print()
 if failures:
