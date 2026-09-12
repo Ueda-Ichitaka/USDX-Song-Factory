@@ -535,6 +535,450 @@ check("report flags transcribed-only lyrics with a warning marker",
       "transcribed ⚠" in report_lyrics)
 
 # --------------------------------------------------------------------------
+# patch_tag(): rewrite/insert a "#TAG:value" line in a txt's raw content
+# --------------------------------------------------------------------------
+
+txt_with_video = "#TITLE:X\n#ARTIST:Y\n#VIDEO:old.webm\n#BPM:100\nF 0 1 60 Hi\n"
+patched = orch.patch_tag(txt_with_video, "VIDEO", "video.mp4")
+check("patch_tag replaces an existing tag value in place",
+      "#VIDEO:video.mp4" in patched and "old.webm" not in patched)
+check("patch_tag keeps the rest of the file untouched",
+      "#TITLE:X" in patched and "F 0 1 60 Hi" in patched)
+
+txt_without_video = "#TITLE:X\n#ARTIST:Y\n#BPM:100\nF 0 1 60 Hi\n"
+patched2 = orch.patch_tag(txt_without_video, "VIDEO", "video.mp4")
+check("patch_tag inserts a new tag right after the last '#...:' header line",
+      patched2.splitlines()[:4] ==
+      ["#TITLE:X", "#ARTIST:Y", "#BPM:100", "#VIDEO:video.mp4"])
+
+txt_no_tags = "F 0 1 60 Hi\n"
+patched3 = orch.patch_tag(txt_no_tags, "VIDEO", "video.mp4")
+check("patch_tag inserts at the very start when there are no '#' tags at all",
+      patched3.splitlines()[0] == "#VIDEO:video.mp4")
+
+# --------------------------------------------------------------------------
+# append_comment_tag(): unlike patch_tag(), MERGES into an existing
+# #COMMENT value instead of overwriting it (that value is often
+# legitimate uploader-supplied info, e.g. "Eurovision 2021")
+# --------------------------------------------------------------------------
+
+txt_with_comment = "#TITLE:X\n#COMMENT:Eurovision 2021\n#BPM:100\nF 0 1 60 Hi\n"
+merged = orch.append_comment_tag(txt_with_comment, "usdb comment GAP hints: 10820")
+check("append_comment_tag merges into an existing #COMMENT value rather "
+      "than overwriting it",
+      "#COMMENT:Eurovision 2021 | usdb comment GAP hints: 10820" in merged)
+check("append_comment_tag keeps the rest of the file untouched",
+      "#TITLE:X" in merged and "#BPM:100" in merged)
+
+txt_empty_comment = "#TITLE:X\n#COMMENT:\n#BPM:100\n"
+merged_empty = orch.append_comment_tag(txt_empty_comment, "usdb comment GAP hints: 10820")
+check("append_comment_tag doesn't leave a stray ' | ' when the existing "
+      "#COMMENT value is empty",
+      "#COMMENT:usdb comment GAP hints: 10820" in merged_empty)
+
+txt_no_comment = "#TITLE:X\n#BPM:100\nF 0 1 60 Hi\n"
+inserted = orch.append_comment_tag(txt_no_comment, "usdb comment GAP hints: 10820")
+check("append_comment_tag inserts a new #COMMENT tag when the txt has none",
+      inserted.splitlines()[:3] ==
+      ["#TITLE:X", "#BPM:100", "#COMMENT:usdb comment GAP hints: 10820"])
+
+# --------------------------------------------------------------------------
+# download_media(): shells out to yt-dlp, video vs audio format selection
+# --------------------------------------------------------------------------
+
+os.makedirs(orch.LOGS_DIR, exist_ok=True)
+
+dl_calls = []
+
+
+def fake_subprocess_run_dl(cmd, **kwargs):
+    dl_calls.append(cmd)
+    dest = cmd[cmd.index("-o") + 1]
+    with open(dest, "wb") as f:
+        f.write(b"fake media bytes")
+    return _FakeCompleted(0)
+
+
+orig_run_dl = orch.subprocess.run
+orch.subprocess.run = fake_subprocess_run_dl
+try:
+    dest_video = os.path.join(TMP_DATA, "video.mp4")
+    ok = orch.download_media("https://www.youtube.com/watch?v=x", dest_video,
+                             want_video=True,
+                             log_path=os.path.join(orch.LOGS_DIR, "dl.log"))
+    check("download_media returns True when the file was produced",
+          ok and os.path.isfile(dest_video))
+    check("download_media requests a combined mp4 for video",
+          "--merge-output-format" in dl_calls[-1] and
+          dl_calls[-1][dl_calls[-1].index("--merge-output-format") + 1] == "mp4")
+
+    dl_calls.clear()
+    dest_audio = os.path.join(TMP_DATA, "audio.mp3")
+    orch.download_media("https://www.youtube.com/watch?v=x", dest_audio,
+                        want_video=False,
+                        log_path=os.path.join(orch.LOGS_DIR, "dl2.log"))
+    check("download_media requests audio extraction for audio-only",
+          "-x" in dl_calls[-1] and "--audio-format" in dl_calls[-1])
+finally:
+    orch.subprocess.run = orig_run_dl
+
+orch.subprocess.run = lambda cmd, **kw: _FakeCompleted(1)
+try:
+    dest_fail = os.path.join(TMP_DATA, "should-not-exist.mp4")
+    check("download_media returns False on a non-zero exit code",
+          orch.download_media("https://x", dest_fail, want_video=True,
+                              log_path=os.path.join(orch.LOGS_DIR, "dl3.log")) is False)
+finally:
+    orch.subprocess.run = orig_run_dl
+
+orch.subprocess.run = lambda cmd, **kw: (_ for _ in ()).throw(RuntimeError("boom"))
+try:
+    check("download_media survives a subprocess exception",
+          orch.download_media("https://x", os.path.join(TMP_DATA, "y.mp4"),
+                              want_video=True,
+                              log_path=os.path.join(orch.LOGS_DIR, "dl4.log")) is False)
+finally:
+    orch.subprocess.run = orig_run_dl
+
+# --------------------------------------------------------------------------
+# get_usdb_session_and_catalog(): lazy login + catalog cache, sticky-fails
+# for the rest of the run rather than retrying every job
+# --------------------------------------------------------------------------
+
+orch.USDB_USERNAME = ""
+orch.USDB_PASSWORD = ""
+orch._usdb_session = None
+orch._usdb_catalog = None
+orch._usdb_unavailable = False
+check("get_usdb_session_and_catalog: disabled with no credentials",
+      orch.get_usdb_session_and_catalog() == (None, None))
+
+orch.USDB_USERNAME = "me"
+orch.USDB_PASSWORD = "secret"
+login_calls_g = []
+orch.usdb_lookup.login = lambda u, p: login_calls_g.append((u, p)) or "fake-session"
+orch.usdb_lookup.load_catalog = lambda session, path, **kw: [{"song_id": "1"}]
+session1, catalog1 = orch.get_usdb_session_and_catalog()
+check("get_usdb_session_and_catalog logs in + loads the catalog once",
+      session1 == "fake-session" and catalog1 == [{"song_id": "1"}] and
+      len(login_calls_g) == 1)
+
+session2, catalog2 = orch.get_usdb_session_and_catalog()
+check("get_usdb_session_and_catalog reuses the session/catalog on later calls",
+      session2 == "fake-session" and len(login_calls_g) == 1)
+
+orch.USDB_USERNAME = "me2"
+orch.USDB_PASSWORD = "bad"
+orch._usdb_session = None
+orch._usdb_catalog = None
+orch._usdb_unavailable = False
+orch.usdb_lookup.login = lambda u, p: None
+check("get_usdb_session_and_catalog returns (None, None) when login fails",
+      orch.get_usdb_session_and_catalog() == (None, None))
+check("get_usdb_session_and_catalog becomes sticky-unavailable after a failed login",
+      orch._usdb_unavailable is True)
+
+login_calls_g2 = []
+orch.usdb_lookup.login = lambda u, p: login_calls_g2.append(1) or "session"
+check("a sticky-unavailable state is not retried for later jobs in the same run",
+      orch.get_usdb_session_and_catalog() == (None, None) and login_calls_g2 == [])
+
+orch._usdb_session = None
+orch._usdb_catalog = None
+orch._usdb_unavailable = False
+
+# --------------------------------------------------------------------------
+# get_usdb_eu_session(): same lazy-login/sticky-fail shape as
+# get_usdb_session_and_catalog(), independent of it
+# --------------------------------------------------------------------------
+
+orch.USDB_EU_EMAIL = ""
+orch.USDB_EU_PASSWORD = ""
+orch._usdb_eu_session = None
+orch._usdb_eu_unavailable = False
+check("get_usdb_eu_session: disabled with no credentials",
+      orch.get_usdb_eu_session() is None)
+
+orch.USDB_EU_EMAIL = "me@example.com"
+orch.USDB_EU_PASSWORD = "secret"
+eu_login_calls = []
+orch.usdb_eu_lookup.login = lambda e, p: eu_login_calls.append((e, p)) or "eu-session"
+check("get_usdb_eu_session logs in and returns the session",
+      orch.get_usdb_eu_session() == "eu-session" and len(eu_login_calls) == 1)
+check("get_usdb_eu_session reuses the session on later calls",
+      orch.get_usdb_eu_session() == "eu-session" and len(eu_login_calls) == 1)
+
+orch._usdb_eu_session = None
+orch._usdb_eu_unavailable = False
+orch.usdb_eu_lookup.login = lambda e, p: None
+check("get_usdb_eu_session returns None when login fails",
+      orch.get_usdb_eu_session() is None)
+eu_login_calls2 = []
+orch.usdb_eu_lookup.login = lambda e, p: eu_login_calls2.append(1) or "eu-session"
+check("a failed usdb.eu login is sticky too (not retried this run)",
+      orch.get_usdb_eu_session() is None and eu_login_calls2 == [])
+
+orch._usdb_eu_session = None
+orch._usdb_eu_unavailable = False
+orch.USDB_EU_EMAIL = ""
+orch.USDB_EU_PASSWORD = ""
+
+# --------------------------------------------------------------------------
+# find_usdb_match(): animux.de first, usdb.eu as a second source; each
+# side is independently optional
+# --------------------------------------------------------------------------
+
+orch.USDB_USERNAME = ""
+orch.USDB_PASSWORD = ""
+orch._usdb_session = None
+orch._usdb_catalog = None
+orch._usdb_unavailable = False
+orch.USDB_EU_EMAIL = ""
+orch.USDB_EU_PASSWORD = ""
+orch._usdb_eu_session = None
+orch._usdb_eu_unavailable = False
+check("find_usdb_match returns None when neither source is configured",
+      orch.find_usdb_match("Some Band", "Some Song") is None)
+
+orch.USDB_USERNAME = "me"
+orch.USDB_PASSWORD = "secret"
+orch.usdb_lookup.login = lambda u, p: "session"
+orch.usdb_lookup.load_catalog = lambda session, path, **kw: [{"song_id": "1"}]
+orch.usdb_lookup.find_usdb_song = lambda session, catalog, band, title: {
+    "song_id": "111", "txt": "#TITLE:x\n", "details": None, "video_url": None}
+eu_calls_should_not_happen = []
+orch.usdb_eu_lookup.find_usdb_eu_song = lambda *a, **kw: (
+    eu_calls_should_not_happen.append(1))
+result_animux = orch.find_usdb_match("Some Band", "Some Song")
+check("find_usdb_match prefers an animux.de match and tags it 'animux'",
+      result_animux is not None and result_animux["site"] == "animux" and
+      result_animux["song_id"] == "111")
+check("find_usdb_match doesn't even try usdb.eu when animux.de already matched",
+      eu_calls_should_not_happen == [])
+
+orch._usdb_session = None
+orch._usdb_catalog = None
+orch._usdb_unavailable = False
+orch.usdb_lookup.find_usdb_song = lambda session, catalog, band, title: None
+orch.USDB_EU_EMAIL = "me@example.com"
+orch.USDB_EU_PASSWORD = "secret"
+orch.usdb_eu_lookup.login = lambda e, p: "eu-session"
+orch.usdb_eu_lookup.find_usdb_eu_song = lambda session, band, title: {
+    "song_id": "222", "txt": "#TITLE:y\n", "cover_bytes": b"jpeg-bytes"}
+result_eu = orch.find_usdb_match("Some Band", "Some Song")
+check("find_usdb_match falls back to usdb.eu when animux.de has no match, "
+      "tagging it 'eu'",
+      result_eu is not None and result_eu["site"] == "eu" and
+      result_eu["song_id"] == "222")
+check("find_usdb_match fills in video_url as None for a usdb.eu match "
+      "(comment-video scraping not implemented for that source yet), but "
+      "passes cover_bytes through unchanged (it comes from the download zip)",
+      result_eu["video_url"] is None and result_eu["cover_bytes"] == b"jpeg-bytes")
+
+orch._usdb_session = None
+orch._usdb_catalog = None
+orch._usdb_unavailable = False
+orch._usdb_eu_session = None
+orch._usdb_eu_unavailable = False
+orch.USDB_USERNAME = ""
+orch.USDB_PASSWORD = ""
+orch.USDB_EU_EMAIL = ""
+orch.USDB_EU_PASSWORD = ""
+
+# --------------------------------------------------------------------------
+# prepare_usdb_job(): best-effort - source a NEW job from an existing USDB
+# upload instead of full generation
+# --------------------------------------------------------------------------
+
+orch.USDB_USERNAME = "me"
+orch.USDB_PASSWORD = "secret"
+orch.usdb_lookup.login = lambda u, p: "session"
+orch.usdb_lookup.load_catalog = lambda session, path, **kw: [{"song_id": "1"}]
+
+job_usdb = {"id": "new|x", "band": "Lacrimosa", "title": "Lichtgestalt",
+           "url": "https://www.youtube.com/watch?v=fallback"}
+
+
+class FakeUsdbDetails:
+    cover_url = None
+
+
+def fake_find_usdb_song(session, catalog, band, title):
+    return {"song_id": "12345", "txt": "#TITLE:Lichtgestalt\n#BPM:100\n",
+            "details": FakeUsdbDetails(), "video_url": None}
+
+
+orch.usdb_lookup.find_usdb_song = fake_find_usdb_song
+
+dl_calls2 = []
+
+
+def fake_download_media(url, dest, want_video, log_path):
+    dl_calls2.append((url, dest, want_video))
+    with open(dest, "wb") as f:
+        f.write(b"fake")
+    return True
+
+
+orig_download_media = orch.download_media
+orch.download_media = fake_download_media
+try:
+    result = orch.prepare_usdb_job(job_usdb)
+    check("prepare_usdb_job returns a staging dir + a site-prefixed song_id "
+          "on success",
+          result is not None and result["song_id"] == "animux:12345" and
+          os.path.isdir(result["staging_dir"]))
+    check("prepare_usdb_job falls back to the job's own url when USDB has no video",
+          dl_calls2[0][0] == "https://www.youtube.com/watch?v=fallback")
+    with open(os.path.join(result["staging_dir"], "song.txt"), encoding="utf-8") as f:
+        written = f.read()
+    check("prepare_usdb_job writes a txt with a #VIDEO tag pointing at the download",
+          "#VIDEO:video.mp4" in written)
+finally:
+    orch.download_media = orig_download_media
+
+
+def fake_find_usdb_song_with_cover(session, catalog, band, title):
+    return {"song_id": "555", "txt": "#TITLE:Lichtgestalt\n#BPM:100\n",
+            "video_url": None, "cover_bytes": b"\xff\xd8fake-jpeg-bytes"}
+
+
+orch.usdb_lookup.find_usdb_song = fake_find_usdb_song_with_cover
+orch.download_media = fake_download_media
+try:
+    result_cover = orch.prepare_usdb_job(job_usdb)
+    check("prepare_usdb_job writes cover_bytes to cover.jpg in the staging dir",
+          result_cover is not None and
+          open(os.path.join(result_cover["staging_dir"], "cover.jpg"), "rb").read() ==
+          b"\xff\xd8fake-jpeg-bytes")
+    with open(os.path.join(result_cover["staging_dir"], "song.txt"), encoding="utf-8") as f:
+        written_cover = f.read()
+    check("prepare_usdb_job patches a #COVER tag pointing at the written cover",
+          "#COVER:cover.jpg" in written_cover)
+finally:
+    orch.download_media = orig_download_media
+    orch.usdb_lookup.find_usdb_song = fake_find_usdb_song
+
+
+def fake_find_usdb_song_with_details(session, catalog, band, title):
+    return {"song_id": "777", "txt": "#TITLE:Lichtgestalt\n#BPM:100\n",
+            "video_url": None, "details": "some-details-object"}
+
+
+orig_extract_gap_hints = orch.usdb_lookup.extract_gap_hints
+orch.usdb_lookup.find_usdb_song = fake_find_usdb_song_with_details
+orch.usdb_lookup.extract_gap_hints = lambda details: (
+    ["10820", "10650"] if details == "some-details-object" else [])
+orch.download_media = fake_download_media
+try:
+    result_hints = orch.prepare_usdb_job(job_usdb)
+    with open(os.path.join(result_hints["staging_dir"], "song.txt"), encoding="utf-8") as f:
+        written_hints = f.read()
+    check("prepare_usdb_job logs usdb comment GAP hints into a #COMMENT tag",
+          "#COMMENT:usdb comment GAP hints: 10820, 10650" in written_hints)
+finally:
+    orch.download_media = orig_download_media
+    orch.usdb_lookup.find_usdb_song = fake_find_usdb_song
+    orch.usdb_lookup.extract_gap_hints = orig_extract_gap_hints
+
+
+def fake_find_usdb_song_with_video(session, catalog, band, title):
+    return {"song_id": "999", "txt": "#TITLE:X\n#BPM:100\n",
+            "details": FakeUsdbDetails(),
+            "video_url": "https://www.youtube.com/watch?v=usdb-video"}
+
+
+orch.usdb_lookup.find_usdb_song = fake_find_usdb_song_with_video
+dl_calls2.clear()
+orch.download_media = fake_download_media
+try:
+    orch.prepare_usdb_job(job_usdb)
+    check("prepare_usdb_job prefers USDB's own linked video over the job's url "
+          "(\"only fill gaps\")",
+          dl_calls2[0][0] == "https://www.youtube.com/watch?v=usdb-video")
+finally:
+    orch.download_media = orig_download_media
+
+orch.usdb_lookup.find_usdb_song = lambda session, catalog, band, title: None
+check("prepare_usdb_job returns None when USDB has no confident match",
+      orch.prepare_usdb_job(job_usdb) is None)
+
+orch.USDB_USERNAME = ""
+orch.USDB_PASSWORD = ""
+orch._usdb_session = None
+orch._usdb_catalog = None
+orch._usdb_unavailable = False
+match_calls = []
+orch.usdb_lookup.find_usdb_song = lambda *a, **kw: match_calls.append(1)
+check("prepare_usdb_job returns None immediately when USDB isn't configured",
+      orch.prepare_usdb_job(job_usdb) is None and match_calls == [])
+
+orch.USDB_USERNAME = "me"
+orch.USDB_PASSWORD = "secret"
+orch._usdb_session = None
+orch._usdb_catalog = None
+orch._usdb_unavailable = False
+orch.usdb_lookup.login = lambda u, p: "session"
+orch.usdb_lookup.load_catalog = lambda session, path, **kw: [{"song_id": "1"}]
+orch.usdb_lookup.find_usdb_song = fake_find_usdb_song  # video_url None
+job_no_url = {"id": "new|y", "band": "Lacrimosa", "title": "Lichtgestalt", "url": "skip"}
+check("prepare_usdb_job returns None when there is no usable video source at all",
+      orch.prepare_usdb_job(job_no_url) is None)
+
+orch._usdb_session = None
+orch._usdb_catalog = None
+orch._usdb_unavailable = False
+orch.download_media = lambda *a, **kw: False
+try:
+    check("prepare_usdb_job returns None when the yt-dlp download fails",
+          orch.prepare_usdb_job(job_usdb) is None)
+finally:
+    orch.download_media = orig_download_media
+
+orch._usdb_session = None
+orch._usdb_catalog = None
+orch._usdb_unavailable = False
+
+# --------------------------------------------------------------------------
+# finalize_new_job_lyrics(): a usdb-sourced song keeps its (community-
+# verified) lyrics untouched instead of running the online-lyrics pass
+# --------------------------------------------------------------------------
+
+check("finalize_new_job_lyrics skips run_lyrics_step for a usdb-sourced song",
+      orch.finalize_new_job_lyrics({"id": "new|z"}, "/x/song.txt", "12345") ==
+      "usdb:12345")
+
+lyrics_step_calls = []
+orig_run_lyrics_step = orch.run_lyrics_step
+orch.run_lyrics_step = lambda job, path: lyrics_step_calls.append(1) or "transcribed"
+try:
+    result_norm = orch.finalize_new_job_lyrics({"id": "new|z"}, "/x/song.txt", None)
+    check("finalize_new_job_lyrics runs the normal online-lyrics pass for a "
+          "generated (non-usdb) song",
+          result_norm == "transcribed" and lyrics_step_calls == [1])
+finally:
+    orch.run_lyrics_step = orig_run_lyrics_step
+
+# --------------------------------------------------------------------------
+# JobRunner.command(): repair.py --mode gap on the usdb staging dir when a
+# usdb match was found, ultrasinger otherwise
+# --------------------------------------------------------------------------
+
+runner_usdb = orch.JobRunner({"id": "new|j", "kind": "new", "url": "https://x",
+                              "band": "B", "title": "T"})
+runner_usdb._usdb_match = {"staging_dir": "/data/work/j-usdb", "song_id": "1"}
+cmd_usdb = runner_usdb.command()
+check("JobRunner.command uses repair.py gap-mode when a usdb match was set",
+      "--mode" in cmd_usdb and
+      cmd_usdb[cmd_usdb.index("--mode") + 1] == "gap" and
+      "/data/work/j-usdb" in cmd_usdb)
+
+runner_gen = orch.JobRunner({"id": "new|j2", "kind": "new", "url": "https://x",
+                             "band": "B", "title": "T"})
+check("JobRunner.command falls back to ultrasinger when there's no usdb match",
+      "repair.py" not in " ".join(runner_gen.command()))
+
+# --------------------------------------------------------------------------
 
 print()
 if failures:

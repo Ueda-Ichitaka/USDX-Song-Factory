@@ -86,6 +86,7 @@ stack/
 ├── models/            # AI model cache (whisper, demucs, aligners)
 ├── work/              # repair working cache (safe to delete anytime)
 ├── cookies/           # optional cookies.txt for YouTube (see below)
+├── usdb_syncer/       # git submodule - see "USDB integration" below
 └── docker-compose.yml
 ```
 
@@ -282,6 +283,86 @@ whisper-transcribed lyrics - `output/report.md` marks these with ⚠ so you
 know which songs are more likely to have mis-heard words. Disable entirely
 with `LYRICS_ENABLED=0`.
 
+## USDB integration
+
+Before generating a new song from scratch, the stack first checks whether a
+matching upload already exists on USDB instead - there are actually **two**
+independent, unrelated UltraStar song databases, and both are checked:
+
+1. **[usdb.animux.de](https://usdb.animux.de/)** - the original, much larger
+   community database. Accessed via
+   [usdb_syncer](https://github.com/bohning/usdb_syncer) (git submodule at
+   `stack/usdb_syncer` - run `git submodule update --init --recursive` after
+   cloning, and again after pulling an update to it). Tried first.
+2. **[usdb.eu](https://usdb.eu/)** - a separate, newer database with its own
+   account system (not supported by usdb_syncer - a small standalone
+   scraper, `stack/orchestrator/usdb_eu_lookup.py`, talks to it directly).
+   Tried only when animux.de has no match for a song.
+
+A community-created, already-verified upload is almost always higher
+quality than a fresh whisper transcription, so it's preferred whenever a
+confident match exists on either site.
+
+**Setup:** each site needs its own free account:
+- animux.de: set `USDB_USERNAME`/`USDB_PASSWORD` in `.env` (copy from
+  `.env.example`).
+- usdb.eu: set `USDB_EU_EMAIL`/`USDB_EU_PASSWORD`.
+
+Either site can be configured independently - leave a site's credentials
+unset to skip just that source (with both unset, every new song is
+generated as before, exactly like today).
+
+**How it works**, per new song:
+
+1. Search animux.de's (locally cached, refreshed every
+   `USDB_CATALOG_TTL_HOURS` hours) catalog for an artist+title match; if
+   none, search usdb.eu directly (no local cache needed there - its search
+   is a live, no-login-required lookup). Either way, a match needs
+   `USDB_MIN_MATCH_SCORE` (default 0.90) similarity on *both* artist and
+   title to be accepted - a great title match with a wrong artist is still
+   the wrong song, so a weak match is never used, and the song just falls
+   back to normal generation.
+2. Download that song's notes (`.txt`), and cover art when the match came
+   from animux.de.
+3. Neither site hosts audio/video itself (copyright) - only notes/cover -
+   so it's always fetched separately via `yt-dlp`: an animux.de match's own
+   comment-linked YouTube video first (if the uploader included one and it
+   still resolves), the song's own `songs.csv` YouTube link otherwise (a
+   usdb.eu match always uses the songs.csv link, for now - see
+   `knowledge/06-IDEAS.md`).
+4. The matched upload's `#GAP` value was tuned for a *different* upload's
+   audio (maybe a different rip/trim of the same source), so it's
+   re-detected against whatever we actually downloaded - reusing
+   `repair.py`'s existing `gap` mode (see "Repairing existing songs"
+   above), which only touches `#GAP` and leaves the community-verified
+   lyrics/note timing untouched. This also means a usdb-sourced song
+   **skips** the online-lyrics step above (see "Lyrics sources") - the
+   matched site's own text is already trusted. For an animux.de match,
+   any `#GAP` corrections mentioned in the upload's comments are logged
+   (informational only, into the txt's `#COMMENT` tag) - they never
+   influence the actual re-detection above, which is always trusted over
+   a number someone typed in a comment.
+5. `output/report.md`'s Lyrics column shows `usdb:animux:<song id>` or
+   `usdb:eu:<song id>` for songs sourced this way, so you can tell them
+   apart from generated (`transcribed`/`online:<source>`) ones, and from
+   each other, at a glance.
+
+Any failure along this path (no confident match on either site, no usable
+video source, download failure, a site unreachable) is silent and
+non-fatal - the song just falls back to full UltraSinger generation,
+exactly as if neither site were configured at all. The two sites are also
+independent of each other: a misconfigured/unreachable account for one
+never blocks the other.
+
+For animux.de, only usdb_syncer's plain scraping module is reused (login,
+search, song details/notes) - not its own downloader, which needs a full
+desktop GUI event loop and isn't meant to be driven headlessly. usdb.eu has
+no Python client at all, so `usdb_eu_lookup.py` talks to its (undocumented)
+JSON search/login/download endpoints directly - reverse-engineered from
+the site's own JavaScript and confirmed against the live site end-to-end
+(downloading real songs' notes and cover art). See both modules' header
+comments and `knowledge/02-DESIGN.md` for the full reasoning.
+
 ## Romanized lyrics
 
 Whatever script whisper transcribed - Cyrillic (Russian/Ukrainian), Korean
@@ -475,6 +556,10 @@ Set in `docker-compose.yml` (or an `.env` file next to it):
 | `ROMANIZE` | `1` | set to `0` to disable automatic lyrics romanization |
 | `LYRICS_ENABLED` | `1` | set to `0` to disable the online-lyrics-for-new-songs step |
 | `GENIUS_API_KEY` | - | enables the Genius lyrics source (see "Lyrics sources" above); unset = skipped |
+| `USDB_USERNAME` / `USDB_PASSWORD` | - | enables the usdb.animux.de source (see "USDB integration" above); either unset = skipped |
+| `USDB_MIN_MATCH_SCORE` | `0.90` | minimum artist+title similarity (0-1) to accept a USDB match (either site) |
+| `USDB_CATALOG_TTL_HOURS` | `24` | how long the local animux.de catalog cache is reused before refreshing |
+| `USDB_EU_EMAIL` / `USDB_EU_PASSWORD` | - | enables the usdb.eu source (see "USDB integration" above); either unset = skipped |
 | `ENDCARD_MIN_GAP_S` | `8.0` | silence gap (s) before a trailing blurb is considered a video end-card; `<=0` disables the filter |
 | `ENDCARD_MAX_DUR_S` | `20.0` | a trailing blurb longer than this is kept (treated as real lyrics, not an end-card) |
 

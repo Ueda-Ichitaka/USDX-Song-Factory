@@ -18,6 +18,9 @@ ones, and it works through the whole batch unattended.
 
 - **Bulk-creates new songs** from a CSV/text list of song names, YouTube
   links, or local audio/video files.
+- **Checks USDB first** for an existing, community-verified upload before
+  generating a new song from scratch, via a
+  [usdb_syncer](https://github.com/bohning/usdb_syncer) submodule.
 - **Bulk-repairs existing songs** - fixes GAP/timing drift, or, in "lyrics"
   mode, replaces wrong lyrics entirely using a trusted lyrics file you
   supply.

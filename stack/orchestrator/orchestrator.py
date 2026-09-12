@@ -31,9 +31,15 @@ after a successful job (set ROMANIZE=0 to disable) - see romanize.py.
 Every new song also tries a real online lyrics lookup (syncedlyrics, then
 Genius if GENIUS_API_KEY is set) before trusting whisper's own
 transcription - see run_lyrics_step()/lyrics_fetch.py (set LYRICS_ENABLED=0
-to disable). A repair job whose input folder has a lyrics.txt runs in
-"lyrics" mode instead (see repair.py): force-aligns that trusted text,
-replacing the existing lyrics rather than just re-timing them.
+to disable). Before any of that, a new song first checks whether a
+matching upload already exists on USDB - usdb.animux.de (when
+USDB_USERNAME/USDB_PASSWORD are set), then usdb.eu (when USDB_EU_EMAIL/
+USDB_EU_PASSWORD are set) - and, if a confident match is found on either,
+reuses its notes/timing instead of generating from scratch - see
+prepare_usdb_job()/find_usdb_match()/usdb_lookup.py/usdb_eu_lookup.py.
+A repair job whose input folder has a lyrics.txt runs in "lyrics" mode
+instead (see repair.py): force-aligns that trusted text, replacing the
+existing lyrics rather than just re-timing them.
 
 While a run is active you can attach to the container
 (`docker compose attach ultrasinger`) and use these interactive commands:
@@ -57,6 +63,8 @@ import time
 from datetime import datetime
 
 import resource_profile
+import usdb_eu_lookup
+import usdb_lookup
 
 # --------------------------------------------------------------------------
 # configuration (env, with sensible defaults)
@@ -148,12 +156,36 @@ LYRICS_FETCH_PY = "/app/orchestrator/lyrics_fetch.py"
 LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "1") not in ("0", "false", "no")
 GENIUS_API_KEY = os.environ.get("GENIUS_API_KEY", "") or None
 
+# USDB (usdb.animux.de) requires a login for search/download - the whole
+# "prefer an existing upload" step (see prepare_usdb_job()) is a no-op
+# without both of these set. See usdb_lookup.py for the integration itself.
+USDB_USERNAME = os.environ.get("USDB_USERNAME", "")
+USDB_PASSWORD = os.environ.get("USDB_PASSWORD", "")
+USDB_CATALOG_CACHE = os.path.join(STATE_DIR, "usdb_catalog.json")
+
+# usdb.eu - a separate, newer UltraStar database (different site/account,
+# not covered by the usdb_syncer submodule) - see usdb_eu_lookup.py and
+# 02-DESIGN.md "usdb.eu integration". Independently optional; tried as a
+# second source when usdb.animux.de above has no match, see find_usdb_match().
+USDB_EU_EMAIL = os.environ.get("USDB_EU_EMAIL", "")
+USDB_EU_PASSWORD = os.environ.get("USDB_EU_PASSWORD", "")
+
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 
 PRINT_LOCK = threading.Lock()
 
 # module-level control so signal handlers can reach it
 CONTROL = None
+
+# lazy USDB session/catalog, shared across all jobs in this run - see
+# get_usdb_session_and_catalog(). Sticky: a failed login/catalog load
+# marks USDB unavailable for the rest of the run instead of retrying it
+# (and hammering usdb.animux.de) for every remaining job.
+_usdb_session = None
+_usdb_catalog = None
+_usdb_unavailable = False
+_usdb_eu_session = None
+_usdb_eu_unavailable = False
 
 
 class Control:
@@ -220,6 +252,71 @@ def fmt_duration(seconds) -> str:
 def slugify(text: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-").lower()
     return slug[:80] or "job"
+
+
+def get_usdb_session_and_catalog():
+    """Log in to USDB and load its song catalog, once per orchestrator
+    run (see prepare_usdb_job() for how a job uses this). Returns
+    (session, catalog) or (None, None) when USDB isn't configured or
+    login/catalog loading failed - callers must treat that as "skip USDB,
+    fall back to normal generation", never as an error."""
+    global _usdb_session, _usdb_catalog, _usdb_unavailable
+    if _usdb_unavailable or not (USDB_USERNAME and USDB_PASSWORD):
+        return None, None
+    if _usdb_session is None:
+        _usdb_session = usdb_lookup.login(USDB_USERNAME, USDB_PASSWORD)
+        if _usdb_session is None:
+            _usdb_unavailable = True
+            return None, None
+        _usdb_catalog = usdb_lookup.load_catalog(_usdb_session, USDB_CATALOG_CACHE)
+        if not _usdb_catalog:
+            _usdb_unavailable = True
+            return None, None
+    return _usdb_session, _usdb_catalog
+
+
+def get_usdb_eu_session():
+    """Log in to usdb.eu, once per orchestrator run - same sticky-fail
+    behavior as get_usdb_session_and_catalog(), independently of it (a
+    misconfigured/missing usdb.eu account never blocks the usdb.animux.de
+    source, or vice versa)."""
+    global _usdb_eu_session, _usdb_eu_unavailable
+    if _usdb_eu_unavailable or not (USDB_EU_EMAIL and USDB_EU_PASSWORD):
+        return None
+    if _usdb_eu_session is None:
+        _usdb_eu_session = usdb_eu_lookup.login(USDB_EU_EMAIL, USDB_EU_PASSWORD)
+        if _usdb_eu_session is None:
+            _usdb_eu_unavailable = True
+            return None
+    return _usdb_eu_session
+
+
+def find_usdb_match(band: str, title: str) -> dict:
+    """Try usdb.animux.de first (much larger, longer-established catalog
+    - see 02-DESIGN.md), then usdb.eu as a second source. Returns a
+    uniform {"song_id", "txt", "video_url", "cover_bytes", "site"} dict,
+    or None if neither source has (or could reach) a confident match.
+    Each source is independently optional - missing/failing credentials
+    for one never block the other."""
+    session, catalog = get_usdb_session_and_catalog()
+    if session is not None:
+        match = usdb_lookup.find_usdb_song(session, catalog, band, title)
+        if match is not None:
+            match["site"] = "animux"
+            return match
+
+    eu_session = get_usdb_eu_session()
+    if eu_session is not None:
+        match = usdb_eu_lookup.find_usdb_eu_song(eu_session, band, title)
+        if match is not None:
+            # usdb.eu comment-video-link scraping isn't implemented yet
+            # (see knowledge/06-IDEAS.md) - the job's own songs.csv url is
+            # always used for these matches. cover_bytes IS available
+            # (comes straight out of the download zip).
+            match["video_url"] = None
+            match["site"] = "eu"
+            return match
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -321,7 +418,9 @@ def parse_songs_file(path: str) -> list:
     optional CSV columns (default "") requested by the karaoke-dashboard
     project's CSV export - language pins whisper's language detection
     (see the Lichtgestalt mis-detection bug in 05-LESSONS.md);
-    musicbrainz_id/lyrics_url are parsed but not yet consumed downstream.
+    musicbrainz_id/lyrics_url feed MusicBrainz metadata lookup and the
+    trusted-lyrics-url fetch respectively (see ultrasinger_command() /
+    run_lyrics_step()).
     """
     entries = []
     if not path or not os.path.isfile(path):
@@ -713,6 +812,163 @@ def run_lyrics_step(job: dict, output_path: str) -> str:
     return f"online:{source}"
 
 
+def finalize_new_job_lyrics(job: dict, output_path: str, usdb_song_id: str = None) -> str:
+    """A usdb-sourced song already has trusted, community-verified lyrics
+    and note timing (prepare_usdb_job()'s repair.py "gap" pass only ever
+    touches #GAP) - running the online-lyrics search on it would throw
+    that away, so it is skipped entirely for those. A generated song
+    still gets the usual online-lyrics pass (run_lyrics_step)."""
+    if usdb_song_id:
+        return f"usdb:{usdb_song_id}"
+    return run_lyrics_step(job, output_path)
+
+
+TAG_LINE_RE = re.compile(r"^\s*#([A-Za-z0-9_]+):")
+
+
+def patch_tag(txt_content: str, tag: str, value: str) -> str:
+    """Rewrite (or insert) a single "#TAG:value" line in raw ultrastar txt
+    content. An existing tag's value is replaced in place; a missing one
+    is inserted right after the last existing "#TAG:" header line (or at
+    the very top if the txt has none), keeping every other line as-is."""
+    prefix = f"#{tag}:"
+    lines = txt_content.splitlines()
+    out_lines = []
+    replaced = False
+    last_tag_idx = -1
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            out_lines.append(prefix + value)
+            replaced = True
+            continue
+        out_lines.append(line)
+        if TAG_LINE_RE.match(line):
+            last_tag_idx = len(out_lines) - 1
+    if not replaced:
+        insert_at = last_tag_idx + 1 if last_tag_idx >= 0 else 0
+        out_lines.insert(insert_at, prefix + value)
+    return "\n".join(out_lines) + "\n"
+
+
+def append_comment_tag(txt_content: str, extra: str) -> str:
+    """Append `extra` to the txt's #COMMENT tag (the official UltraStar
+    "extended header" for arbitrary human-only text - implementations
+    must not assign it any meaning, so it's always safe to write to).
+    Unlike patch_tag(), this MERGES into an existing value rather than
+    overwriting it - a #COMMENT is often legitimate uploader-supplied
+    info (e.g. "Eurovision 2021") that must not be discarded."""
+    prefix = "#COMMENT:"
+    lines = txt_content.splitlines()
+    out_lines = []
+    appended = False
+    last_tag_idx = -1
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            existing = stripped[len(prefix):].strip()
+            merged = f"{existing} | {extra}" if existing else extra
+            out_lines.append(prefix + merged)
+            appended = True
+            continue
+        out_lines.append(line)
+        if TAG_LINE_RE.match(line):
+            last_tag_idx = len(out_lines) - 1
+    if not appended:
+        insert_at = last_tag_idx + 1 if last_tag_idx >= 0 else 0
+        out_lines.insert(insert_at, prefix + extra)
+    return "\n".join(out_lines) + "\n"
+
+
+def download_media(url: str, dest_path: str, want_video: bool, log_path: str) -> bool:
+    """Fetch `url` with yt-dlp straight to `dest_path`. Video: a combined
+    mp4 (bestvideo[ext=mp4]+bestaudio/best, merged to mp4) - the same
+    format UltraSinger's own downloader uses (src/modules/Audio/
+    youtube.py), so repair.py's locate_audio() can extract the audio
+    track from it exactly like it already does for any #VIDEO-only song.
+    Audio: yt-dlp's own best-audio extraction to mp3. Returns whether
+    dest_path exists afterwards - best-effort, never raises."""
+    if want_video:
+        cmd = ["yt-dlp", "-f", "bestvideo[ext=mp4]+bestaudio/best",
+               "--merge-output-format", "mp4", "-o", dest_path, url]
+    else:
+        cmd = ["yt-dlp", "-x", "--audio-format", "mp3", "-o", dest_path, url]
+    if os.path.isfile(COOKIES_FILE):
+        cmd += ["--cookiefile", COOKIES_FILE]
+    try:
+        with open(log_path, "wb") as logfile:
+            proc = subprocess.run(cmd, stdout=logfile, stderr=subprocess.STDOUT,
+                                  timeout=600)
+    except Exception as exc:  # noqa: BLE001
+        out(f"  !! yt-dlp failed: {exc}")
+        return False
+    return proc.returncode == 0 and os.path.isfile(dest_path)
+
+
+def prepare_usdb_job(job: dict) -> dict:
+    """Best-effort: try to source a NEW job from an existing USDB upload
+    (usdb.animux.de, then usdb.eu - see find_usdb_match()) instead of
+    full UltraSinger generation (see 02-DESIGN.md "USDB integration").
+    USDB itself never hosts audio/video (copyright) - only notes/cover -
+    so the matched song's media is always fetched via yt-dlp: the
+    source's own comment-linked video first ("only fill gaps") where that
+    is supported, falling back to the job's own songs.csv url otherwise.
+    Returns {"staging_dir", "song_id"} on success (the caller runs
+    repair.py --mode gap against staging_dir to re-detect #GAP for
+    whatever media actually got downloaded) or None to fall back to
+    normal generation - must never raise or fail the job."""
+    band = (job.get("band") or "").strip()
+    title = (job.get("title") or "").strip()
+    if not band or not title:
+        return None
+    match = find_usdb_match(band, title)
+    if match is None:
+        return None
+    match_label = f"{match['site']}#{match['song_id']}"
+
+    video_url = match["video_url"] or job.get("url")
+    if not video_url or not video_url.startswith("https://"):
+        out(f"  !! usdb match {match_label} has no usable video source "
+            "(no linked video, no youtube url in the song list either)")
+        return None
+
+    slug = slugify(job["id"])
+    staging_dir = os.path.join(WORK_DIR, slug + "-usdb")
+    if os.path.isdir(staging_dir):
+        shutil.rmtree(staging_dir)
+    os.makedirs(staging_dir, exist_ok=True)
+
+    video_path = os.path.join(staging_dir, "video.mp4")
+    log_path = os.path.join(LOGS_DIR, slug + "-usdb-ytdlp.log")
+    out(f"  .. found on USDB ({match_label}), downloading media via yt-dlp")
+    if not download_media(video_url, video_path, want_video=True, log_path=log_path):
+        out(f"  !! usdb: could not download media for {match_label}, "
+            "falling back to normal generation")
+        return None
+
+    txt_content = patch_tag(match["txt"], "VIDEO", "video.mp4")
+
+    gap_hints = usdb_lookup.extract_gap_hints(match.get("details"))
+    if gap_hints:
+        out(f"  .. usdb comments mention GAP hint(s): {', '.join(gap_hints)} "
+            "(logged only - our own re-detection below is authoritative)")
+        txt_content = append_comment_tag(
+            txt_content, f"usdb comment GAP hints: {', '.join(gap_hints)}")
+
+    cover_bytes = match.get("cover_bytes")
+    if cover_bytes:
+        with open(os.path.join(staging_dir, "cover.jpg"), "wb") as f:
+            f.write(cover_bytes)
+        txt_content = patch_tag(txt_content, "COVER", "cover.jpg")
+
+    with open(os.path.join(staging_dir, "song.txt"), "w", encoding="utf-8") as f:
+        f.write(txt_content)
+
+    out(f"  .. sourced from USDB {match_label} - re-detecting #GAP "
+        "against our own download")
+    return {"staging_dir": staging_dir, "song_id": f"{match['site']}:{match['song_id']}"}
+
+
 # --------------------------------------------------------------------------
 # job execution
 # --------------------------------------------------------------------------
@@ -832,9 +1088,26 @@ class JobRunner:
         self.control = control or Control()
         self.proc = None
         self.log_path = os.path.join(LOGS_DIR, slugify(job["id"]) + ".log")
+        # set by _try_usdb_source() - when a usdb match was found,
+        # command() runs repair.py's gap mode on its staging dir instead
+        # of a full ultrasinger generation
+        self._usdb_match = None
+
+    def _try_usdb_source(self):
+        if self.job["kind"] != "new":
+            return
+        try:
+            self._usdb_match = prepare_usdb_job(self.job)
+        except Exception as exc:  # noqa: BLE001
+            out(f"  !! usdb lookup failed unexpectedly: {exc} "
+                "(falling back to normal generation)")
+            self._usdb_match = None
 
     def command(self) -> list:
         if self.job["kind"] == "new":
+            if self._usdb_match:
+                return repair_command(
+                    self._usdb_match["staging_dir"], mode="gap", out_dir=NEW_SONGS_DIR)
             return ultrasinger_command(
                 self.job["url"], self.job.get("band"), self.job.get("title"),
                 self.job.get("language"), self.job.get("musicbrainz_id"))
@@ -852,20 +1125,24 @@ class JobRunner:
 
     def run(self) -> dict:
         """Returns {"status", "error", "output_path", "duration_s",
-        "quarantined_output", "repair_mode_result", "lyrics_source_result"}."""
+        "quarantined_output", "repair_mode_result", "lyrics_source_result",
+        "usdb_song_id"}."""
         os.makedirs(LOGS_DIR, exist_ok=True)
         os.makedirs(WORK_DIR, exist_ok=True)
         os.makedirs(NEW_SONGS_DIR, exist_ok=True)
         os.makedirs(REPAIRED_DIR, exist_ok=True)
 
-        if self.job["kind"] == "new" and not self.job["url"].startswith("https://"):
+        self._try_usdb_source()
+
+        if (self.job["kind"] == "new" and not self._usdb_match
+                and not self.job["url"].startswith("https://")):
             resolved = resolve_song_input(self.job["url"])
             if not os.path.isfile(resolved):
                 return {"status": "failed",
                         "error": f"local input file not found: {resolved}",
                         "output_path": None, "duration_s": 0.0,
                         "quarantined_output": None, "repair_mode_result": None,
-                        "lyrics_source_result": None}
+                        "lyrics_source_result": None, "usdb_song_id": None}
 
         out_dir = NEW_SONGS_DIR if self.job["kind"] == "new" else REPAIRED_DIR
         before_names = set(os.listdir(out_dir)) if os.path.isdir(out_dir) else set()
@@ -893,7 +1170,7 @@ class JobRunner:
                 return {"status": "failed", "error": f"spawn error: {exc}",
                         "output_path": None, "duration_s": 0.0,
                         "quarantined_output": None, "repair_mode_result": None,
-                        "lyrics_source_result": None}
+                        "lyrics_source_result": None, "usdb_song_id": None}
 
             reader = threading.Thread(
                 target=self._stream, args=(self.proc.stdout, logfile), daemon=True)
@@ -969,7 +1246,8 @@ class JobRunner:
                 "output_path": output_path, "duration_s": duration,
                 "quarantined_output": quarantined_output,
                 "repair_mode_result": repair_mode_result,
-                "lyrics_source_result": lyrics_source_result}
+                "lyrics_source_result": lyrics_source_result,
+                "usdb_song_id": self._usdb_match["song_id"] if self._usdb_match else None}
 
     def _terminate(self, reason):
         if self.proc and self.proc.poll() is None:
@@ -1086,8 +1364,10 @@ def cmd_run(state, only=None, control=None):
             if job["kind"] == "new":
                 # replace whisper's own (possibly mis-heard) lyrics with a
                 # trusted online source when one can be found, BEFORE
-                # romanization runs on whatever text ends up final
-                job["lyrics_source"] = run_lyrics_step(job, result["output_path"])
+                # romanization runs on whatever text ends up final - a
+                # usdb-sourced song skips this (see finalize_new_job_lyrics)
+                job["lyrics_source"] = finalize_new_job_lyrics(
+                    job, result["output_path"], result.get("usdb_song_id"))
                 state.save()
             run_romanize_step(job, result["output_path"])
 

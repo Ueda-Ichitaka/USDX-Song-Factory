@@ -42,19 +42,32 @@ RUN mkdir -p src \
     && uv pip install --system --no-cache -e .
 
 # Orchestrator-only dependencies (stack/orchestrator/romanize.py,
-# lyrics_fetch.py) - kept out of pyproject.toml so native/non-docker
-# UltraSinger installs stay lean.
+# lyrics_fetch.py, usdb_lookup.py) - kept out of pyproject.toml so native/
+# non-docker UltraSinger installs stay lean.
 # cyrtranslit: Cyrillic (Russian/Ukrainian) -> Latin
 # pykakasi: Japanese (kana/kanji) -> romaji
 # korean-romanizer: Hangul -> Revised Romanization of Korean
 # syncedlyrics: free, no-key lyrics lookup (LRCLIB/NetEase/Musixmatch/...)
 # lyricsgenius: Genius.com lyrics lookup (needs GENIUS_API_KEY, optional)
+# everything else on this line: the import-time dependency closure of the
+# usdb_syncer submodule's usdb_scraper.py (usdb_lookup.py imports only
+# that plain-requests scraping module, never its Qt DownloadManager - see
+# usdb_lookup.py's docstring - but usdb_syncer's own package __init__
+# still eagerly imports its sibling modules, e.g. settings.py needs
+# PySide6.QtCore.QSettings even though we never open a window). Pinned to
+# no particular version - matched empirically against the submodule's
+# current pyproject.toml, see knowledge/02-DESIGN.md "USDB integration".
 RUN uv pip install --system --no-cache \
-        cyrtranslit pykakasi korean-romanizer syncedlyrics lyricsgenius
+        cyrtranslit pykakasi korean-romanizer syncedlyrics lyricsgenius \
+        lxml send2trash packaging diff-match-patch fake-useragent mutagen \
+        numpy pillow qrcode reportlab PySide6-Essentials keyring \
+        platformdirs unidecode more-itertools filetype
 
 # Application sources
 COPY . /app/UltraSinger
 COPY stack/orchestrator /app/orchestrator
+COPY stack/usdb_syncer/src /app/usdb_syncer/src
+ENV USDB_SYNCER_SRC=/app/usdb_syncer/src
 
 # Model- and tool-caches live on the mounted volume /data/models so that
 # downloaded models (whisper, demucs, wav2vec2 aligners, ...) survive

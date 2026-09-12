@@ -1,0 +1,3 @@
+[submodule "stack/usdb_syncer"]
+	path = stack/usdb_syncer
+	url = https://github.com/bohning/usdb_syncer.git

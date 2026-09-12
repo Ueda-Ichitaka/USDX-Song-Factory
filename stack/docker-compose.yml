@@ -25,6 +25,17 @@ x-common-env: &common-env
   ROMANIZE: ${ROMANIZE:-1}
   LYRICS_ENABLED: ${LYRICS_ENABLED:-1}
   GENIUS_API_KEY: ${GENIUS_API_KEY:-}
+  # USDB (usdb.animux.de) account - when both are set, a new song first
+  # checks for an existing matching upload there before generating from
+  # scratch. See stack/README.md "USDB integration".
+  USDB_USERNAME: ${USDB_USERNAME:-}
+  USDB_PASSWORD: ${USDB_PASSWORD:-}
+  USDB_MIN_MATCH_SCORE: ${USDB_MIN_MATCH_SCORE:-}
+  USDB_CATALOG_TTL_HOURS: ${USDB_CATALOG_TTL_HOURS:-}
+  # usdb.eu - a separate, newer USDB site (different account) tried as a
+  # second source when usdb.animux.de above has no match.
+  USDB_EU_EMAIL: ${USDB_EU_EMAIL:-}
+  USDB_EU_PASSWORD: ${USDB_EU_PASSWORD:-}
   ULTRASINGER_ARGS: ${ULTRASINGER_ARGS:-}
   MAX_ATTEMPTS: ${MAX_ATTEMPTS:-3}
   JOB_TIMEOUT_MIN: ${JOB_TIMEOUT_MIN:-90}
