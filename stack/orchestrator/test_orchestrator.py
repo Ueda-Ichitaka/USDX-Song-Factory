@@ -287,6 +287,74 @@ check("a repeat quarantine of the same name gets a (1) suffix, not overwritten",
       moved2[0][1] == os.path.join(orch.FAILED_DIR, "new", "Partial Song (1)"))
 
 # --------------------------------------------------------------------------
+# count_usdb_sourced(): how many completed new songs came from USDB
+# --------------------------------------------------------------------------
+
+usdb_count_jobs = [
+    {"kind": "new", "status": "done", "lyrics_source": "usdb:animux:123"},
+    {"kind": "new", "status": "done", "lyrics_source": "usdb:eu:456"},
+    {"kind": "new", "status": "done", "lyrics_source": "transcribed"},
+    {"kind": "new", "status": "done", "lyrics_source": "online:genius"},
+    {"kind": "new", "status": "failed", "lyrics_source": None},
+    {"kind": "repair", "status": "done", "lyrics_source": "usdb:animux:999"},
+]
+check("count_usdb_sourced counts only done NEW jobs sourced from either "
+      "USDB site",
+      orch.count_usdb_sourced(usdb_count_jobs) == 2)
+check("count_usdb_sourced returns 0 for an empty job list",
+      orch.count_usdb_sourced([]) == 0)
+
+# --------------------------------------------------------------------------
+# render_progress(): the live status dashboard (docker compose exec ...
+# progress -w) - counts, current job, device, resource usage
+# --------------------------------------------------------------------------
+
+fake_progress_state = {"jobs": {
+    "new|1": {"kind": "new", "status": "done", "label": "Band A - Song A",
+             "duration_s": 60, "lyrics_source": "usdb:animux:111",
+             "started_at": "2026-01-01T10:00:00+00:00",
+             "finished_at": "2026-01-01T10:01:00+00:00"},
+    "new|2": {"kind": "new", "status": "pending", "label": "Band B - Song B"},
+    "new|3": {"kind": "new", "status": "running", "label": "Band C - Song C",
+             "started_at": "2026-01-01T10:05:00+00:00", "attempts": 1},
+    "repair|1": {"kind": "repair", "status": "done", "label": "Song D",
+                "duration_s": 30},
+    "repair|2": {"kind": "repair", "status": "pending", "label": "Song E"},
+}}
+
+progress_text = orch.render_progress(
+    fake_progress_state, cpu_percent=42.0,
+    ram_usage={"used_gb": 5.2, "total_gb": 30.9, "percent": 16.8},
+    gpu_usage={"used_gb": 4.7, "total_gb": 15.9, "percent": 29.6},
+    device="cuda")
+check("render_progress still shows NEW SONGS / REPAIRS counts",
+      "NEW SONGS" in progress_text and "REPAIRS" in progress_text)
+check("render_progress shows the currently running job",
+      "Band C - Song C" in progress_text)
+check("render_progress shows how many new songs were pulled from USDB",
+      "Pulled from USDB: 1" in progress_text)
+check("render_progress shows the device (cpu/cuda)",
+      "cuda" in progress_text.lower())
+check("render_progress shows CPU/RAM/GPU usage when given",
+      "42" in progress_text and "5.2" in progress_text and
+      "30.9" in progress_text and "4.7" in progress_text and "15.9" in progress_text)
+
+progress_text_cpu = orch.render_progress(
+    fake_progress_state, cpu_percent=10.0,
+    ram_usage={"used_gb": 2.0, "total_gb": 8.0, "percent": 25.0},
+    gpu_usage=None, device="cpu")
+check("render_progress shows 'cpu' as the device and omits GPU stats when "
+      "there is none",
+      "cpu" in progress_text_cpu.lower() and "VRAM" not in progress_text_cpu)
+
+progress_text_no_resources = orch.render_progress(
+    fake_progress_state, cpu_percent=None, ram_usage=None, gpu_usage=None,
+    device="cpu")
+check("render_progress doesn't crash and just omits the resource line when "
+      "readings are unavailable",
+      "NEW SONGS" in progress_text_no_resources)
+
+# --------------------------------------------------------------------------
 # render_report(): the tabular finishing report (new / repaired / failed)
 # --------------------------------------------------------------------------
 

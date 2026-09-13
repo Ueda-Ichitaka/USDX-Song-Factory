@@ -467,7 +467,11 @@ Detach with `Ctrl-P Ctrl-Q` (do **not** use Ctrl-C, that stops the container).
 
 ### Progress UI
 
-`progress` (or `progress -w` for a live view) renders:
+`progress -w` gives a self-updating table (clears and redraws every 10s,
+same idea as `pacman -Syu`/`flatpak update`'s live progress) - run it in a
+second terminal/tab while `docker compose up` itself keeps streaming each
+job's verbose output in the first one. Plain `progress` (no `-w`) prints
+it once and exits.
 
 ```
 ==========================================================================
@@ -475,6 +479,8 @@ Detach with `Ctrl-P Ctrl-Q` (do **not** use Ctrl-C, that stops the container).
 ==========================================================================
   NEW SONGS:  12 done |  1 failed |  1 running |  47 pending | 2 skipped  (62 total)
   REPAIRS  :   5 done |  0 failed |  0 running | 14 pending   (19 total)
+  Pulled from USDB: 4
+  Device: GPU (cuda/ROCm)   CPU ~34% | RAM 12.1/30.9 GB (39%) | GPU VRAM 6.2/15.9 GB (39%)
   Elapsed 2h18m | avg 9m41s/song | ETA ~9h
   Current: ASP - Duett (Minnelied der Incubi) - running for 3m (attempt 1)
 --------------------------------------------------------------------------
@@ -482,6 +488,19 @@ Detach with `Ctrl-P Ctrl-Q` (do **not** use Ctrl-C, that stops the container).
    - Xandria - Nightfall  [new]  exit code 1
 ==========================================================================
 ```
+
+- **Pulled from USDB** - how many of the *already-finished* new songs so
+  far were sourced from an existing USDB upload (animux.de or usdb.eu -
+  see "USDB integration" above) instead of generated from scratch. This
+  is a tally of what already happened, not a prediction of how many of
+  the still-pending songs will be - that would need an expensive,
+  rate-limited search per pending song against usdb.eu.
+- **Device / CPU / RAM / GPU VRAM** - live resource usage, read directly
+  from `/proc` and (for the ROCm service) the GPU driver's own sysfs
+  files - no extra tooling (`rocm-smi`, `nvidia-smi`, `psutil`) needed.
+  CPU% is the 1-minute load average normalized by core count (the same
+  number `uptime`/`top` show), not a precise instantaneous reading. The
+  GPU row is omitted entirely on the CPU service (`DEVICE=cpu`).
 
 ## Resource budget & model auto-selection
 

@@ -62,6 +62,7 @@ import threading
 import time
 from datetime import datetime
 
+import resource_monitor
 import resource_profile
 import usdb_eu_lookup
 import usdb_lookup
@@ -570,7 +571,32 @@ def count_statuses(jobs, kind):
     }
 
 
-def render_progress(state_data) -> str:
+def count_usdb_sourced(jobs) -> int:
+    """How many completed "new" jobs were sourced from USDB (animux.de or
+    usdb.eu) rather than generated - see finalize_new_job_lyrics()'s
+    "usdb:<site>:<id>" lyrics_source convention. Report-only: this counts
+    what already happened, never a prediction of what's still pending -
+    predicting it upfront would need an expensive, rate-limited usdb.eu
+    search per pending song (see 02-DESIGN.md "USDB integration")."""
+    return sum(1 for j in jobs if j["kind"] == "new" and j["status"] == "done"
+              and (j.get("lyrics_source") or "").startswith("usdb:"))
+
+
+def render_progress(state_data, cpu_percent=None, ram_usage=None,
+                    gpu_usage=None, device=None) -> str:
+    """The live status dashboard (docker compose exec ... progress [-w]).
+    cpu_percent/ram_usage/gpu_usage/device default to live readings
+    (resource_monitor.py / the DEVICE env var) - tests pass explicit
+    values instead for determinism."""
+    if cpu_percent is None:
+        cpu_percent = resource_monitor.read_cpu_percent()
+    if ram_usage is None:
+        ram_usage = resource_monitor.read_ram_usage()
+    if device is None:
+        device = DEVICE
+    if gpu_usage is None and device != "cpu":
+        gpu_usage = resource_monitor.read_gpu_usage()
+
     jobs = list(state_data["jobs"].values())
     new = count_statuses(jobs, "new")
     rep = count_statuses(jobs, "repair")
@@ -603,6 +629,22 @@ def render_progress(state_data) -> str:
 
     lines.append(row("NEW SONGS", new))
     lines.append(row("REPAIRS", rep))
+    lines.append(f"  Pulled from USDB: {count_usdb_sourced(jobs)}")
+
+    device_label = {"cpu": "CPU", "cuda": "GPU (cuda/ROCm)"}.get(device, device)
+    resource_bits = []
+    if cpu_percent is not None:
+        resource_bits.append(f"CPU ~{cpu_percent:.0f}%")
+    if ram_usage is not None:
+        resource_bits.append(
+            f"RAM {ram_usage['used_gb']:.1f}/{ram_usage['total_gb']:.1f} GB "
+            f"({ram_usage['percent']:.0f}%)")
+    if gpu_usage is not None:
+        resource_bits.append(
+            f"GPU VRAM {gpu_usage['used_gb']:.1f}/{gpu_usage['total_gb']:.1f} GB "
+            f"({gpu_usage['percent']:.0f}%)")
+    lines.append(f"  Device: {device_label}" + (
+        "   " + " | ".join(resource_bits) if resource_bits else ""))
 
     if elapsed is not None:
         n_done = len(done_jobs)

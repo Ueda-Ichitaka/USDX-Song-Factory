@@ -31,14 +31,40 @@ ones, and it works through the whole batch unattended.
   the full feature list.
 - Runs on CPU everywhere, with an optional AMD GPU (ROCm) build.
 
-## Quick start
+## Usage
 
-```bash
-cd stack
-docker compose up
-```
+**1. Add songs.** Edit `stack/input/songs.csv` (new songs: `band,title,url`
+per line, `url` a YouTube link or a local file), or drop a broken song's
+folder into `stack/input/` to have it repaired.
 
-Full setup, configuration, and usage docs: **[stack/README.md](stack/README.md)**.
+**2. Run it.**
+
+| Hardware | Command |
+|----------|---------|
+| CPU (default, works everywhere) | `cd stack && docker compose up` |
+| AMD GPU (ROCm) | `cd stack && docker compose --profile rocm up -d ultrasinger-rocm` |
+
+Whisper (transcription) always runs on CPU either way - the GPU only
+speeds up vocal separation. Pick GPU if you have a supported AMD card,
+CPU otherwise.
+
+**3. Check on it**, while it runs:
+
+| Command | Shows |
+|---------|-------|
+| `docker compose logs -f` | full verbose output of the song currently being worked on |
+| `docker compose exec ultrasinger progress -w` | a self-updating status table - counts, current song, CPU/RAM/GPU usage (like `pacman -Syu`); `progress` (no `-w`) prints it once |
+| `docker compose attach ultrasinger` | an interactive session: `s`=status, `skip`=abort current song, `stop`=finish current then exit, `h`=help |
+
+(For the ROCm service, add `--profile rocm` and use `ultrasinger-rocm`
+in place of `ultrasinger` in the commands above.)
+
+**4. Get your songs.** Finished songs land in `stack/output/new/` and
+`stack/output/repaired/`; anything that failed is quarantined under
+`stack/output/failed/`; `stack/output/report.md` summarizes the whole run.
+
+Full setup, configuration (USDB/Genius accounts, resource tuning, etc.),
+and every detail above: **[stack/README.md](stack/README.md)**.
 
 ## The underlying UltraSinger tool
 
