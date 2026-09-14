@@ -242,7 +242,7 @@ class TestLookupMusicbrainzById(unittest.TestCase):
             'images': [{'front': True, 'image': 'https://example.com/image.jpg'}]
         }
 
-        info = lookup_musicbrainz_by_id('fake-recording-mbid')
+        info = lookup_musicbrainz_by_id('11111111-1111-1111-1111-111111111111')
 
         self.assertEqual(info.title, "That's Rocking!")
         self.assertEqual(info.artist, 'UltraSinger')
@@ -272,7 +272,7 @@ class TestLookupMusicbrainzById(unittest.TestCase):
             'images': [{'front': True, 'image': 'https://example.com/release.jpg'}]
         }
 
-        info = lookup_musicbrainz_by_id('fake-release-mbid')
+        info = lookup_musicbrainz_by_id('22222222-2222-2222-2222-222222222222')
 
         self.assertEqual(info.title, 'A Release Title')
         self.assertEqual(info.artist, 'UltraSinger')
@@ -294,6 +294,41 @@ class TestLookupMusicbrainzById(unittest.TestCase):
         self.assertIsNone(lookup_musicbrainz_by_id(''))
         self.assertIsNone(lookup_musicbrainz_by_id(None))
 
+    @patch('musicbrainzngs.get_release_by_id')
+    @patch('musicbrainzngs.get_recording_by_id')
+    def test_malformed_id_returns_none_without_any_network_call(
+            self, mock_get_recording_by_id, mock_get_release_by_id):
+        """A malformed musicbrainz_id (e.g. a csv value with missing/extra
+        characters, stray whitespace, or a typo) must never even reach the
+        network. Live-verified 2026-09-14: musicbrainzngs' retry logic
+        (_safe_read, max_retries=8, escalating backoff) treats a
+        connection-level hiccup - which certain malformed IDs (notably
+        ones containing a raw space) can trigger by breaking URL
+        construction - as transient and RETRIES for ~1-2 minutes before
+        giving up, rather than failing fast like a clean 400 response
+        does. A csv-supplied ID is unverified user input; validating its
+        shape locally (a proper UUID) avoids that whole class of
+        multi-minute hang, not just exceptions."""
+        for bad_id in (
+                "not-a-valid-mbid",
+                "1601687d-835f-4f06-832e-cb4c2c45cdb",  # one char short
+                "with a space-835f-4f06-832e-cb4c2c45cdb2",
+                "   ",
+                "abc/def",
+        ):
+            with self.subTest(bad_id=bad_id):
+                self.assertIsNone(lookup_musicbrainz_by_id(bad_id))
+        mock_get_recording_by_id.assert_not_called()
+        mock_get_release_by_id.assert_not_called()
+
+    @patch('musicbrainzngs.get_recording_by_id')
+    def test_valid_uuid_shaped_id_still_reaches_the_network(
+            self, mock_get_recording_by_id):
+        """The validation must not reject real, well-formed MBIDs."""
+        mock_get_recording_by_id.side_effect = musicbrainzngs.ResponseError()
+        lookup_musicbrainz_by_id('1601687d-835f-4f06-832e-cb4c2c45cdb2')
+        mock_get_recording_by_id.assert_called_once()
+
 
 class TestGetSongInfo(unittest.TestCase):
     """get_song_info(): the single entry point callers (UltraSinger.py,
@@ -311,7 +346,7 @@ class TestGetSongInfo(unittest.TestCase):
             'recording': {'title': 'ID Title', 'artist-credit-phrase': 'ID Artist'}
         }
 
-        info = get_song_info('Some Title', 'Some Artist', 'fake-mbid')
+        info = get_song_info('Some Title', 'Some Artist', '33333333-3333-3333-3333-333333333333')
 
         self.assertEqual(info.title, 'ID Title')
         self.assertEqual(info.artist, 'ID Artist')

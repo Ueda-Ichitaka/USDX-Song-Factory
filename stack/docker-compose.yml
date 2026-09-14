@@ -7,8 +7,9 @@
 name: ultrastar-stack
 
 x-common-env: &common-env
-  SONGS_FILE: /data/input/songs.csv
+  SONGS_FILE: /data/input/song-requests.csv
   INPUT_DIR: /data/input
+  BROKEN_CSV: /data/input/broken.csv
   OUTPUT_DIR: /data/output
   NEW_SONGS_DIR: /data/output/new
   REPAIRED_DIR: /data/output/repaired
@@ -32,6 +33,9 @@ x-common-env: &common-env
   USDB_PASSWORD: ${USDB_PASSWORD:-}
   USDB_MIN_MATCH_SCORE: ${USDB_MIN_MATCH_SCORE:-}
   USDB_CATALOG_TTL_HOURS: ${USDB_CATALOG_TTL_HOURS:-}
+  # minimum #ARTIST/#TITLE-vs-broken.csv-row match score for a repair job -
+  # see stack/README.md "Repairing songs with broken.csv".
+  BROKEN_MATCH_MIN_SCORE: ${BROKEN_MATCH_MIN_SCORE:-}
   # usdb.eu - a separate, newer USDB site (different account) tried as a
   # second source when usdb.animux.de above has no match.
   USDB_EU_EMAIL: ${USDB_EU_EMAIL:-}

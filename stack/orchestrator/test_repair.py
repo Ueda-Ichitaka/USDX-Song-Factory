@@ -176,6 +176,65 @@ finally:
     _sp.run = _orig_run
 
 # --------------------------------------------------------------------------
+# locate_audio(): extracting audio from a #VIDEO-only song whose audio
+# track is Opus (yt-dlp's bestaudio for many YouTube videos, remuxed as-is
+# into an mp4 container by --merge-output-format mp4 - a real, valid,
+# playable file, ffprobe-confirmed) used to fail outright: the old code
+# always stream-copied (acodec="copy") into a ".m4a" file for any ".mp4"
+# source, but the MP4/M4A muxer does not support Opus without transcoding
+# ("Could not find tag for codec opus in stream #0, codec not currently
+# supported in container"). Found live 2026-09-14 testing real
+# song-requests.csv rows (USDB-sourced videos): "Cypecore - Identity" and
+# "Dropkick Murphys - Rose Tattoo" both failed this way.
+# --------------------------------------------------------------------------
+
+import subprocess as _subprocess_real  # noqa: E402
+
+_opus_video_dir = tempfile.mkdtemp(prefix="opus-video-song-")
+_opus_video_path = os.path.join(_opus_video_dir, "video.mp4")
+_ffmpeg_build = _subprocess_real.run(
+    ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=5",
+     "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+     "-c:v", "libx264", "-c:a", "libopus",
+     "-movflags", "+faststart", _opus_video_path],
+    capture_output=True)
+if _ffmpeg_build.returncode != 0:
+    check("locate_audio: could not build the Opus-in-mp4 test fixture "
+          f"(ffmpeg: {_ffmpeg_build.stderr[-300:]!r}) - skipping this check",
+          False)
+else:
+    class _OpusVideoTxt:
+        audio_ref = None
+        video_ref = "video.mp4"
+
+    _opus_work_dir = tempfile.mkdtemp(prefix="opus-video-work-")
+    audio_out, err = repair.locate_audio(_opus_video_dir, _OpusVideoTxt(), _opus_work_dir)
+    check(f"locate_audio extracts audio from an Opus-in-mp4 video (got err={err!r})",
+          err is None and audio_out is not None and os.path.isfile(audio_out))
+
+    # the plain stream-copy path (AAC audio, the common case) was ALSO
+    # broken by the same "-vn 1" bug - not Opus-specific
+    _aac_video_dir = tempfile.mkdtemp(prefix="aac-video-song-")
+    _aac_video_path = os.path.join(_aac_video_dir, "video.mp4")
+    _ffmpeg_build_aac = _subprocess_real.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=5",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-c:v", "libx264", "-c:a", "aac", _aac_video_path],
+        capture_output=True)
+    if _ffmpeg_build_aac.returncode != 0:
+        check("locate_audio: could not build the AAC-in-mp4 test fixture "
+              f"(ffmpeg: {_ffmpeg_build_aac.stderr[-300:]!r}) - skipping this check",
+              False)
+    else:
+        _aac_work_dir = tempfile.mkdtemp(prefix="aac-video-work-")
+        audio_out_aac, err_aac = repair.locate_audio(
+            _aac_video_dir, _OpusVideoTxt(), _aac_work_dir)
+        check("locate_audio extracts audio from an AAC-in-mp4 video via the "
+              f"fast stream-copy path (got err={err_aac!r})",
+              err_aac is None and audio_out_aac is not None and
+              os.path.isfile(audio_out_aac) and audio_out_aac.endswith(".m4a"))
+
+# --------------------------------------------------------------------------
 
 print()
 if failures:

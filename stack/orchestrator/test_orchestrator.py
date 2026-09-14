@@ -139,6 +139,45 @@ check("parse_songs_file defaults the optional columns to '' when absent",
       entries[0]["lyrics_url"] == "")
 
 # --------------------------------------------------------------------------
+# parse_songs_file: the REAL karaoke-dashboard export header
+# ("band name,song name,youtube link,...", app/routes/admin.py's
+# requests_csv()) - regression for a real bug found 2026-09-14: only
+# single-word aliases ("band"/"title"/"url") were recognized, so the
+# actual multi-word header parsed EVERY row's band/title/url as "" and
+# silently imported zero songs (no error at all)
+# --------------------------------------------------------------------------
+
+csv_real_dashboard_header = (
+    "band name,song name,youtube link,language,musicbrainz_id,lyrics_url\n"
+    "Lil Mariko,Catboys,,,,\n"
+    "ASP,Zaubererbruder,https://www.youtube.com/watch?v=sifM_9DIVbI,de,,\n"
+)
+with tempfile.NamedTemporaryFile(
+        "w", suffix=".csv", delete=False, encoding="utf-8") as f:
+    f.write(csv_real_dashboard_header)
+    tmp_path_real = f.name
+try:
+    entries_real = orch.parse_songs_file(tmp_path_real)
+    check("parse_songs_file reads the real dashboard header "
+          f"(got {len(entries_real)} entries, expected 2)",
+          len(entries_real) == 2)
+    if len(entries_real) == 2:
+        check("parse_songs_file: 'band name' column -> band",
+              entries_real[0]["band"] == "Lil Mariko")
+        check("parse_songs_file: 'song name' column -> title",
+              entries_real[0]["title"] == "Catboys")
+        check("parse_songs_file: empty youtube link -> skip",
+              entries_real[0]["url"] == "skip")
+        check("parse_songs_file: 'youtube link' column -> url",
+              entries_real[1]["url"] ==
+              "https://www.youtube.com/watch?v=sifM_9DIVbI")
+        check("parse_songs_file: 'youtube link' header doesn't break the "
+              "language column next to it",
+              entries_real[1]["language"] == "de")
+finally:
+    os.unlink(tmp_path_real)
+
+# --------------------------------------------------------------------------
 # ultrasinger_command() must trust the csv band/title over YouTube/
 # MusicBrainz naming, and must write new songs under NEW_SONGS_DIR
 # --------------------------------------------------------------------------
@@ -1045,6 +1084,527 @@ runner_gen = orch.JobRunner({"id": "new|j2", "kind": "new", "url": "https://x",
                              "band": "B", "title": "T"})
 check("JobRunner.command falls back to ultrasinger when there's no usdb match",
       "repair.py" not in " ".join(runner_gen.command()))
+
+# --------------------------------------------------------------------------
+# read_ultrastar_tags() / primary_ultrastar_txt(): lightweight header-tag
+# parsing for repair folders (no full repair.py Txt/note parsing needed)
+# --------------------------------------------------------------------------
+
+tags_dir = os.path.join(TMP_DATA, "tags-song")
+os.makedirs(tags_dir, exist_ok=True)
+tags_txt_path = os.path.join(tags_dir, "song.txt")
+with open(tags_txt_path, "w", encoding="utf-8") as f:
+    f.write("#TITLE:I Want To Break Free\n#ARTIST:Queen\n#MP3:song.mp3\n"
+            "#BPM:107.4\n#GAP:40020\n: 0 4 60 Hi\n")
+
+tags = orch.read_ultrastar_tags(tags_txt_path)
+check("read_ultrastar_tags reads #ARTIST/#TITLE/#MP3",
+      tags.get("ARTIST") == "Queen" and tags.get("TITLE") == "I Want To Break Free"
+      and tags.get("MP3") == "song.mp3")
+check("read_ultrastar_tags stops at the first note line "
+      "(never scans the whole song)",
+      "GAP" in tags and len(tags) == 5)
+check("read_ultrastar_tags on a missing file returns {}",
+      orch.read_ultrastar_tags("/no/such/file.txt") == {})
+
+check("primary_ultrastar_txt finds the one valid ultrastar txt",
+      orch.primary_ultrastar_txt(tags_dir) == tags_txt_path)
+
+empty_dir = os.path.join(TMP_DATA, "empty-song-dir")
+os.makedirs(empty_dir, exist_ok=True)
+check("primary_ultrastar_txt returns None when the folder has no valid txt",
+      orch.primary_ultrastar_txt(empty_dir) is None)
+
+# --------------------------------------------------------------------------
+# pick_media_candidate(): pure loose-file matching for "link an existing
+# file" (missing video/audio) - prefers a name matching the txt's own
+# basename, falls back to a lone candidate, refuses to guess when
+# ambiguous
+# --------------------------------------------------------------------------
+
+check("pick_media_candidate: no matching-extension files -> 'none'",
+      orch.pick_media_candidate(["cover.jpg"], "song", (".mp4",))["status"] == "none")
+
+one = orch.pick_media_candidate(["song.mp4", "cover.jpg"], "song", (".mp4",))
+check("pick_media_candidate: a single candidate is used even if unnamed like the txt",
+      one == {"status": "found", "name": "song.mp4"})
+
+basename_pref = orch.pick_media_candidate(
+    ["Other Name.mp4", "song.mp4"], "song", (".mp4",))
+check("pick_media_candidate prefers the file matching the txt's own basename",
+      basename_pref == {"status": "found", "name": "song.mp4"})
+
+ambiguous = orch.pick_media_candidate(
+    ["Other Name.mp4", "Another One.mp4"], "song", (".mp4",))
+check("pick_media_candidate refuses to guess between two unrelated candidates",
+      ambiguous["status"] == "ambiguous" and
+      ambiguous["candidates"] == ["Another One.mp4", "Other Name.mp4"])
+
+# --------------------------------------------------------------------------
+# match_broken_report(): matches a repair folder to a broken.csv row via
+# its #ARTIST/#TITLE tags (ground truth, not the folder name)
+# --------------------------------------------------------------------------
+
+reports = [
+    {"band": "Queen", "title": "I Want To Break Free", "category": "gap",
+     "description": "", "lyrics_url": ""},
+    {"band": "Metric", "title": "Black Sheep", "category": "async",
+     "description": "", "lyrics_url": ""},
+]
+matched = orch.match_broken_report(tags_dir, reports)
+check("match_broken_report matches on #ARTIST/#TITLE",
+      matched is not None and matched["category"] == "gap")
+
+check("match_broken_report returns None when nothing scores high enough",
+      orch.match_broken_report(tags_dir, [
+          {"band": "Totally Different", "title": "Unrelated Song",
+           "category": "gap", "description": "", "lyrics_url": ""}]) is None)
+check("match_broken_report returns None for an empty reports list",
+      orch.match_broken_report(tags_dir, []) is None)
+check("match_broken_report returns None when the folder has no valid txt",
+      orch.match_broken_report(empty_dir, reports) is None)
+
+# --------------------------------------------------------------------------
+# build_job_plan(): broken.csv category drives the repair mode; "other"/
+# blank/unrecognized category -> "needs_review" (skip automated repair,
+# flag for a human) instead of guessing
+# --------------------------------------------------------------------------
+
+plan_input = os.path.join(TMP_DATA, "plan-input")
+os.makedirs(plan_input, exist_ok=True)
+
+
+def _write_song(folder_name, artist, title):
+    d = os.path.join(plan_input, folder_name)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, folder_name + ".txt"), "w", encoding="utf-8") as f:
+        f.write(f"#TITLE:{title}\n#ARTIST:{artist}\n#MP3:x.mp3\n#BPM:100\n"
+                ": 0 4 60 Hi\n")
+    return d
+
+
+_write_song("Queen - I Want To Break Free", "Queen", "I Want To Break Free")
+_write_song("Metric - Black Sheep", "Metric", "Black Sheep")
+_write_song("Unlisted Band - Unlisted Song", "Unlisted Band", "Unlisted Song")
+_write_song("Some Band - Other Category Song", "Some Band", "Other Category Song")
+
+plan_broken_csv = os.path.join(TMP_DATA, "plan-broken.csv")
+with open(plan_broken_csv, "w", encoding="utf-8") as f:
+    f.write("band,song name,category,description\n"
+            "Queen,I Want To Break Free,gap,\n"
+            "Metric,Black Sheep,async,\n"
+            "Some Band,Other Category Song,other,needs a human look\n")
+
+orig_input_dir = orch.INPUT_DIR
+orig_songs_file = orch.SONGS_FILE
+orig_broken_csv = orch.BROKEN_CSV
+orch.INPUT_DIR = plan_input
+orch.SONGS_FILE = os.path.join(TMP_DATA, "no-such-songs.csv")
+orch.BROKEN_CSV = plan_broken_csv
+try:
+    plan_state = orch.State()
+    plan_jobs = orch.build_job_plan(plan_state)
+    by_label = {j["label"]: j for j in plan_jobs}
+    check("build_job_plan: 'gap' category sets mode 'gap'",
+          by_label["Queen - I Want To Break Free"]["mode"] == "gap")
+    check("build_job_plan: 'async' category sets mode 'sync'",
+          by_label["Metric - Black Sheep"]["mode"] == "sync")
+    check("build_job_plan: no broken.csv match keeps today's default mode",
+          by_label["Unlisted Band - Unlisted Song"]["mode"] == orch.REPAIR_MODE and
+          by_label["Unlisted Band - Unlisted Song"]["status"] == "pending")
+    check("build_job_plan: 'other' category is flagged needs_review, not run",
+          by_label["Some Band - Other Category Song"]["status"] == "needs_review" and
+          by_label["Some Band - Other Category Song"]["description"] ==
+          "needs a human look")
+finally:
+    orch.INPUT_DIR = orig_input_dir
+    orch.SONGS_FILE = orig_songs_file
+    orch.BROKEN_CSV = orig_broken_csv
+
+# --------------------------------------------------------------------------
+# find_sync_meta_source() / parse_sync_meta_source(): a *.usdb sync-meta
+# file (written by usdb_syncer) records the original v=/a= youtube ids in
+# its meta_tags string - reused as the download source for a "missing
+# video"/"missing audio" repair when no local file can be linked
+# --------------------------------------------------------------------------
+
+import json as _json
+import types as _types
+
+sync_meta_dir = os.path.join(TMP_DATA, "sync-meta-song")
+os.makedirs(sync_meta_dir, exist_ok=True)
+with open(os.path.join(sync_meta_dir, "12345.usdb"), "w", encoding="utf-8") as f:
+    _json.dump({"song_id": 12345,
+               "meta_tags": "v=2DG_pIM-Dc4,a=gGwN25z7FrE,co=cover.jpg"}, f)
+
+
+class _FakeMetaTags:
+    def __init__(self, video, audio):
+        self.video = video
+        self.audio = audio
+
+    @classmethod
+    def parse(cls, raw, logger):
+        parsed = {}
+        for pair in raw.split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                parsed[k] = v
+        return cls(parsed.get("v"), parsed.get("a"))
+
+
+def _fake_video_url_from_resource(resource):
+    return f"https://www.youtube.com/watch?v={resource}" if resource else None
+
+
+fake_meta_tags_mod = _types.ModuleType("usdb_syncer.meta_tags")
+fake_meta_tags_mod.MetaTags = _FakeMetaTags
+fake_utils_mod = _types.ModuleType("usdb_syncer.utils")
+fake_utils_mod.video_url_from_resource = _fake_video_url_from_resource
+sys.modules["usdb_syncer.meta_tags"] = fake_meta_tags_mod
+sys.modules["usdb_syncer.utils"] = fake_utils_mod
+try:
+    check("parse_sync_meta_source resolves the 'v=' id for category video",
+          orch.parse_sync_meta_source(
+              os.path.join(sync_meta_dir, "12345.usdb"), "video") ==
+          "https://www.youtube.com/watch?v=2DG_pIM-Dc4")
+    check("parse_sync_meta_source resolves the 'a=' id for category audio",
+          orch.parse_sync_meta_source(
+              os.path.join(sync_meta_dir, "12345.usdb"), "audio") ==
+          "https://www.youtube.com/watch?v=gGwN25z7FrE")
+    check("find_sync_meta_source finds the *.usdb file in the folder",
+          orch.find_sync_meta_source(sync_meta_dir, "video") ==
+          "https://www.youtube.com/watch?v=2DG_pIM-Dc4")
+finally:
+    del sys.modules["usdb_syncer.meta_tags"]
+    del sys.modules["usdb_syncer.utils"]
+
+check("find_sync_meta_source returns None with no *.usdb file present",
+      orch.find_sync_meta_source(tags_dir, "video") is None)
+check("parse_sync_meta_source returns None when usdb_syncer isn't importable "
+      "(no fake installed, matches the real un-faked container-less state)",
+      orch.parse_sync_meta_source(
+          os.path.join(sync_meta_dir, "12345.usdb"), "video") is None)
+
+with open(os.path.join(sync_meta_dir, "audio-only.usdb"), "w", encoding="utf-8") as f:
+    _json.dump({"song_id": 1, "meta_tags": "v=onlyvideoid1"}, f)
+sys.modules["usdb_syncer.meta_tags"] = fake_meta_tags_mod
+sys.modules["usdb_syncer.utils"] = fake_utils_mod
+try:
+    check("parse_sync_meta_source falls back to the video id for category "
+          "audio when there is no separate 'a=' resource",
+          orch.parse_sync_meta_source(
+              os.path.join(sync_meta_dir, "audio-only.usdb"), "audio") ==
+          "https://www.youtube.com/watch?v=onlyvideoid1")
+finally:
+    del sys.modules["usdb_syncer.meta_tags"]
+    del sys.modules["usdb_syncer.utils"]
+    os.unlink(os.path.join(sync_meta_dir, "audio-only.usdb"))
+
+# --------------------------------------------------------------------------
+# prepare_media_repair(): "missing video"/"missing audio" - link an
+# existing loose file, or download via the *.usdb sync-meta source; never
+# guesses when ambiguous or when there is truly no source
+# --------------------------------------------------------------------------
+
+media_dir = os.path.join(TMP_DATA, "media-song")
+os.makedirs(media_dir, exist_ok=True)
+with open(os.path.join(media_dir, "media-song.txt"), "w", encoding="utf-8") as f:
+    f.write("#TITLE:X\n#ARTIST:Y\n#MP3:media-song.mp3\n#BPM:100\n: 0 4 60 Hi\n")
+with open(os.path.join(media_dir, "media-song.mp3"), "wb") as f:
+    f.write(b"fake mp3")
+
+job_media_present = {"id": "repair|media-song", "kind": "repair",
+                     "song_dir": media_dir, "category": "audio"}
+check("prepare_media_repair: tag + file already present -> 'already_present'",
+      orch.prepare_media_repair(job_media_present) == {"status": "already_present"})
+
+# missing video, no #VIDEO tag at all, but exactly one loose mp4 present
+with open(os.path.join(media_dir, "media-song.mp4"), "wb") as f:
+    f.write(b"fake mp4")
+job_media_video = {"id": "repair|media-song-v", "kind": "repair",
+                   "song_dir": media_dir, "category": "video"}
+result_link = orch.prepare_media_repair(job_media_video)
+check("prepare_media_repair links a loose local file into a staging copy",
+      result_link is not None and result_link["source"] == "local" and
+      os.path.isdir(result_link["staging_dir"]))
+with open(os.path.join(result_link["staging_dir"], "media-song.txt"),
+         encoding="utf-8") as f:
+    staged_content = f.read()
+with open(os.path.join(media_dir, "media-song.txt"), encoding="utf-8") as f:
+    original_content_untouched = f.read()
+check("prepare_media_repair patches the #VIDEO tag to the linked file, in "
+      "a staging copy - the original input folder is never modified",
+      "#VIDEO:media-song.mp4" in staged_content and
+      "#VIDEO" not in original_content_untouched)
+
+# ambiguous: two unrelated loose video files, neither matching the txt name
+ambiguous_dir = os.path.join(TMP_DATA, "ambiguous-media-song")
+os.makedirs(ambiguous_dir, exist_ok=True)
+with open(os.path.join(ambiguous_dir, "ambiguous-media-song.txt"),
+         "w", encoding="utf-8") as f:
+    f.write("#TITLE:X\n#ARTIST:Y\n#MP3:a.mp3\n#BPM:100\n: 0 4 60 Hi\n")
+with open(os.path.join(ambiguous_dir, "clip one.mp4"), "wb") as f:
+    f.write(b"1")
+with open(os.path.join(ambiguous_dir, "clip two.mp4"), "wb") as f:
+    f.write(b"2")
+job_ambiguous = {"id": "repair|ambiguous", "kind": "repair",
+                 "song_dir": ambiguous_dir, "category": "video"}
+check("prepare_media_repair refuses to guess between ambiguous local candidates",
+      orch.prepare_media_repair(job_ambiguous) ==
+      {"status": "ambiguous", "candidates": ["clip one.mp4", "clip two.mp4"]})
+
+# no local candidate, no *.usdb source -> None (caller fails the job)
+no_source_dir = os.path.join(TMP_DATA, "no-source-song")
+os.makedirs(no_source_dir, exist_ok=True)
+with open(os.path.join(no_source_dir, "no-source-song.txt"),
+         "w", encoding="utf-8") as f:
+    f.write("#TITLE:X\n#ARTIST:Y\n#MP3:a.mp3\n#BPM:100\n: 0 4 60 Hi\n")
+job_no_source = {"id": "repair|no-source", "kind": "repair",
+                 "song_dir": no_source_dir, "category": "video"}
+check("prepare_media_repair returns None with no local candidate and no "
+      "usdb sync-meta source (never guesses)",
+      orch.prepare_media_repair(job_no_source) is None)
+
+# download path: no local candidate, but a *.usdb sync-meta source exists
+dl_dir = os.path.join(TMP_DATA, "download-media-song")
+os.makedirs(dl_dir, exist_ok=True)
+with open(os.path.join(dl_dir, "download-media-song.txt"),
+         "w", encoding="utf-8") as f:
+    f.write("#TITLE:X\n#ARTIST:Y\n#BPM:100\n: 0 4 60 Hi\n")
+with open(os.path.join(dl_dir, "99999.usdb"), "w", encoding="utf-8") as f:
+    _json.dump({"song_id": 99999, "meta_tags": "v=downloadvid1"}, f)
+
+sys.modules["usdb_syncer.meta_tags"] = fake_meta_tags_mod
+sys.modules["usdb_syncer.utils"] = fake_utils_mod
+orig_download_media_media = orch.download_media
+dl_media_calls = []
+
+
+def fake_download_media_for_media_repair(url, dest, want_video, log_path):
+    dl_media_calls.append((url, dest, want_video))
+    with open(dest, "wb") as f:
+        f.write(b"downloaded")
+    return True
+
+
+orch.download_media = fake_download_media_for_media_repair
+try:
+    job_download = {"id": "repair|download-media-song", "kind": "repair",
+                    "song_dir": dl_dir, "category": "video"}
+    result_dl = orch.prepare_media_repair(job_download)
+    check("prepare_media_repair downloads via the usdb sync-meta source "
+          "when nothing can be linked locally",
+          result_dl is not None and result_dl["source"] == "usdb-sync-meta" and
+          dl_media_calls[0][0] == "https://www.youtube.com/watch?v=downloadvid1" and
+          dl_media_calls[0][2] is True)
+    with open(os.path.join(result_dl["staging_dir"], "download-media-song.txt"),
+             encoding="utf-8") as f:
+        dl_staged_content = f.read()
+    check("prepare_media_repair patches the #VIDEO tag to the downloaded filename",
+          "#VIDEO:download-media-song.mp4" in dl_staged_content)
+finally:
+    orch.download_media = orig_download_media_media
+    del sys.modules["usdb_syncer.meta_tags"]
+    del sys.modules["usdb_syncer.utils"]
+
+# --------------------------------------------------------------------------
+# JobRunner._prepare_repair_source(): wires prepare_media_repair() and the
+# "lyrics" online-fetch path into command()/run(), short-circuiting the
+# job cleanly (no repair.py subprocess at all) on failure/needs_review -
+# never silently falls back to a blind default repair
+# --------------------------------------------------------------------------
+
+orig_prepare_media_repair = orch.prepare_media_repair
+
+# media: success -> command() runs mode "gap" against the staging dir
+orch.prepare_media_repair = lambda job: {
+    "staging_dir": "/data/work/x-media", "source": "local", "linked": "x.mp4"}
+runner_media_ok = orch.JobRunner(
+    {"id": "repair|m1", "kind": "repair", "song_dir": "/data/input/m1",
+     "mode": "media", "category": "video"})
+prep_result_ok = runner_media_ok._prepare_repair_source()
+cmd_media_ok = runner_media_ok.command()
+check("_prepare_repair_source: media success returns None (no short-circuit)",
+      prep_result_ok is None)
+check("JobRunner.command() runs 'gap' mode against the media staging dir",
+      "--mode" in cmd_media_ok and
+      cmd_media_ok[cmd_media_ok.index("--mode") + 1] == "gap" and
+      "/data/work/x-media" in cmd_media_ok)
+
+# media: no source at all -> failed, no subprocess
+orch.prepare_media_repair = lambda job: None
+runner_media_fail = orch.JobRunner(
+    {"id": "repair|m2", "kind": "repair", "song_dir": "/data/input/m2",
+     "mode": "media", "category": "video"})
+prep_result_fail = runner_media_fail._prepare_repair_source()
+check("_prepare_repair_source: no media source -> failed, with a clear error",
+      prep_result_fail is not None and prep_result_fail["status"] == "failed" and
+      "video" in prep_result_fail["error"])
+
+# media: already present -> needs_review, no subprocess
+orch.prepare_media_repair = lambda job: {"status": "already_present"}
+runner_media_present = orch.JobRunner(
+    {"id": "repair|m3", "kind": "repair", "song_dir": "/data/input/m3",
+     "mode": "media", "category": "audio"})
+prep_result_present = runner_media_present._prepare_repair_source()
+check("_prepare_repair_source: media already present -> needs_review, not failed",
+      prep_result_present is not None and
+      prep_result_present["status"] == "needs_review")
+
+# media: ambiguous candidates -> failed, listing them
+orch.prepare_media_repair = lambda job: {
+    "status": "ambiguous", "candidates": ["a.mp4", "b.mp4"]}
+runner_media_amb = orch.JobRunner(
+    {"id": "repair|m4", "kind": "repair", "song_dir": "/data/input/m4",
+     "mode": "media", "category": "video"})
+prep_result_amb = runner_media_amb._prepare_repair_source()
+check("_prepare_repair_source: ambiguous candidates -> failed, names them",
+      prep_result_amb is not None and prep_result_amb["status"] == "failed" and
+      "a.mp4" in prep_result_amb["error"] and "b.mp4" in prep_result_amb["error"])
+
+orch.prepare_media_repair = orig_prepare_media_repair
+
+# lyrics online-fetch: uses the broken.csv lyrics_url directly when present
+orig_subprocess_run_lyrics_repair = orch.subprocess.run
+lyrics_repair_calls = []
+
+
+def fake_subprocess_run_lyrics_repair_ok(cmd, **kwargs):
+    lyrics_repair_calls.append(cmd)
+    if cmd[1] == orch.LYRICS_FETCH_PY:
+        out_path = cmd[cmd.index("--out") + 1]
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write('{"source": "genius", "lines": []}')
+        return _FakeCompleted(0)
+    return _FakeCompleted(0)
+
+
+orch.subprocess.run = fake_subprocess_run_lyrics_repair_ok
+try:
+    runner_lyrics_url = orch.JobRunner({
+        "id": "repair|lyr1", "kind": "repair", "song_dir": tags_dir,
+        "mode": "lyrics", "lyrics_file": None,
+        "lyrics_url": "https://genius.com/example-lyrics"})
+    prep_lyrics = runner_lyrics_url._prepare_repair_source()
+    fetch_call_repair = next(
+        c for c in lyrics_repair_calls if c[1] == orch.LYRICS_FETCH_PY)
+    check("_prepare_repair_source: lyrics category passes --lyrics-url through "
+          "when broken.csv provided one",
+          prep_lyrics is None and "--lyrics-url" in fetch_call_repair and
+          fetch_call_repair[fetch_call_repair.index("--lyrics-url") + 1] ==
+          "https://genius.com/example-lyrics")
+    cmd_lyrics_repair = runner_lyrics_url.command()
+    check("JobRunner.command() uses the fetched lyrics json for a lyrics-category "
+          "repair with no local lyrics.txt",
+          "--mode" in cmd_lyrics_repair and
+          cmd_lyrics_repair[cmd_lyrics_repair.index("--mode") + 1] == "lyrics" and
+          "--lyrics-file" in cmd_lyrics_repair and
+          cmd_lyrics_repair[cmd_lyrics_repair.index("--lyrics-file") + 1]
+          .endswith("-lyrics.json"))
+finally:
+    orch.subprocess.run = orig_subprocess_run_lyrics_repair
+
+# lyrics online-fetch: no lyrics_url given -> falls back to a normal search
+lyrics_repair_calls.clear()
+
+
+def fake_subprocess_run_lyrics_repair_search(cmd, **kwargs):
+    lyrics_repair_calls.append(cmd)
+    if cmd[1] == orch.LYRICS_FETCH_PY:
+        out_path = cmd[cmd.index("--out") + 1]
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write('{"source": "syncedlyrics", "lines": []}')
+        return _FakeCompleted(0)
+    return _FakeCompleted(0)
+
+
+orch.subprocess.run = fake_subprocess_run_lyrics_repair_search
+try:
+    runner_lyrics_search = orch.JobRunner({
+        "id": "repair|lyr2", "kind": "repair", "song_dir": tags_dir,
+        "mode": "lyrics", "lyrics_file": None, "lyrics_url": ""})
+    prep_lyrics2 = runner_lyrics_search._prepare_repair_source()
+    fetch_call_search = next(
+        c for c in lyrics_repair_calls if c[1] == orch.LYRICS_FETCH_PY)
+    check("_prepare_repair_source: lyrics category with no lyrics_url tries "
+          "an automatic online lookup instead",
+          prep_lyrics2 is None and "--lyrics-url" not in fetch_call_search and
+          "--artist" in fetch_call_search and
+          fetch_call_search[fetch_call_search.index("--artist") + 1] == "Queen")
+finally:
+    orch.subprocess.run = orig_subprocess_run_lyrics_repair
+
+# lyrics online-fetch: nothing found anywhere -> failed, never falls back
+# to a blind sync/gap repair (the category says the LYRICS are wrong -
+# silently re-timing the known-wrong lyrics would defeat the point)
+lyrics_repair_calls.clear()
+
+
+def fake_subprocess_run_lyrics_repair_notfound(cmd, **kwargs):
+    lyrics_repair_calls.append(cmd)
+    return _FakeCompleted(1)
+
+
+orch.subprocess.run = fake_subprocess_run_lyrics_repair_notfound
+try:
+    runner_lyrics_nf = orch.JobRunner({
+        "id": "repair|lyr3", "kind": "repair", "song_dir": tags_dir,
+        "mode": "lyrics", "lyrics_file": None, "lyrics_url": ""})
+    prep_lyrics_nf = runner_lyrics_nf._prepare_repair_source()
+    check("_prepare_repair_source: lyrics category, nothing found -> failed "
+          "(never silently falls back to a blind repair)",
+          prep_lyrics_nf is not None and prep_lyrics_nf["status"] == "failed")
+finally:
+    orch.subprocess.run = orig_subprocess_run_lyrics_repair
+
+# a local lyrics.txt always takes priority - no fetch attempted at all
+runner_lyrics_local = orch.JobRunner({
+    "id": "repair|lyr4", "kind": "repair", "song_dir": tags_dir,
+    "mode": "lyrics", "lyrics_file": "/data/input/lyr4/lyrics.txt",
+    "lyrics_url": "https://genius.com/should-be-ignored"})
+lyrics_repair_calls.clear()
+prep_lyrics_local = runner_lyrics_local._prepare_repair_source()
+check("_prepare_repair_source: a local lyrics.txt is used as-is, no online "
+      "fetch attempted at all",
+      prep_lyrics_local is None and lyrics_repair_calls == [])
+
+# --------------------------------------------------------------------------
+# needs_review status: counted, shown in progress/report, and reset() puts
+# it back to pending (so fixing the underlying report/category lets it run
+# again on the next `docker compose up`)
+# --------------------------------------------------------------------------
+
+review_state = {"jobs": {
+    "repair|r1": {"kind": "repair", "status": "needs_review",
+                 "label": "Some Band - Other Category Song",
+                 "category": "other", "description": "needs a human look"},
+    "repair|r2": {"kind": "repair", "status": "done", "label": "Fine Song",
+                 "duration_s": 10},
+}}
+review_counts = orch.count_statuses(list(review_state["jobs"].values()), "repair")
+check("count_statuses tracks needs_review separately from pending/failed/done",
+      review_counts["needs_review"] == 1 and review_counts["done"] == 1)
+
+review_progress = orch.render_progress(review_state, cpu_percent=1, ram_usage=None,
+                                       gpu_usage=None, device="cpu")
+check("render_progress surfaces the needs_review count",
+      "1 needs review" in review_progress or "needs_review" in review_progress)
+
+review_report = orch.render_report(review_state)
+check("render_report lists needs_review jobs with their category/description "
+      "so a human can act on them",
+      "Some Band - Other Category Song" in review_report and
+      "needs a human look" in review_report)
+
+review_reset_state = orch.State()
+review_reset_state.data = {"version": 1, "jobs": {
+    "repair|r1": {"id": "repair|r1", "status": "needs_review", "attempts": 1,
+                 "error": "other category: flagged for review"},
+}}
+orch.cmd_reset(review_reset_state)
+check("cmd_reset (no --all) also un-flags needs_review jobs back to pending",
+      review_reset_state.data["jobs"]["repair|r1"]["status"] == "pending")
 
 # --------------------------------------------------------------------------
 

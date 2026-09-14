@@ -351,21 +351,49 @@ def locate_audio(song_dir: str, txt: Txt, work_dir: str):
     if txt.video_ref:
         video = os.path.join(song_dir, txt.video_ref)
         if os.path.isfile(video):
-            # extract audio track from the video (stream copy, fast)
             ext = ".m4a" if video.lower().endswith(".mp4") else ".audio"
             audio_out = os.path.join(work_dir, os.path.basename(video) + ext)
             if not os.path.isfile(audio_out):
                 import ffmpeg  # ffmpeg-python
                 print(f"{ULTRASINGER_HEAD} extracting audio from {video}")
                 try:
+                    # stream copy: fast, no quality loss - works whenever
+                    # the video's audio codec (usually AAC) is valid inside
+                    # an m4a/mp4 container. vn is a bare flag (no value) -
+                    # ffmpeg-python only omits the value for kwargs=None;
+                    # vn=1/True was a real, longstanding bug here (emitted
+                    # "-vn 1", which ffmpeg parsed as a second, bogus
+                    # output target "1" and always failed - regardless of
+                    # video source - "Unable to find a suitable output
+                    # format for '1'")
                     (
                         ffmpeg.input(video)
-                        .output(audio_out, vn=1, acodec="copy")
+                        .output(audio_out, vn=None, acodec="copy")
                         .overwrite_output()
                         .run(capture_stdout=True, capture_stderr=True)
                     )
-                except ffmpeg.Error as exc:
-                    return None, f"audio extraction failed: {exc.stderr[:300]}"
+                except ffmpeg.Error as copy_exc:
+                    # some sources (e.g. yt-dlp's bestaudio merged into an
+                    # mp4 container) carry Opus audio, which the m4a/mp4
+                    # muxer cannot hold via stream copy ("Could not find
+                    # tag for codec opus in stream ..., codec not
+                    # currently supported in container") - fall back to a
+                    # real transcode into WAV (codec-agnostic: ffmpeg can
+                    # always decode the source and re-encode to PCM,
+                    # regardless of what codec it started as)
+                    wav_out = os.path.join(
+                        work_dir, os.path.basename(video) + ".wav")
+                    try:
+                        (
+                            ffmpeg.input(video)
+                            .output(wav_out, vn=None)
+                            .overwrite_output()
+                            .run(capture_stdout=True, capture_stderr=True)
+                        )
+                    except ffmpeg.Error:
+                        return None, ("audio extraction failed (stream copy: "
+                                      f"{copy_exc.stderr[-300:]})")
+                    audio_out = wav_out
             return audio_out, None
     return None, "no audio file found (#MP3/#AUDIO missing and no usable #VIDEO)"
 

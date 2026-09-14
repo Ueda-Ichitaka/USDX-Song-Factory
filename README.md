@@ -33,9 +33,12 @@ ones, and it works through the whole batch unattended.
 
 ## Usage
 
-**1. Add songs.** Edit `stack/input/songs.csv` (new songs: `band,title,url`
-per line, `url` a YouTube link or a local file), or drop a broken song's
-folder into `stack/input/` to have it repaired.
+**1. Add songs.** Edit `stack/input/song-requests.csv` (new songs:
+`band,title,url` per line, `url` a YouTube link or a local file), or drop a
+broken song's folder into `stack/input/` to have it repaired - optionally
+with `stack/input/broken.csv` (`band,song name,category,description`) so
+each one gets only the specific fix its category calls for, instead of a
+blind full repair.
 
 **2. Run it.**
 
@@ -47,6 +50,10 @@ folder into `stack/input/` to have it repaired.
 Whisper (transcription) always runs on CPU either way - the GPU only
 speeds up vocal separation. Pick GPU if you have a supported AMD card,
 CPU otherwise.
+
+For any real batch, add `-d` (as the GPU command already does) - a batch
+runs for hours, and a non-detached container dies with whatever session
+started it. See `stack/README.md` for details.
 
 **3. Check on it**, while it runs:
 

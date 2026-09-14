@@ -50,6 +50,7 @@ While a run is active you can attach to the container
 """
 
 import csv
+import glob
 import json
 import os
 import re
@@ -62,6 +63,7 @@ import threading
 import time
 from datetime import datetime
 
+import broken_report
 import resource_monitor
 import resource_profile
 import usdb_eu_lookup
@@ -71,8 +73,9 @@ import usdb_lookup
 # configuration (env, with sensible defaults)
 # --------------------------------------------------------------------------
 
-SONGS_FILE = os.environ.get("SONGS_FILE", "/data/input/songs.csv")
+SONGS_FILE = os.environ.get("SONGS_FILE", "/data/input/song-requests.csv")
 INPUT_DIR = os.environ.get("INPUT_DIR", "/data/input")
+BROKEN_CSV = os.environ.get("BROKEN_CSV", "/data/input/broken.csv")
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/data/output")
 NEW_SONGS_DIR = os.environ.get("NEW_SONGS_DIR", os.path.join(OUTPUT_DIR, "new"))
 REPAIRED_DIR = os.environ.get("REPAIRED_DIR", os.path.join(OUTPUT_DIR, "repaired"))
@@ -170,6 +173,11 @@ USDB_CATALOG_CACHE = os.path.join(STATE_DIR, "usdb_catalog.json")
 # second source when usdb.animux.de above has no match, see find_usdb_match().
 USDB_EU_EMAIL = os.environ.get("USDB_EU_EMAIL", "")
 USDB_EU_PASSWORD = os.environ.get("USDB_EU_PASSWORD", "")
+
+# minimum #ARTIST/#TITLE-vs-broken.csv-row match score (see match_broken_report())
+BROKEN_MATCH_MIN_SCORE = _env_float("BROKEN_MATCH_MIN_SCORE")
+if BROKEN_MATCH_MIN_SCORE is None:
+    BROKEN_MATCH_MIN_SCORE = 0.85
 
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 
@@ -446,9 +454,11 @@ def parse_songs_file(path: str) -> list:
         rows = list(csv.DictReader(non_empty, delimiter=delimiter))
         for row in rows:
             lower = {k.lower().strip(): (v or "").strip() for k, v in row.items()}
-            url = lower.get("url") or lower.get("link") or lower.get("youtube") or ""
-            band = lower.get("band") or lower.get("artist") or ""
-            title = lower.get("title") or lower.get("name") or lower.get("song") or ""
+            url = lower.get("url") or lower.get("link") or lower.get("youtube") or \
+                lower.get("youtube link") or ""
+            band = lower.get("band") or lower.get("band name") or lower.get("artist") or ""
+            title = lower.get("title") or lower.get("song name") or \
+                lower.get("name") or lower.get("song") or ""
             if not url and not title:
                 continue
             language = lower.get("language") or ""
@@ -488,6 +498,22 @@ def parse_songs_file(path: str) -> list:
     return entries
 
 
+def primary_ultrastar_txt(folder: str):
+    """The first valid ultrastar txt in `folder`, or None. Used both to
+    decide whether a folder is a repair job at all (scan_repair_jobs()) and
+    to read its #ARTIST/#TITLE/#VIDEO/#MP3/#AUDIO tags (see
+    read_ultrastar_tags(), match_broken_report(), prepare_media_repair())."""
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return None
+    for entry in names:
+        path = os.path.join(folder, entry)
+        if entry.lower().endswith(".txt") and looks_like_ultrastar_txt(path):
+            return path
+    return None
+
+
 def scan_repair_jobs(input_dir: str) -> list:
     """Find song folders in input_dir that contain at least one ultrastar txt."""
     folders = []
@@ -497,12 +523,91 @@ def scan_repair_jobs(input_dir: str) -> list:
         folder = os.path.join(input_dir, name)
         if not os.path.isdir(folder) or name.startswith("."):
             continue
-        for entry in sorted(os.listdir(folder)):
-            if entry.lower().endswith(".txt") and \
-                    looks_like_ultrastar_txt(os.path.join(folder, entry)):
-                folders.append(folder)
-                break
+        if primary_ultrastar_txt(folder):
+            folders.append(folder)
     return folders
+
+
+TAG_VALUE_RE = re.compile(r"^#([A-Za-z0-9_]+):(.*)$")
+
+
+def read_ultrastar_tags(txt_path: str) -> dict:
+    """The "#TAG:value" header lines of an ultrastar txt, as {TAG: value}
+    (keys upper-cased). Stops at the first note line - never scans a whole
+    (possibly huge) song just to read its header. Missing/unreadable file
+    -> {}."""
+    tags = {}
+    try:
+        with open(txt_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                stripped = line.strip()
+                if ULTRASTAR_NOTE_RE.match(stripped):
+                    break
+                m = TAG_VALUE_RE.match(stripped)
+                if m:
+                    tags[m.group(1).upper()] = m.group(2).strip()
+    except OSError:
+        pass
+    return tags
+
+
+def pick_media_candidate(filenames: list, txt_basename: str, extensions: tuple) -> dict:
+    """Pure matching for "link an existing file" (missing video/audio -
+    see prepare_media_repair()). Prefers a file named exactly like the txt
+    (the convention every existing song folder in this stack already
+    follows); falls back to a lone candidate of the right type; refuses to
+    guess between two+ unrelated candidates (returns "ambiguous" instead -
+    see the "NO DO GUESSING" rule).
+
+    Returns {"status": "none"} | {"status": "found", "name": str} |
+    {"status": "ambiguous", "candidates": [str, ...]}."""
+    candidates = [f for f in filenames if os.path.splitext(f)[1].lower() in extensions]
+    if not candidates:
+        return {"status": "none"}
+    for name in candidates:
+        if os.path.splitext(name)[0] == txt_basename:
+            return {"status": "found", "name": name}
+    if len(candidates) == 1:
+        return {"status": "found", "name": candidates[0]}
+    return {"status": "ambiguous", "candidates": sorted(candidates)}
+
+
+def find_loose_media_candidate(song_dir: str, txt_basename: str, extensions: tuple) -> dict:
+    try:
+        filenames = os.listdir(song_dir)
+    except OSError:
+        filenames = []
+    return pick_media_candidate(filenames, txt_basename, extensions)
+
+
+def match_broken_report(folder: str, reports: list):
+    """The best-scoring broken.csv row for `folder`, matched via its
+    #ARTIST/#TITLE tags (the actual song metadata - not a folder-name
+    guess, since folder naming isn't guaranteed to split cleanly on " - ",
+    e.g. "Tabaluga & Lilli (Peter Maffay) - Nessaja"). Reuses
+    usdb_lookup.name_score() (the same fuzzy matcher already used for USDB
+    catalog matching) rather than a second bespoke implementation. None
+    when there's no txt, no #ARTIST/#TITLE, or nothing scores high enough
+    (see BROKEN_MATCH_MIN_SCORE)."""
+    if not reports:
+        return None
+    txt_path = primary_ultrastar_txt(folder)
+    if not txt_path:
+        return None
+    tags = read_ultrastar_tags(txt_path)
+    band = tags.get("ARTIST", "")
+    title = tags.get("TITLE", "")
+    if not band or not title:
+        return None
+    best, best_score = None, 0.0
+    for report in reports:
+        score = min(usdb_lookup.name_score(report["band"], band),
+                    usdb_lookup.name_score(report["title"], title))
+        if score > best_score:
+            best, best_score = report, score
+    if best is not None and best_score >= BROKEN_MATCH_MIN_SCORE:
+        return best
+    return None
 
 
 LYRICS_FILE_NAMES = ("lyrics.txt", "lyric.txt")
@@ -540,14 +645,53 @@ def build_job_plan(state: State, only=None) -> list:
             job["status"] = "skipped"
         jobs.append(job)
 
+    broken_reports = broken_report.parse_broken_csv(BROKEN_CSV)
+
     for folder in scan_repair_jobs(INPUT_DIR):
         name = os.path.basename(folder.rstrip("/"))
         job_id = f"repair|{name}"
         lyrics_file = find_lyrics_file(folder)
-        mode = "lyrics" if lyrics_file else REPAIR_MODE
+        report = match_broken_report(folder, broken_reports)
+        category = report["category"] if report else ""
+        description = report["description"] if report else ""
+        report_lyrics_url = report.get("lyrics_url", "") if report else ""
+
+        # a manually-supplied lyrics.txt always wins (existing mechanism,
+        # unconditional); otherwise the broken.csv category picks a
+        # specific, cheap fix instead of always running the same blind
+        # full repair - see 02-DESIGN.md "broken.csv-driven repair"
+        if lyrics_file:
+            mode = "lyrics"
+        elif category == "gap":
+            mode = "gap"
+        elif category == "async":
+            mode = "sync"
+        elif category == "lyrics":
+            # no local file: JobRunner._prepare_repair_source() fetches
+            # trusted lyrics online (lyrics_url if given, else a normal
+            # search) before repair.py ever runs - see that method.
+            mode = "lyrics"
+        elif category in ("video", "audio"):
+            # resolved lazily by JobRunner._prepare_repair_source() /
+            # prepare_media_repair() - repair.py has no "media" mode of
+            # its own, this is a synthetic marker only.
+            mode = "media"
+        else:
+            mode = REPAIR_MODE
+
         job = state.get_or_create(
             job_id, kind="repair", label=name, song_dir=folder, mode=mode,
-            lyrics_file=lyrics_file)
+            lyrics_file=lyrics_file, category=category, description=description,
+            lyrics_url=report_lyrics_url)
+
+        # "other"/blank/unrecognized category: the defect is unknown or
+        # free-text only - don't guess an action, flag it for a human
+        # instead (only for a BRAND NEW job - never overwrite a job that
+        # already ran under some other status, e.g. "done" from before the
+        # report/category existed or changed - see 02-DESIGN.md)
+        if report and category in ("", "other") and not lyrics_file \
+                and job["status"] == "pending":
+            job["status"] = "needs_review"
         jobs.append(job)
 
     if only:
@@ -568,6 +712,7 @@ def count_statuses(jobs, kind):
         "running": sum(1 for j in of_kind if j["status"] == "running"),
         "pending": sum(1 for j in of_kind if j["status"] == "pending"),
         "skipped": sum(1 for j in of_kind if j["status"] == "skipped"),
+        "needs_review": sum(1 for j in of_kind if j["status"] == "needs_review"),
     }
 
 
@@ -625,7 +770,8 @@ def render_progress(state_data, cpu_percent=None, ram_usage=None,
         counts = (f"{s['done']:>3} done | {s['failed']:>2} failed | "
                   f"{s['running']:>2} running | {s['pending']:>3} pending")
         skip = f" | {s['skipped']} skipped" if s["skipped"] else ""
-        return f"  {name:<9}: {counts}{skip}   ({s['total']} total)"
+        review = f" | {s['needs_review']} needs review" if s["needs_review"] else ""
+        return f"  {name:<9}: {counts}{skip}{review}   ({s['total']} total)"
 
     lines.append(row("NEW SONGS", new))
     lines.append(row("REPAIRS", rep))
@@ -690,6 +836,7 @@ def render_report(state_data) -> str:
     repair_done = [j for j in jobs if j["kind"] == "repair" and j["status"] == "done"]
     failed = [j for j in jobs if j["status"] == "failed"]
     skipped = [j for j in jobs if j["status"] == "skipped"]
+    needs_review = [j for j in jobs if j["status"] == "needs_review"]
     by_label = lambda j: j["label"].lower()  # noqa: E731
 
     lines = []
@@ -742,6 +889,22 @@ def render_report(state_data) -> str:
                          f"{err} | {q_cell} |")
     else:
         lines.append("_none_")
+
+    if needs_review:
+        lines.append("")
+        lines.append(f"## Needs review ({len(needs_review)})")
+        lines.append("")
+        lines.append("_Category is 'other', blank, or unrecognized (or the "
+                     "reported defect doesn't reproduce) - no automated repair "
+                     "was attempted. Fix the category/description in broken.csv "
+                     "(or resolve the underlying folder), then `reset` the job._")
+        lines.append("")
+        lines.append("| Song | Category | Description |")
+        lines.append("|---|---|---|")
+        for j in sorted(needs_review, key=by_label):
+            category = j.get("category") or "-"
+            desc = (j.get("description") or j.get("error") or "-").replace("|", "\\|")
+            lines.append(f"| {j['label']} | {category} | {desc} |")
 
     if skipped:
         lines.append("")
@@ -1012,6 +1175,149 @@ def prepare_usdb_job(job: dict) -> dict:
 
 
 # --------------------------------------------------------------------------
+# broken.csv "missing video"/"missing audio" media repair
+# --------------------------------------------------------------------------
+
+VIDEO_EXTENSIONS = (".mp4", ".webm", ".mkv", ".avi", ".mov")
+AUDIO_EXTENSIONS = (".mp3", ".m4a", ".wav", ".ogg", ".flac", ".opus")
+
+
+class _NullLogger:
+    """Duck-types usdb_syncer's Logger just enough for MetaTags.parse()
+    (warning()/debug() only) - we don't want its actual log output."""
+
+    def warning(self, *args, **kwargs):
+        pass
+
+    def debug(self, *args, **kwargs):
+        pass
+
+
+def parse_sync_meta_source(path: str, category: str):
+    """The downloadable URL for `category` ("video"/"audio") recorded in
+    one usdb_syncer sync-meta file (a "*.usdb" JSON sidecar usdb_syncer
+    itself writes next to every song it downloads - see that project's
+    sync_meta.py/meta_tags.py). "audio" falls back to the video id when
+    there is no separate audio-only resource (yt-dlp can extract audio
+    from a video URL). Reuses usdb_syncer's own MetaTags.parse() and
+    video_url_from_resource() (percent-encoding/escaping, youtube-id vs.
+    vimeo-id vs. full-URL resource forms are that project's concern, not
+    ours to re-implement) - lazily imported, same as usdb_lookup.py,
+    since usdb_syncer may not be installed/importable in every context
+    this module runs in (e.g. host test runs)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    meta_tags_str = data.get("meta_tags")
+    if not meta_tags_str:
+        return None
+    try:
+        from usdb_syncer.meta_tags import MetaTags
+        from usdb_syncer.utils import video_url_from_resource
+    except ImportError:
+        return None
+    tags = MetaTags.parse(meta_tags_str, _NullLogger())
+    resource = (tags.audio if category == "audio" and tags.audio else None) or tags.video
+    if not resource:
+        return None
+    return video_url_from_resource(resource)
+
+
+def find_sync_meta_source(song_dir: str, category: str):
+    """The first usable download URL for `category` across every *.usdb
+    sync-meta file in `song_dir` (there is usually at most one)."""
+    for path in sorted(glob.glob(os.path.join(song_dir, "*.usdb"))):
+        url = parse_sync_meta_source(path, category)
+        if url:
+            return url
+    return None
+
+
+def prepare_media_repair(job: dict):
+    """Best-effort: restore a "missing video"/"missing audio" broken.csv
+    job's media, in a staging COPY of the folder (the original input
+    folder is never modified - same rule as repair.py). Tries, in order:
+
+      1. the tag already points at a file that exists -> nothing to do
+         (the report doesn't reproduce) - {"status": "already_present"}
+      2. an unambiguous loose file already sitting in the folder -> just
+         link it (patch the tag) - never guesses between two+ unrelated
+         candidates ({"status": "ambiguous", "candidates": [...]})
+      3. a *.usdb sync-meta file's original v=/a= source -> download it
+         via yt-dlp (same download_media() new songs use)
+
+    Returns None when none of the above found a source at all (caller
+    fails the job - never silently skips or falls back to a blind
+    repair)."""
+    song_dir = job["song_dir"]
+    category = job.get("category")
+    txt_path = primary_ultrastar_txt(song_dir)
+    if not txt_path:
+        return None
+    tags = read_ultrastar_tags(txt_path)
+    txt_basename = os.path.splitext(os.path.basename(txt_path))[0]
+
+    if category == "video":
+        tag_name = "VIDEO"
+        extensions = VIDEO_EXTENSIONS
+        existing_value = tags.get("VIDEO")
+    else:
+        extensions = AUDIO_EXTENSIONS
+        tag_name = "MP3" if "MP3" in tags else ("AUDIO" if "AUDIO" in tags else "MP3")
+        existing_value = tags.get("MP3") or tags.get("AUDIO")
+
+    if existing_value and os.path.isfile(os.path.join(song_dir, existing_value)):
+        return {"status": "already_present"}
+
+    candidate = find_loose_media_candidate(song_dir, txt_basename, extensions)
+    if candidate["status"] == "ambiguous":
+        return {"status": "ambiguous", "candidates": candidate["candidates"]}
+
+    slug = slugify(job["id"])
+    staging_dir = os.path.join(WORK_DIR, slug + "-media")
+    if os.path.isdir(staging_dir):
+        shutil.rmtree(staging_dir)
+
+    if candidate["status"] == "found":
+        shutil.copytree(song_dir, staging_dir)
+        staged_txt = os.path.join(staging_dir, os.path.basename(txt_path))
+        with open(staged_txt, encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        content = patch_tag(content, tag_name, candidate["name"])
+        with open(staged_txt, "w", encoding="utf-8") as f:
+            f.write(content)
+        out(f"  .. linked existing {candidate['name']!r} for the "
+            f"missing {category}")
+        return {"staging_dir": staging_dir, "source": "local", "linked": candidate["name"]}
+
+    url = find_sync_meta_source(song_dir, category)
+    if not url:
+        return None
+
+    os.makedirs(WORK_DIR, exist_ok=True)
+    shutil.copytree(song_dir, staging_dir)
+    dest_name = txt_basename + (".mp4" if category == "video" else ".mp3")
+    dest_path = os.path.join(staging_dir, dest_name)
+    log_path = os.path.join(LOGS_DIR, slug + "-media-ytdlp.log")
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    out(f"  .. downloading missing {category} via yt-dlp (source: usdb sync-meta)")
+    if not download_media(url, dest_path, want_video=(category == "video"),
+                          log_path=log_path):
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        return None
+
+    staged_txt = os.path.join(staging_dir, os.path.basename(txt_path))
+    with open(staged_txt, encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    content = patch_tag(content, tag_name, dest_name)
+    with open(staged_txt, "w", encoding="utf-8") as f:
+        f.write(content)
+    return {"staging_dir": staging_dir, "source": "usdb-sync-meta", "downloaded": dest_name}
+
+
+# --------------------------------------------------------------------------
 # job execution
 # --------------------------------------------------------------------------
 
@@ -1134,6 +1440,11 @@ class JobRunner:
         # command() runs repair.py's gap mode on its staging dir instead
         # of a full ultrasinger generation
         self._usdb_match = None
+        # set by _prepare_repair_source() - overrides song_dir/mode/
+        # lyrics_file for a broken.csv-categorized repair job whose real
+        # mode needed resolving first (media relink/download, or an
+        # online lyrics fetch) - see that method
+        self._repair_prep = None
 
     def _try_usdb_source(self):
         if self.job["kind"] != "new":
@@ -1145,6 +1456,99 @@ class JobRunner:
                 "(falling back to normal generation)")
             self._usdb_match = None
 
+    def _prepare_lyrics_repair(self):
+        """category "lyrics", no local lyrics.txt: fetch trusted lyrics
+        online (broken.csv's lyrics_url if given - "always use this one" -
+        else a normal artist/title search, same mechanism new songs use -
+        see run_lyrics_step()) before repair.py ever runs. Unlike that
+        best-effort new-song pass, failure here FAILS the job outright:
+        the category says the lyrics are wrong, so silently falling back
+        to a blind timing-only repair would leave the known-wrong lyrics
+        in place."""
+        job = self.job
+        song_dir = job["song_dir"]
+        txt_path = primary_ultrastar_txt(song_dir)
+        tags = read_ultrastar_tags(txt_path) if txt_path else {}
+        band = tags.get("ARTIST", "")
+        title = tags.get("TITLE", "")
+        if not band or not title:
+            return {"status": "failed",
+                    "error": "lyrics category: could not read #ARTIST/#TITLE "
+                             "from the song's txt"}
+
+        os.makedirs(WORK_DIR, exist_ok=True)
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        slug = slugify(job["id"])
+        lyrics_json = os.path.join(WORK_DIR, slug + "-lyrics.json")
+        fetch_log_path = os.path.join(LOGS_DIR, slug + "-lyrics-fetch.log")
+        fetch_cmd = [sys.executable, LYRICS_FETCH_PY,
+                    "--artist", band, "--title", title, "--out", lyrics_json]
+        lyrics_url = (job.get("lyrics_url") or "").strip()
+        if lyrics_url:
+            fetch_cmd += ["--lyrics-url", lyrics_url]
+        try:
+            with open(fetch_log_path, "wb") as logfile:
+                proc = subprocess.run(fetch_cmd, stdout=logfile,
+                                      stderr=subprocess.STDOUT, timeout=60)
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "failed", "error": f"lyrics fetch failed: {exc}"}
+
+        if proc.returncode != 0 or not os.path.isfile(lyrics_json):
+            source_desc = "the given lyrics_url" if lyrics_url else "an online search"
+            return {"status": "failed",
+                    "error": f"lyrics category: no trusted lyrics found via {source_desc}"}
+
+        self._repair_prep = {"song_dir": song_dir, "mode": "lyrics",
+                             "lyrics_file": lyrics_json}
+        return None
+
+    def _prepare_media_repair_job(self):
+        """category "video"/"audio": restore the missing media (see
+        prepare_media_repair()) before running the cheap "gap" pass on it
+        as a safety net (a relinked/re-downloaded file may not be exactly
+        byte-identical to the original, e.g. different silence padding)."""
+        job = self.job
+        try:
+            result = prepare_media_repair(job)
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "failed",
+                    "error": f"{job.get('category')} category: media repair "
+                             f"failed unexpectedly: {exc}"}
+        category = job.get("category")
+        if result is None:
+            return {"status": "failed",
+                    "error": f"{category} category: no existing file to link and "
+                             "no usdb sync-meta source to download from"}
+        if result.get("status") == "already_present":
+            return {"status": "needs_review",
+                    "error": f"{category} category: reported missing, but the "
+                             "tag and file already exist - nothing to repair"}
+        if result.get("status") == "ambiguous":
+            cands = ", ".join(result.get("candidates", []))
+            return {"status": "failed",
+                    "error": f"{category} category: multiple candidate files "
+                             f"found ({cands}) - rename to match the txt, or "
+                             "remove the extra one"}
+        self._repair_prep = {"song_dir": result["staging_dir"], "mode": "gap",
+                             "lyrics_file": None}
+        return None
+
+    def _prepare_repair_source(self):
+        """Resolves a broken.csv-categorized repair job's real mode/source
+        before command() builds the repair.py invocation. Returns None
+        when the job can proceed as-is (nothing to override, or an
+        override was set on self._repair_prep) - or a
+        {"status": "failed"|"needs_review", "error": ...} dict for run()
+        to short-circuit on, without ever running a subprocess."""
+        if self.job["kind"] != "repair":
+            return None
+        mode = self.job.get("mode")
+        if mode == "lyrics" and not self.job.get("lyrics_file"):
+            return self._prepare_lyrics_repair()
+        if mode == "media":
+            return self._prepare_media_repair_job()
+        return None
+
     def command(self) -> list:
         if self.job["kind"] == "new":
             if self._usdb_match:
@@ -1153,6 +1557,10 @@ class JobRunner:
             return ultrasinger_command(
                 self.job["url"], self.job.get("band"), self.job.get("title"),
                 self.job.get("language"), self.job.get("musicbrainz_id"))
+        if self._repair_prep:
+            return repair_command(
+                self._repair_prep["song_dir"], self._repair_prep["mode"],
+                self._repair_prep["lyrics_file"])
         return repair_command(
             self.job["song_dir"], self.job.get("mode"), self.job.get("lyrics_file"))
 
@@ -1185,6 +1593,14 @@ class JobRunner:
                         "output_path": None, "duration_s": 0.0,
                         "quarantined_output": None, "repair_mode_result": None,
                         "lyrics_source_result": None, "usdb_song_id": None}
+
+        prep_result = self._prepare_repair_source()
+        if prep_result is not None:
+            out(f"  !! {prep_result['status']}: {prep_result['error']}")
+            return {"status": prep_result["status"], "error": prep_result["error"],
+                    "output_path": None, "duration_s": 0.0,
+                    "quarantined_output": None, "repair_mode_result": None,
+                    "lyrics_source_result": None, "usdb_song_id": None}
 
         out_dir = NEW_SONGS_DIR if self.job["kind"] == "new" else REPAIRED_DIR
         before_names = set(os.listdir(out_dir)) if os.path.isdir(out_dir) else set()
@@ -1494,7 +1910,7 @@ def cmd_repair_one(folder):
 def cmd_reset(state, all_jobs=False):
     n = 0
     for job in state.data["jobs"].values():
-        if job["status"] in ("failed", "running") or \
+        if job["status"] in ("failed", "running", "needs_review") or \
                 (all_jobs and job["status"] == "done"):
             job["status"] = "pending"
             job["error"] = None

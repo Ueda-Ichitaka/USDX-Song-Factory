@@ -219,6 +219,10 @@ def __safe_lookup(func):
         return None
 
 
+MBID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
 def lookup_musicbrainz_by_id(musicbrainz_id: str):
     """Direct-by-ID lookup (csv musicbrainz_id column) - skips the fuzzy
     title/artist search entirely for more reliable metadata. Accepts
@@ -227,15 +231,36 @@ def lookup_musicbrainz_by_id(musicbrainz_id: str):
     a csv author may reasonably supply either and the stack has no way
     to know which without trying). Returns None if neither resolves -
     the caller then falls back to the fuzzy search_musicbrainz(), same as
-    "no match found" there."""
+    "no match found" there.
+
+    The id is validated as a well-formed MBID (a UUID) BEFORE it ever
+    reaches the network. A clean 400 (garbage id, no special characters)
+    already comes back fast and is handled by __safe_lookup below - but a
+    malformed id containing certain characters (a raw space, in
+    particular) breaks the request in a way musicbrainzngs' own retry
+    logic (_safe_read: up to 8 attempts with escalating backoff) treats
+    as transient, hanging for ~1-2 minutes before giving up rather than
+    failing fast (confirmed live, not guessed). A csv value is unverified
+    user input - a copy-paste losing a character or gaining a stray space
+    must never cost a whole song's generation that much dead time.
+    """
     musicbrainz_id = (musicbrainz_id or "").strip()
     if not musicbrainz_id:
+        return None
+    if not MBID_RE.match(musicbrainz_id):
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('Invalid musicbrainz_id')} "
+              f"(not a well-formed MBID): {musicbrainz_id!r} - ignoring it, "
+              "falling back to the normal search")
         return None
 
     musicbrainzngs.set_useragent("UltraSinger", Settings.APP_VERSION, "https://github.com/rakuri255/UltraSinger")
 
+    # "release-groups" is NOT a valid include for a recording lookup (only
+    # for a release lookup - musicbrainzngs.VALID_INCLUDES); __get_year()
+    # fetches the release-group itself via a separate get_release_by_id()
+    # call when it isn't already embedded in the release data.
     recording_response = __safe_lookup(lambda: musicbrainzngs.get_recording_by_id(
-        musicbrainz_id, includes=["artist-credits", "releases", "tags", "release-groups"]))
+        musicbrainz_id, includes=["artist-credits", "releases", "tags"]))
     if recording_response is not None and "recording" in recording_response:
         recording = recording_response["recording"]
         year = __get_year(recording) if "release-list" in recording else None
@@ -321,10 +346,25 @@ def __get_image(recording) -> (bytes, str):
 def __get_year(recording):
     year = None
 
-    if 'release-list' not in recording:
+    if 'release-list' not in recording or not recording['release-list']:
         return year
 
-    release_group_id = recording['release-list'][0]['release-group']['id']
+    release = recording['release-list'][0]
+    if 'release-group' in release:
+        # search_recordings() results already embed this - no extra call
+        release_group_id = release['release-group']['id']
+    else:
+        # get_recording_by_id() results don't: "release-groups" isn't a
+        # valid include for a recording lookup (musicbrainzngs
+        # VALID_INCLUDES has it only for "release", not "recording") -
+        # fetch the release itself, which DOES support that include, to
+        # get its release-group id first
+        release_lookup = __musicbrainz_request(lambda: musicbrainzngs.get_release_by_id(
+            release['id'], includes=["release-groups"]))
+        if release_lookup is None or 'release-group' not in release_lookup.get('release', {}):
+            return year
+        release_group_id = release_lookup['release']['release-group']['id']
+
     release_group = __musicbrainz_request(lambda: musicbrainzngs.get_release_group_by_id(release_group_id))
 
     if release_group is None:
