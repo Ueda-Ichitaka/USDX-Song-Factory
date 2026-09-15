@@ -937,6 +937,14 @@ try:
           os.path.isdir(result["staging_dir"]))
     check("prepare_usdb_job falls back to the job's own url when USDB has no video",
           dl_calls2[0][0] == "https://www.youtube.com/watch?v=fallback")
+    check("prepare_usdb_job's staging dir is named after the song, not the "
+          "url-based job id - its basename becomes the FINAL output folder "
+          "name (repair.py's write_repaired() derives it from song_dir's "
+          "own basename) - regression for a real bug found 2026-09-14: "
+          "USDB-sourced songs landed in an ugly "
+          "'new-https-www-youtube-...-usdb' folder instead of "
+          "'Lacrimosa - Lichtgestalt'",
+          os.path.basename(result["staging_dir"]) == "Lacrimosa - Lichtgestalt")
     with open(os.path.join(result["staging_dir"], "song.txt"), encoding="utf-8") as f:
         written = f.read()
     check("prepare_usdb_job writes a txt with a #VIDEO tag pointing at the download",
@@ -1328,6 +1336,12 @@ result_link = orch.prepare_media_repair(job_media_video)
 check("prepare_media_repair links a loose local file into a staging copy",
       result_link is not None and result_link["source"] == "local" and
       os.path.isdir(result_link["staging_dir"]))
+check("prepare_media_repair's staging dir basename matches the original "
+      "song folder's name (not a url/id-based slug) - same class of bug "
+      "as prepare_usdb_job's staging dir naming (repair.py's "
+      "write_repaired() derives the output folder name from it)",
+      os.path.basename(result_link["staging_dir"]) ==
+      os.path.basename(media_dir))
 with open(os.path.join(result_link["staging_dir"], "media-song.txt"),
          encoding="utf-8") as f:
     staged_content = f.read()

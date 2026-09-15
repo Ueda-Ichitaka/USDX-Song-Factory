@@ -263,6 +263,37 @@ def slugify(text: str) -> str:
     return slug[:80] or "job"
 
 
+def safe_dirname(name: str) -> str:
+    """A human-readable name (e.g. a job's "Band - Title" label) made safe
+    to use AS a directory's own basename. Unlike slugify() (log filenames/
+    staging keys - lossy on purpose, never user-facing), this preserves
+    casing/spaces/most punctuation: every song folder in this stack
+    already looks like "ASP - Ich will brennen" or even "Therion -
+    Poupée De Cire, Poupée De Son" - only characters that would actually
+    break a path (a literal "/" or a NUL byte) get replaced."""
+    name = (name or "").replace("\x00", "-").replace("/", "-").strip(". ")
+    return name[:200] or "song"
+
+
+def job_display_name(job: dict) -> str:
+    """The human-readable name for `job`, for anything whose basename ends
+    up user-facing (see safe_dirname()) - NOT slugify(), which is for
+    internal-only filenames (logs, cache keys). Prefers the job's own
+    "label" (what build_job_plan() always sets for a real job); a repair
+    job without one falls back to its song_dir's basename (the original
+    folder's own name); a new job falls back to "band - title"; anything
+    else falls back to a slug of the job id (never empty)."""
+    label = (job.get("label") or "").strip()
+    if label:
+        return label
+    if job.get("kind") == "repair" and job.get("song_dir"):
+        return os.path.basename(job["song_dir"].rstrip("/"))
+    band = (job.get("band") or "").strip()
+    title = (job.get("title") or "").strip()
+    combined = " - ".join(x for x in (band, title) if x)
+    return combined or slugify(job.get("id", "job"))
+
+
 def get_usdb_session_and_catalog():
     """Log in to USDB and load its song catalog, once per orchestrator
     run (see prepare_usdb_job() for how a job uses this). Returns
@@ -1138,7 +1169,11 @@ def prepare_usdb_job(job: dict) -> dict:
         return None
 
     slug = slugify(job["id"])
-    staging_dir = os.path.join(WORK_DIR, slug + "-usdb")
+    # the staging dir's OWN basename becomes the final output folder name
+    # (repair.py's write_repaired() derives it from song_dir's basename) -
+    # must be the human-readable song name, not a url/id-based slug (see
+    # job_display_name()/safe_dirname())
+    staging_dir = os.path.join(WORK_DIR, safe_dirname(job_display_name(job)))
     if os.path.isdir(staging_dir):
         shutil.rmtree(staging_dir)
     os.makedirs(staging_dir, exist_ok=True)
@@ -1276,7 +1311,9 @@ def prepare_media_repair(job: dict):
         return {"status": "ambiguous", "candidates": candidate["candidates"]}
 
     slug = slugify(job["id"])
-    staging_dir = os.path.join(WORK_DIR, slug + "-media")
+    # same reasoning as prepare_usdb_job() - the staging dir's basename
+    # becomes the final output folder name
+    staging_dir = os.path.join(WORK_DIR, safe_dirname(job_display_name(job)))
     if os.path.isdir(staging_dir):
         shutil.rmtree(staging_dir)
 
