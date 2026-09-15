@@ -78,7 +78,10 @@ def __insert_removed_symbols(separated_array, removed_indices, symbols):
     for syllable in separated_array:
         tmp = ""
         for char in syllable:
-            if i in removed_indices:
+            # while, not if - CONSECUTIVE removed positions (e.g. "hi!!bye",
+            # "wait... what") must all land together before the next real
+            # character, not scatter one-per-character-processed
+            while i in removed_indices:
                 tmp += symbols[symbol_index]
                 symbol_index += 1
                 i += 1
