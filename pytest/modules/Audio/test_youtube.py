@@ -5,6 +5,40 @@ from unittest.mock import patch
 from src.modules.Audio.youtube import get_youtube_title
 from src.modules.Audio.youtube import download_and_convert_thumbnail
 from src.modules.Audio.youtube import resolve_song_identity
+from src.modules.Audio.youtube import should_use_musicbrainz_cover
+from src.modules.musicbrainz_client import SongInfo
+
+
+class TestShouldUseMusicbrainzCover(unittest.TestCase):
+    """Regression for a real bug found live 2026-09-15: the cover-
+    selection check in download_from_youtube() required BOTH cover_url
+    and cover_image_data to be set, discarding a perfectly good,
+    already-fetched MusicBrainz cover (falling back to an inferior
+    YouTube thumbnail instead) whenever cover_url alone was missing -
+    which musicbrainz_client.py's __get_image() can legitimately produce
+    (a release with real cover art but no image explicitly marked
+    front=True in its Cover Art Archive listing)."""
+
+    def test_uses_musicbrainz_cover_when_only_image_data_is_present(self):
+        info = SongInfo(title="X", artist="Y",
+                        cover_image_data=b"\xff\xd8fakejpeg", cover_url=None)
+        self.assertTrue(should_use_musicbrainz_cover(info))
+
+    def test_uses_musicbrainz_cover_when_both_are_present(self):
+        info = SongInfo(title="X", artist="Y",
+                        cover_image_data=b"\xff\xd8fakejpeg",
+                        cover_url="https://example.com/cover.jpg")
+        self.assertTrue(should_use_musicbrainz_cover(info))
+
+    def test_falls_back_to_youtube_thumbnail_when_no_image_data(self):
+        # cover_url alone (no actual bytes) is not enough to save a cover
+        info = SongInfo(title="X", artist="Y", cover_image_data=None,
+                        cover_url="https://example.com/cover.jpg")
+        self.assertFalse(should_use_musicbrainz_cover(info))
+
+    def test_falls_back_to_youtube_thumbnail_when_neither_is_present(self):
+        info = SongInfo(title="X", artist="Y", cover_image_data=None, cover_url=None)
+        self.assertFalse(should_use_musicbrainz_cover(info))
 
 
 class TestResolveSongIdentity(unittest.TestCase):

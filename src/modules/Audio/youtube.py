@@ -111,6 +111,22 @@ def __start_download(ydl_opts, url: str) -> None:
             raise Exception("Download failed with error: " + str(errors))
 
 
+def should_use_musicbrainz_cover(song_info) -> bool:
+    """Whether to use the MusicBrainz-sourced cover (real image bytes,
+    already fetched) instead of falling back to a YouTube thumbnail.
+
+    Only `cover_image_data` (the actual bytes save_image() writes to
+    disk) matters here - `cover_url` is purely informational (the
+    #COVERURL tag). A release whose Cover Art Archive listing has no
+    image explicitly marked front=True can legitimately return real
+    cover_image_data with cover_url still None (see musicbrainz_client.py
+    __get_image()) - requiring BOTH to be set would silently discard an
+    already-fetched, usually higher-quality cover in favor of a YouTube
+    thumbnail just because the informational url happened to be missing.
+    """
+    return song_info.cover_image_data is not None
+
+
 def resolve_song_identity(mb_artist: str, mb_title: str,
                           forced_artist: str = None,
                           forced_title: str = None) -> tuple[str, str]:
@@ -155,7 +171,7 @@ def download_from_youtube(input_url: str, output_folder_path: str, cookiefile: s
         video_with_audio_path, basename_without_ext, song_output
     )
 
-    if song_info.cover_url is not None and song_info.cover_image_data is not None:
+    if should_use_musicbrainz_cover(song_info):
         cover_url = song_info.cover_url
         save_image(song_info.cover_image_data, basename_without_ext, song_output)
     else:
