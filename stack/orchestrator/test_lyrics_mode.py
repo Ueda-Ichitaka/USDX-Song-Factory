@@ -186,6 +186,45 @@ check("build_syllables_from_lyric_units marks word end with a trailing space",
       per_unit[0][0][0] == "hello " and per_unit[1][0][0] == "goodbye ")
 
 # --------------------------------------------------------------------------
+# split_long_lyric_units(): force a line break when a unit is too long
+# (character cutoff) or has a long internal pause (silence gap) - never
+# mid-word. Genius/lyrics-source line breaks alone (what build_syllables_
+# from_lyric_units's units are based on) can produce a single "line" that
+# is way too long on screen, or spans a real instrumental/breathing gap.
+# --------------------------------------------------------------------------
+
+short_unit = [("Hi ", 0.0, 0.5), ("there ", 0.5, 1.0)]
+check("split_long_lyric_units leaves a short, gapless unit unchanged",
+      repair.split_long_lyric_units([short_unit]) == [short_unit])
+
+paused_unit = [("Hi ", 0.0, 0.5), ("there ", 4.0, 4.5)]
+split_paused = repair.split_long_lyric_units([paused_unit], pause_s=2.5)
+check(f"split_long_lyric_units splits on a long internal pause even "
+      f"though the line is short (got {split_paused})",
+      split_paused == [[("Hi ", 0.0, 0.5)], [("there ", 4.0, 4.5)]])
+
+no_split_short_pause = repair.split_long_lyric_units([paused_unit], pause_s=5.0)
+check("split_long_lyric_units does NOT split when the pause is under "
+      "the configured threshold",
+      no_split_short_pause == [paused_unit])
+
+long_words = [(f"word{i} ", float(i), float(i) + 0.5) for i in range(20)]
+split_long = repair.split_long_lyric_units([long_words], max_chars=30, pause_s=999)
+check("split_long_lyric_units splits an oversized line into 2+ sub-lines",
+      len(split_long) > 1)
+check("split_long_lyric_units never exceeds max_chars on a sub-line it "
+      "had the option to split earlier for",
+      all(sum(len(w.strip()) for w, _, _ in sub) <= 30 for sub in split_long[:-1]))
+rejoined = [w for sub in split_long for w in sub]
+check("split_long_lyric_units never drops or reorders syllables",
+      rejoined == long_words)
+
+mid_word_syllables = [("won", 0.0, 0.3), ("der", 0.3, 0.6), ("ful ", 0.6, 0.9)]
+no_mid_word_split = repair.split_long_lyric_units(
+    [mid_word_syllables], max_chars=3, pause_s=999)
+check("split_long_lyric_units never splits in the middle of a hyphenated "
+      "word, even if that word alone exceeds max_chars",
+      no_mid_word_split == [mid_word_syllables])
 
 print()
 if failures:

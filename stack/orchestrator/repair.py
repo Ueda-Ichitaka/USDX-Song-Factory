@@ -71,6 +71,11 @@ NOTE_LINE_RE = re.compile(
 ALIGN_PAD = float(os.environ.get("REPAIR_ALIGN_PAD", "6.0"))
 MIN_WORD_SCORE = float(os.environ.get("REPAIR_MIN_WORD_SCORE", "0.6"))
 MAX_LOCAL_DEVIATION = float(os.environ.get("REPAIR_MAX_LOCAL_DEVIATION", "3.0"))
+# lyrics-mode line-splitting (see split_long_lyric_units()) - a source's
+# own line breaks alone can produce a "line" that's way too long on
+# screen, or spans a real instrumental/breathing gap
+LYRICS_MAX_LINE_CHARS = int(os.environ.get("LYRICS_MAX_LINE_CHARS", "60"))
+LYRICS_LINE_BREAK_PAUSE_S = float(os.environ.get("LYRICS_LINE_BREAK_PAUSE_S", "2.5"))
 # resource-budget auto-selection (or an explicit override) picks this in
 # orchestrator.py and passes it through - see resource_profile.py
 DEMUCS_MODEL = DemucsModel(os.environ.get("DEMUCS_MODEL", "htdemucs") or "htdemucs")
@@ -1653,6 +1658,45 @@ def build_syllables_from_lyric_units(units, aligned_units, language) -> list:
     return per_unit_syllables
 
 
+def split_long_lyric_units(per_unit_syllables: list, max_chars: float = None,
+                           pause_s: float = None) -> list:
+    """Force an extra line break within a unit whenever it's too long on
+    screen (`max_chars`) or has a long internal pause (silence gap,
+    `pause_s`) - never in the middle of a word. A lyrics source's own
+    line breaks (what each unit already is, one per build_syllables_
+    from_lyric_units() entry) can easily produce a single "line" that's
+    way too long, or that spans a real instrumental/breathing gap that
+    should have been its own line break.
+
+    A syllable's word_field ending in a space marks the end of a word
+    (see build_syllables_from_lyric_units()) - only that kind of boundary
+    is ever split on, so a hyphenated word's own syllables always stay
+    together even if the whole word alone exceeds max_chars."""
+    max_chars = LYRICS_MAX_LINE_CHARS if max_chars is None else max_chars
+    pause_s = LYRICS_LINE_BREAK_PAUSE_S if pause_s is None else pause_s
+    result = []
+    for unit in per_unit_syllables:
+        if not unit:
+            result.append(unit)
+            continue
+        current = [unit[0]]
+        current_chars = len(unit[0][0].strip())
+        for prev, syl in zip(unit, unit[1:]):
+            prev_word, _prev_start, prev_end = prev
+            word, start, _end = syl
+            at_word_boundary = prev_word.endswith(" ")
+            pause = start - prev_end
+            would_overflow = current_chars + len(word.strip()) > max_chars
+            if at_word_boundary and (pause >= pause_s or would_overflow):
+                result.append(current)
+                current = []
+                current_chars = 0
+            current.append(syl)
+            current_chars += len(word.strip())
+        result.append(current)
+    return result
+
+
 def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
                         per_unit_syllables: list, processing_audio: str):
     """Build a FRESH UltraStar txt from per-unit syllable lists (start/end
@@ -1660,8 +1704,11 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
     write_repaired() (which maps new timing onto an EXISTING note
     sequence), this builds an entirely new note sequence - the
     syllable/line count is whatever the lyrics source produced, not the
-    original file's. BPM is kept from the scaffold (audio-only, lyrics
-    don't change it); header tags are kept verbatim except #GAP."""
+    original file's, EXCEPT a unit too long on screen or spanning a long
+    internal pause gets split further (see split_long_lyric_units()). BPM
+    is kept from the scaffold (audio-only, lyrics don't change it);
+    header tags are kept verbatim except #GAP."""
+    per_unit_syllables = split_long_lyric_units(per_unit_syllables)
     song_name = os.path.basename(song_dir.rstrip("/"))
     out_song_dir = os.path.join(out_dir, song_name)
     os.makedirs(out_song_dir, exist_ok=True)
