@@ -170,14 +170,16 @@ def create_midi_segments_from_transcribed_data(transcribed_data: list[Transcribe
     end_times = []
     words = []
 
-    if transcribed_data:
-        for i, midi_segment in enumerate(transcribed_data):
-            start_times.append(midi_segment.start)
-            end_times.append(midi_segment.end)
-            words.append(midi_segment.word)
-        midi_segments = create_midi_notes_from_pitched_data(start_times, end_times, words,
-                                                            pitched_data, allowed_notes)
-        return midi_segments
+    # create_midi_notes_from_pitched_data() already handles empty
+    # start_times/end_times/words correctly (returns []) - no transcribed
+    # data (a fully-instrumental or silent song - whisper genuinely can
+    # transcribe zero segments) is not a special case
+    for i, midi_segment in enumerate(transcribed_data or []):
+        start_times.append(midi_segment.start)
+        end_times.append(midi_segment.end)
+        words.append(midi_segment.word)
+    return create_midi_notes_from_pitched_data(start_times, end_times, words,
+                                               pitched_data, allowed_notes)
 
 
 def create_repitched_midi_segments_from_ultrastar_txt(pitched_data: PitchedData, ultrastar_txt: UltrastarTxtValue) -> list[MidiSegment]:
