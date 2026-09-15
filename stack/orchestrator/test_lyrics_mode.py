@@ -242,6 +242,57 @@ check("lyrics_txt_lines reconstructs one text line per unit",
 check("lyrics_txt_lines skips empty units without leaving a blank line",
       repair.lyrics_txt_lines([[], sample_units[0]]) == ["Hello world"])
 
+# --------------------------------------------------------------------------
+# run_alignment_with_retries(): alignment has real run-to-run variance
+# (window/anchor choices) - a poor first attempt is often not the best a
+# given audio/text pairing can actually do. Retries (bounded, so a
+# persistently bad match doesn't loop forever) and always keeps whichever
+# attempt scored best, stopping early once one is "good enough".
+# --------------------------------------------------------------------------
+
+bad_attempt = (["u"], ["a"], 2, 10)     # 20% aligned
+good_attempt = (["u"], ["a"], 9, 10)    # 90% aligned
+worse_attempt = (["u"], ["a"], 1, 10)   # 10% aligned
+
+calls = []
+
+
+def _attempts(sequence):
+    it = iter(sequence)
+
+    def _fn():
+        result = next(it)
+        calls.append(result)
+        return result
+    return _fn
+
+
+calls.clear()
+result_stops_early = repair.run_alignment_with_retries(
+    _attempts([bad_attempt, good_attempt, worse_attempt]), max_attempts=3)
+check("run_alignment_with_retries stops early once an attempt is good "
+      "enough (>= 0.5 aligned) - does not run a 3rd attempt",
+      len(calls) == 2)
+check("run_alignment_with_retries returns the good attempt",
+      result_stops_early == good_attempt)
+
+calls.clear()
+result_keeps_best = repair.run_alignment_with_retries(
+    _attempts([bad_attempt, worse_attempt]), max_attempts=2)
+check("run_alignment_with_retries runs up to max_attempts when nothing "
+      "is ever \"good enough\"",
+      len(calls) == 2)
+check("run_alignment_with_retries keeps the BEST attempt seen, even "
+      f"when none reached the threshold (got {result_keeps_best})",
+      result_keeps_best == bad_attempt)
+
+calls.clear()
+result_single = repair.run_alignment_with_retries(
+    _attempts([good_attempt, bad_attempt]), max_attempts=3)
+check("run_alignment_with_retries never even tries a 2nd attempt when "
+      "the 1st is already good enough",
+      len(calls) == 1 and result_single == good_attempt)
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")

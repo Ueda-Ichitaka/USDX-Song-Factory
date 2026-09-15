@@ -71,6 +71,13 @@ NOTE_LINE_RE = re.compile(
 ALIGN_PAD = float(os.environ.get("REPAIR_ALIGN_PAD", "6.0"))
 MIN_WORD_SCORE = float(os.environ.get("REPAIR_MIN_WORD_SCORE", "0.6"))
 MAX_LOCAL_DEVIATION = float(os.environ.get("REPAIR_MAX_LOCAL_DEVIATION", "3.0"))
+# bounded auto-retry on a poor lyrics-mode alignment (see
+# run_alignment_with_retries()) - alignment has real run-to-run variance
+# (window/anchor choices), so a poor first attempt is often not the best
+# a given audio/text pairing can actually do
+REPAIR_MAX_ALIGN_ATTEMPTS = int(os.environ.get("REPAIR_MAX_ALIGN_ATTEMPTS", "3"))
+REPAIR_ALIGN_GOOD_ENOUGH_FRACTION = float(
+    os.environ.get("REPAIR_ALIGN_GOOD_ENOUGH_FRACTION", "0.5"))
 # lyrics-mode line-splitting (see split_long_lyric_units()) - a source's
 # own line breaks alone can produce a "line" that's way too long on
 # screen, or spans a real instrumental/breathing gap
@@ -1800,6 +1807,33 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
     return out_path
 
 
+def run_alignment_with_retries(align_attempt_fn, max_attempts: int = None):
+    """Run `align_attempt_fn()` (no args - performs ONE full alignment
+    attempt, returns (units, aligned_units, n_aligned, n_total)) up to
+    `max_attempts` times. Alignment has real run-to-run variance (window/
+    anchor choices) - a poor first attempt is often not the best a given
+    audio/text pairing can actually do. Stops early the first time an
+    attempt's aligned-word fraction reaches REPAIR_ALIGN_GOOD_ENOUGH_
+    FRACTION; otherwise always returns whichever attempt scored best,
+    even if none reached it - never loops unboundedly, and never discards
+    a decent-but-imperfect attempt just because a later one was worse."""
+    max_attempts = REPAIR_MAX_ALIGN_ATTEMPTS if max_attempts is None else max_attempts
+    best = None
+    best_fraction = -1.0
+    for attempt in range(1, max_attempts + 1):
+        result = align_attempt_fn()
+        _units, _aligned, n_aligned, n_total = result
+        fraction = (n_aligned / n_total) if n_total else 0.0
+        print(f"{ULTRASINGER_HEAD} lyrics alignment attempt {attempt}/{max_attempts}: "
+              f"{n_aligned}/{n_total} words aligned ({fraction:.0%})")
+        if fraction > best_fraction:
+            best_fraction = fraction
+            best = result
+        if fraction >= REPAIR_ALIGN_GOOD_ENOUGH_FRACTION or attempt == max_attempts:
+            break
+    return best
+
+
 def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir: str,
                            device: str, work_dir: str, language: str = None,
                            align_model: str = None):
@@ -1834,17 +1868,23 @@ def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir:
         model, meta, lang = load_aligner(lang, "cpu")
 
     scaffold_lines = txt.lyric_lines()
-    seed_lyric_windows(lyrics_units, scaffold_lines, txt, audio_dur)
 
-    aligned_units = progressively_align_lyrics(
-        lyrics_units, model, meta, audio16k, audio_dur)
-    reanchor_outlier_lyric_units(
-        lyrics_units, aligned_units, model, meta, audio16k, audio_dur)
-    rescue_dropped_lyric_units(
-        lyrics_units, aligned_units, model, meta, audio16k, audio_dur)
+    def _align_attempt():
+        attempt_units = copy.deepcopy(lyrics_units)
+        seed_lyric_windows(attempt_units, scaffold_lines, txt, audio_dur)
+        attempt_aligned = progressively_align_lyrics(
+            attempt_units, model, meta, audio16k, audio_dur)
+        reanchor_outlier_lyric_units(
+            attempt_units, attempt_aligned, model, meta, audio16k, audio_dur)
+        rescue_dropped_lyric_units(
+            attempt_units, attempt_aligned, model, meta, audio16k, audio_dur)
+        n_aligned = sum(1 for a in attempt_aligned for w in a["words"] if w)
+        n_total = sum(len(u["words"]) for u in attempt_units)
+        return attempt_units, attempt_aligned, n_aligned, n_total
 
-    n_aligned = sum(1 for a in aligned_units for w in a["words"] if w)
-    n_total = sum(len(u["words"]) for u in lyrics_units)
+    lyrics_units, aligned_units, n_aligned, n_total = run_alignment_with_retries(
+        _align_attempt)
+
     if n_total and n_aligned / n_total < 0.5:
         print(f"{ULTRASINGER_HEAD} {red_highlighted('warning:')} only "
               f"{n_aligned}/{n_total} words aligned confidently - the "
