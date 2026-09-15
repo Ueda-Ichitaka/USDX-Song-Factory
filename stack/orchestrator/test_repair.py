@@ -235,6 +235,52 @@ else:
               os.path.isfile(audio_out_aac) and audio_out_aac.endswith(".m4a"))
 
 # --------------------------------------------------------------------------
+# interpolate_word_timings(): a LEADING run (no aligned word before it,
+# only after) must scale its words to fit the actual time available
+# before the next aligned word - just like the middle-run branch already
+# does (scale = span / total). Found live 2026-09-15: it didn't - it used
+# the run's UNSCALED original durations, so whenever their total exceeds
+# the real gap before the first successfully-aligned word (a very
+# ordinary situation: the opening lines of a song before the aligner
+# locks on), the interpolated words overran straight past where the next
+# REAL aligned word starts - corrupting the very beginning of every
+# repaired song that hit this path.
+# --------------------------------------------------------------------------
+
+def _fake_word(orig_start, orig_end, timing=None):
+    return {"timing": timing, "orig_start": orig_start, "orig_end": orig_end,
+           "orig_dur": max(0.01, orig_end - orig_start)}
+
+
+# leading run: 3 words of 2.0s original duration each (total 6.0s), but
+# only 1.5s of real time exists before the next aligned word at t=1.5
+leading_overrun = [
+    _fake_word(0.0, 2.0), _fake_word(2.0, 4.0), _fake_word(4.0, 6.0),
+    _fake_word(6.0, 6.5, timing={"start": 1.5, "end": 2.0}),
+]
+repair.interpolate_word_timings(leading_overrun)
+last_leading_end = leading_overrun[2]["interp"][1]
+check("interpolate_word_timings: an overrunning LEADING run is scaled "
+      f"down to fit before the next aligned word (last interp end "
+      f"{last_leading_end} must not exceed the next aligned word's own "
+      "start 1.5)",
+      last_leading_end <= 1.5 + 1e-9)
+check("interpolate_word_timings: the scaled leading run still starts at "
+      "or after 0",
+      leading_overrun[0]["interp"][0] >= 0.0)
+
+# leading run that already fits comfortably (total 1.0s <= 5.0s
+# available) must behave exactly as before: stack unscaled, ending
+# exactly at the next aligned word's start
+leading_fits = [
+    _fake_word(0.0, 0.5), _fake_word(0.5, 1.0),
+    _fake_word(1.0, 1.2, timing={"start": 5.0, "end": 5.5}),
+]
+repair.interpolate_word_timings(leading_fits)
+check("interpolate_word_timings: a leading run that already fits is "
+      "unaffected by the fix (still lands exactly at the next aligned "
+      f"word's start) - got {leading_fits[1]['interp']}",
+      abs(leading_fits[1]["interp"][1] - 5.0) < 1e-9)
 
 print()
 if failures:

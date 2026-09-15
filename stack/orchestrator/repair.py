@@ -907,10 +907,18 @@ def interpolate_word_timings(flat_words: list) -> None:
         elif prv is None:
             nxt_start = max(0.05, nxt["start"])
             span = min(total, max(0.1, nxt_start))
+            # scale down like the middle-run branch below does - without
+            # this, a leading run whose ORIGINAL total duration exceeds
+            # the real time available before the next aligned word (an
+            # ordinary situation: the opening lines of a song, before the
+            # aligner locks on) overran straight past that word's own
+            # start, corrupting the very beginning of the repaired song
+            scale = span / total
             cursor = nxt_start - span
             for w, d in zip(run, orig_durs):
-                w["interp"] = (cursor, cursor + d)
-                cursor += d
+                scaled_d = d * scale
+                w["interp"] = (cursor, cursor + scaled_d)
+                cursor += scaled_d
         elif nxt is None:
             # trailing run: keep the original txt timing when it stays after
             # the last aligned word (e.g. an outro after a long gap)
