@@ -1697,6 +1697,16 @@ def split_long_lyric_units(per_unit_syllables: list, max_chars: float = None,
     return result
 
 
+def lyrics_txt_lines(per_unit_syllables: list) -> list:
+    """The final, as-used lyric line text (one entry per output line) -
+    reconstructed from per_unit_syllables (already split via
+    split_long_lyric_units()) the same way write_lyrics_result() builds
+    the actual sung syllables, so lyrics.txt reflects the real final
+    song, not the raw fetched text before splitting/marker-stripping."""
+    return ["".join(w for w, _, _ in unit).strip()
+            for unit in per_unit_syllables if unit]
+
+
 def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
                         per_unit_syllables: list, processing_audio: str):
     """Build a FRESH UltraStar txt from per-unit syllable lists (start/end
@@ -1776,6 +1786,15 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         for raw in out_lines:
             f.write(raw.rstrip("\r\n") + "\n")
+
+    # persist the final (post-splitting/marker-stripping) lyrics text
+    # alongside the song - an admin can hand-correct line breaks/typos
+    # here, and any FUTURE repair of this folder already prefers it as
+    # the top-priority trusted source (see find_lyrics_file())
+    lyrics_txt_path = os.path.join(out_song_dir, "lyrics.txt")
+    with open(lyrics_txt_path, "w", encoding="utf-8", newline="\n") as f:
+        for line in lyrics_txt_lines(per_unit_syllables):
+            f.write(line + "\n")
 
     print(f"{ULTRASINGER_HEAD} {green_highlighted('wrote')} {out_path}")
     return out_path

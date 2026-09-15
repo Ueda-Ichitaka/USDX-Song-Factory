@@ -226,6 +226,22 @@ check("split_long_lyric_units never splits in the middle of a hyphenated "
       "word, even if that word alone exceeds max_chars",
       no_mid_word_split == [mid_word_syllables])
 
+# --------------------------------------------------------------------------
+# lyrics_txt_lines(): the persisted lyrics.txt content - reconstructed
+# from the FINAL (post section-marker-stripping, post length/pause-
+# splitting) per_unit_syllables, so an admin editing it sees the real,
+# as-used line structure - not the raw fetched text.
+# --------------------------------------------------------------------------
+
+sample_units = [
+    [("Hello ", 0.0, 0.5), ("world ", 0.5, 1.0)],
+    [("Goodbye ", 2.0, 2.5)],
+]
+check("lyrics_txt_lines reconstructs one text line per unit",
+      repair.lyrics_txt_lines(sample_units) == ["Hello world", "Goodbye"])
+check("lyrics_txt_lines skips empty units without leaving a blank line",
+      repair.lyrics_txt_lines([[], sample_units[0]]) == ["Hello world"])
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")
