@@ -518,14 +518,29 @@ cmd_default = orch.repair_command("/data/input/Some Song")
 check("repair_command omits --lyrics-file when not given",
       "--lyrics-file" not in cmd_default)
 
+cmd_language = orch.repair_command("/data/input/Some Song", language="de")
+check("repair_command passes --language when given (broken.csv's "
+      "optional 'language' column, threaded through as the job's "
+      "'forced' input to language.txt - see modules.language_file)",
+      "--language" in cmd_language and
+      cmd_language[cmd_language.index("--language") + 1] == "de")
+cmd_no_language = orch.repair_command("/data/input/Some Song")
+check("repair_command omits --language when not given",
+      "--language" not in cmd_no_language)
+
 fake_repair_job = {"id": "repair|x", "kind": "repair", "song_dir": "/data/input/x",
-                   "mode": "lyrics", "lyrics_file": "/data/input/x/lyrics.txt"}
+                   "mode": "lyrics", "lyrics_file": "/data/input/x/lyrics.txt",
+                   "language": "fr"}
 fake_runner = orch.JobRunner(fake_repair_job)
 built_cmd = fake_runner.command()
 check("JobRunner.command() routes a lyrics-mode repair job correctly",
       "--mode" in built_cmd and
       built_cmd[built_cmd.index("--mode") + 1] == "lyrics" and
       "--lyrics-file" in built_cmd)
+check("JobRunner.command() threads a repair job's language through to "
+      "--language",
+      "--language" in built_cmd and
+      built_cmd[built_cmd.index("--language") + 1] == "fr")
 
 # --------------------------------------------------------------------------
 # run_lyrics_step(): best-effort online-lyrics fetch + realign, must
@@ -1155,9 +1170,9 @@ check("pick_media_candidate refuses to guess between two unrelated candidates",
 
 reports = [
     {"band": "Queen", "title": "I Want To Break Free", "category": "gap",
-     "description": "", "lyrics_url": ""},
+     "description": "", "lyrics_url": "", "language": ""},
     {"band": "Metric", "title": "Black Sheep", "category": "async",
-     "description": "", "lyrics_url": ""},
+     "description": "", "lyrics_url": "", "language": ""},
 ]
 matched = orch.match_broken_report(tags_dir, reports)
 check("match_broken_report matches on #ARTIST/#TITLE",
@@ -1198,10 +1213,10 @@ _write_song("Some Band - Other Category Song", "Some Band", "Other Category Song
 
 plan_broken_csv = os.path.join(TMP_DATA, "plan-broken.csv")
 with open(plan_broken_csv, "w", encoding="utf-8") as f:
-    f.write("band,song name,category,description\n"
-            "Queen,I Want To Break Free,gap,\n"
-            "Metric,Black Sheep,async,\n"
-            "Some Band,Other Category Song,other,needs a human look\n")
+    f.write("band,song name,category,description,language\n"
+            "Queen,I Want To Break Free,gap,,en\n"
+            "Metric,Black Sheep,async,,\n"
+            "Some Band,Other Category Song,other,needs a human look,\n")
 
 orig_input_dir = orch.INPUT_DIR
 orig_songs_file = orch.SONGS_FILE
@@ -1224,6 +1239,13 @@ try:
           by_label["Some Band - Other Category Song"]["status"] == "needs_review" and
           by_label["Some Band - Other Category Song"]["description"] ==
           "needs a human look")
+    check("build_job_plan: a broken.csv 'language' column is threaded onto "
+          "the repair job (same input mechanism language.txt already "
+          f"respects) - got {by_label['Queen - I Want To Break Free'].get('language')!r}",
+          by_label["Queen - I Want To Break Free"].get("language") == "en")
+    check("build_job_plan: a blank/missing broken.csv language leaves the "
+          "job's language empty, not a guess",
+          not by_label["Metric - Black Sheep"].get("language"))
 finally:
     orch.INPUT_DIR = orig_input_dir
     orch.SONGS_FILE = orig_songs_file

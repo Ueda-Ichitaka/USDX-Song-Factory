@@ -686,6 +686,7 @@ def build_job_plan(state: State, only=None) -> list:
         category = report["category"] if report else ""
         description = report["description"] if report else ""
         report_lyrics_url = report.get("lyrics_url", "") if report else ""
+        report_language = report.get("language", "") if report else ""
 
         # a manually-supplied lyrics.txt always wins (existing mechanism,
         # unconditional); otherwise the broken.csv category picks a
@@ -713,7 +714,7 @@ def build_job_plan(state: State, only=None) -> list:
         job = state.get_or_create(
             job_id, kind="repair", label=name, song_dir=folder, mode=mode,
             lyrics_file=lyrics_file, category=category, description=description,
-            lyrics_url=report_lyrics_url)
+            lyrics_url=report_lyrics_url, language=report_language)
 
         # "other"/blank/unrecognized category: the defect is unknown or
         # free-text only - don't guess an action, flag it for a human
@@ -1454,7 +1455,7 @@ def ultrasinger_command(url: str, band: str = None, title: str = None,
 
 
 def repair_command(song_dir: str, mode: str = None, lyrics_file: str = None,
-                   out_dir: str = None) -> list:
+                   out_dir: str = None, language: str = None) -> list:
     cmd = [sys.executable, REPAIR_PY,
            "--song-dir", song_dir,
            "--out", out_dir or REPAIRED_DIR,
@@ -1462,6 +1463,11 @@ def repair_command(song_dir: str, mode: str = None, lyrics_file: str = None,
            "--device", DEVICE]
     if lyrics_file:
         cmd += ["--lyrics-file", lyrics_file]
+    # a broken.csv-provided language pins whisper's re-alignment language,
+    # same "forced" input a saved language.txt still takes priority over -
+    # see src/modules/language_file.py
+    if language and language.strip():
+        cmd += ["--language", language.strip()]
     return cmd
 
 
@@ -1590,16 +1596,18 @@ class JobRunner:
         if self.job["kind"] == "new":
             if self._usdb_match:
                 return repair_command(
-                    self._usdb_match["staging_dir"], mode="gap", out_dir=NEW_SONGS_DIR)
+                    self._usdb_match["staging_dir"], mode="gap", out_dir=NEW_SONGS_DIR,
+                    language=self.job.get("language"))
             return ultrasinger_command(
                 self.job["url"], self.job.get("band"), self.job.get("title"),
                 self.job.get("language"), self.job.get("musicbrainz_id"))
         if self._repair_prep:
             return repair_command(
                 self._repair_prep["song_dir"], self._repair_prep["mode"],
-                self._repair_prep["lyrics_file"])
+                self._repair_prep["lyrics_file"], language=self.job.get("language"))
         return repair_command(
-            self.job["song_dir"], self.job.get("mode"), self.job.get("lyrics_file"))
+            self.job["song_dir"], self.job.get("mode"), self.job.get("lyrics_file"),
+            language=self.job.get("language"))
 
     def _stream(self, pipe, logfile):
         for raw in iter(pipe.readline, b""):

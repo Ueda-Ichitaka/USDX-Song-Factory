@@ -70,6 +70,8 @@ check("parse_broken_csv: description carried through",
       rows1[0]["description"] == "#GAP")
 check("parse_broken_csv: missing lyrics_url column defaults to ''",
       rows1[1]["lyrics_url"] == "")
+check("parse_broken_csv: missing language column defaults to ''",
+      rows1[1]["language"] == "")
 os.unlink(path1)
 
 
@@ -90,6 +92,25 @@ check("parse_broken_csv: lyrics_url column read when present",
       rows2[0]["lyrics_url"] == "https://genius.com/Asp-ich-will-brennen-lyrics")
 check("parse_broken_csv: lyrics_url empty cell stays ''", rows2[1]["lyrics_url"] == "")
 os.unlink(path2)
+
+
+# --------------------------------------------------------------------------
+# parse_broken_csv: optional language column (requested from
+# karaoke-dashboard, same convention as song-requests.csv's language
+# column - see UPSTREAM_REQUESTS.md)
+# --------------------------------------------------------------------------
+
+with_language = (
+    "band,song name,category,description,lyrics_url,language\n"
+    "ASP,Ich will brennen,async,wrong sync,,de\n"
+    "Metric,Black Sheep,async,,,\n"
+)
+path2b = write_csv(with_language)
+rows2b = br.parse_broken_csv(path2b)
+check("parse_broken_csv: language column read when present",
+      rows2b[0]["language"] == "de")
+check("parse_broken_csv: language empty cell stays ''", rows2b[1]["language"] == "")
+os.unlink(path2b)
 
 
 # --------------------------------------------------------------------------
