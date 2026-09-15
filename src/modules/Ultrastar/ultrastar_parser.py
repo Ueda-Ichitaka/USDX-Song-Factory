@@ -33,26 +33,30 @@ def parse(input_file: str) -> UltrastarTxtValue:
     for line in txt:
         count += 1
         if line.startswith("#"):
+            # split(":", 1) everywhere below - NOT split(":") - a tag
+            # value can itself contain a colon (e.g. a title with a
+            # subtitle, "Title: A Subtitle"); splitting on every colon
+            # and keeping only element [1] silently truncated it there
             if line.startswith(f"#{UltrastarTxtTag.ARTIST.value}"):
-                ultrastar_class.artist = line.split(":")[1].replace("\n", "")
+                ultrastar_class.artist = line.split(":", 1)[1].replace("\n", "")
             elif line.startswith(f"#{UltrastarTxtTag.TITLE.value}"):
-                ultrastar_class.title = line.split(":")[1].replace("\n", "")
+                ultrastar_class.title = line.split(":", 1)[1].replace("\n", "")
             elif line.startswith(f"#{UltrastarTxtTag.MP3.value}"):
-                ultrastar_class.mp3 = line.split(":")[1].replace("\n", "")
+                ultrastar_class.mp3 = line.split(":", 1)[1].replace("\n", "")
             elif line.startswith(f"#{UltrastarTxtTag.AUDIO.value}"):
-                ultrastar_class.audio = line.split(":")[1].replace("\n", "")
+                ultrastar_class.audio = line.split(":", 1)[1].replace("\n", "")
             elif line.startswith(f"#{UltrastarTxtTag.VIDEO.value}"):
-                ultrastar_class.video = line.split(":")[1].replace("\n", "")
+                ultrastar_class.video = line.split(":", 1)[1].replace("\n", "")
             elif line.startswith(f"#{UltrastarTxtTag.GAP.value}"):
-                ultrastar_class.gap = line.split(":")[1].replace("\n", "")
+                ultrastar_class.gap = line.split(":", 1)[1].replace("\n", "")
             elif line.startswith(f"#{UltrastarTxtTag.BPM.value}"):
-                ultrastar_class.bpm = line.split(":")[1].replace("\n", "")
+                ultrastar_class.bpm = line.split(":", 1)[1].replace("\n", "")
             elif line.startswith(f"#{UltrastarTxtTag.VIDEOGAP.value}"):
-                ultrastar_class.videoGap = line.split(":")[1].replace("\n", "")
+                ultrastar_class.videoGap = line.split(":", 1)[1].replace("\n", "")
             elif line.startswith(f"#{UltrastarTxtTag.COVER.value}"):
-                ultrastar_class.cover = line.split(":")[1].replace("\n", "")
+                ultrastar_class.cover = line.split(":", 1)[1].replace("\n", "")
             elif line.startswith(f"#{UltrastarTxtTag.BACKGROUND.value}"):
-                ultrastar_class.background = line.split(":")[1].replace("\n", "")
+                ultrastar_class.background = line.split(":", 1)[1].replace("\n", "")
         elif line.startswith(
             (
                 f"{UltrastarTxtNoteTypeTag.FREESTYLE.value} ",
