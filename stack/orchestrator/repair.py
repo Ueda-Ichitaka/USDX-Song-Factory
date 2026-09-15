@@ -51,6 +51,7 @@ from modules.Audio.denoise import denoise_vocal_audio  # noqa: E402
 from modules.Audio.separation import DemucsModel  # noqa: E402
 from modules.Audio.separation import separate_vocal_from_audio  # noqa: E402
 from modules.Audio.silence_processing import mute_no_singing_parts  # noqa: E402
+from modules.language_file import resolve_language_with_file  # noqa: E402
 from modules.Midi.midi_creator import create_midi_note_from_pitched_data  # noqa: E402
 from modules.Pitcher.pitcher import get_pitch_with_file  # noqa: E402
 from modules.console_colors import (  # noqa: E402
@@ -446,22 +447,36 @@ def detect_language(audio_path: str) -> str:
     return lang
 
 
-def resolve_language(txt: Txt, audio_path: str, forced: str = None) -> str:
-    if forced:
-        print(f"{ULTRASINGER_HEAD} using forced language: "
-              f"{blue_highlighted(forced)}")
-        return forced
-    if txt.language:
+def resolve_language(txt: Txt, audio_path: str, forced: str = None,
+                     song_dir: str = None, out_dir: str = None) -> str:
+    """Resolve the singing language, persisting `<out_dir>/<song_name>/
+    language.txt` (the OUTPUT folder - never the original input song_dir,
+    matching write_repaired()/write_lyrics_result()'s identical
+    out_song_dir pattern) via modules.language_file. A saved file wins
+    over both `forced` and the txt's own #LANGUAGE tag, per
+    resolve_language_with_file()'s precedence; detect_language() (whisper
+    tiny) only ever runs when nothing else is known."""
+    input_lang = forced
+    if not input_lang and txt.language:
         try:
             import langcodes
-            lang = langcodes.find(txt.language).language
-            print(f"{ULTRASINGER_HEAD} language from txt "
-                  f"({txt.language}): {blue_highlighted(lang)}")
-            return lang
+            input_lang = langcodes.find(txt.language).language
         except Exception as exc:  # noqa: BLE001
             print(f"{ULTRASINGER_HEAD} {red_highlighted('could not parse language tag')} "
                   f"({txt.language}): {exc}")
-    return detect_language(audio_path)
+
+    if song_dir and out_dir:
+        song_name = os.path.basename(song_dir.rstrip("/"))
+        out_song_dir = os.path.join(out_dir, song_name)
+        os.makedirs(out_song_dir, exist_ok=True)
+        lang = resolve_language_with_file(
+            out_song_dir, forced=input_lang,
+            detect_fn=lambda: detect_language(audio_path))
+    else:
+        lang = input_lang or detect_language(audio_path)
+
+    print(f"{ULTRASINGER_HEAD} using language: {blue_highlighted(lang)}")
+    return lang
 
 
 def load_aligner(language: str, device: str = "cpu"):
@@ -1128,7 +1143,7 @@ def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
                                                 model_name=align_model)
         lang = language or "en"
     else:
-        lang = resolve_language(txt, align_audio, language)
+        lang = resolve_language(txt, align_audio, language, song_dir, out_dir)
         model, meta, lang = load_aligner(lang, "cpu")
 
     if mode == "gap":
@@ -1749,7 +1764,7 @@ def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir:
             language_code="en", device="cpu", model_name=align_model)
         lang = language or "en"
     else:
-        lang = resolve_language(txt, vocals_audio, language)
+        lang = resolve_language(txt, vocals_audio, language, song_dir, out_dir)
         model, meta, lang = load_aligner(lang, "cpu")
 
     scaffold_lines = txt.lyric_lines()

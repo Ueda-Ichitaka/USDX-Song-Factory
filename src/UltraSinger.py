@@ -26,6 +26,7 @@ from modules.Audio.youtube import (
     resolve_song_identity,
 )
 from modules.Audio.bpm import get_bpm_from_file
+from modules.language_file import resolve_language_with_file
 
 from modules.console_colors import (
     ULTRASINGER_HEAD,
@@ -184,6 +185,8 @@ def run() -> tuple[str, Score, Score]:
     # Audio transcription
     process_data.media_info.language = settings.language
     if not settings.ignore_audio:
+        process_data.media_info.language = resolve_transcription_language(process_data)
+        settings.language = process_data.media_info.language
         TranscribeAudio(process_data)
 
     # Split syllables into segments
@@ -498,12 +501,25 @@ def InitProcessData():
     return process_data
 
 
+def resolve_transcription_language(process_data) -> str:
+    """Before transcription: a saved `<output_folder>/language.txt` or an
+    already-forced language (`process_data.media_info.language`, e.g. from
+    `--language` or a repaired txt's #LANGUAGE tag) wins over whisper's own
+    auto-detection - see modules.language_file.resolve_language_with_file().
+    Returns None when neither exists yet, so whisper auto-detects normally
+    and TranscribeAudio() persists the result once it is known."""
+    return resolve_language_with_file(
+        settings.output_folder_path, forced=process_data.media_info.language)
+
+
 def TranscribeAudio(process_data):
     transcription_result = transcribe_audio(process_data.process_data_paths.cache_folder_path,
                                             process_data.process_data_paths.processing_audio_path)
 
     if process_data.media_info.language is None:
         process_data.media_info.language = transcription_result.detected_language
+        resolve_language_with_file(
+            settings.output_folder_path, forced=process_data.media_info.language)
 
     process_data.transcribed_data = transcription_result.transcribed_data
 

@@ -282,6 +282,72 @@ check("interpolate_word_timings: a leading run that already fits is "
       f"word's start) - got {leading_fits[1]['interp']}",
       abs(leading_fits[1]["interp"][1] - 5.0) < 1e-9)
 
+# --------------------------------------------------------------------------
+# resolve_language(): must persist <out_dir>/<song_name>/language.txt (the
+# OUTPUT folder - repair.py never writes into the original input song_dir,
+# see write_repaired()/write_lyrics_result()'s identical out_song_dir
+# pattern) via modules.language_file.resolve_language_with_file(), so a
+# saved file wins on the next call even over a conflicting forced/txt
+# language, and detect_language() is only ever called when nothing else
+# is known.
+# --------------------------------------------------------------------------
+
+class _FakeTxtLang:
+    def __init__(self, language=None):
+        self.language = language
+
+
+_detect_calls = []
+_orig_detect_language = repair.detect_language
+repair.detect_language = lambda audio_path: (_detect_calls.append(audio_path) or "ja")
+
+with tempfile.TemporaryDirectory() as _lang_root:
+    in_dir = os.path.join(_lang_root, "input")
+    out_dir = os.path.join(_lang_root, "output")
+    song_dir = os.path.join(in_dir, "Some Song")
+    os.makedirs(song_dir, exist_ok=True)
+
+    lang1 = repair.resolve_language(_FakeTxtLang(), "audio.wav", None, song_dir, out_dir)
+    check("resolve_language: no file, no forced, no txt.language -> "
+          f"auto-detects via detect_language (got {lang1!r})",
+          lang1 == "ja" and len(_detect_calls) == 1)
+
+    lang_file_path = os.path.join(out_dir, "Some Song", "language.txt")
+    check("resolve_language: the detected language is persisted to "
+          f"<out_dir>/<song_name>/language.txt (checked {lang_file_path})",
+          os.path.isfile(lang_file_path))
+    check("resolve_language: nothing is ever written into the original "
+          "input song_dir",
+          not os.path.isfile(os.path.join(song_dir, "language.txt")))
+
+    lang2 = repair.resolve_language(
+        _FakeTxtLang(language="de"), "audio.wav", "en", song_dir, out_dir)
+    check("resolve_language: a saved language.txt wins over BOTH a "
+          f"conflicting forced value and txt.language (got {lang2!r})",
+          lang2 == "ja")
+    check("resolve_language: detect_language is never called again once "
+          "a file exists", len(_detect_calls) == 1)
+
+with tempfile.TemporaryDirectory() as _lang_root2:
+    in_dir2 = os.path.join(_lang_root2, "input")
+    out_dir2 = os.path.join(_lang_root2, "output")
+    song_dir2 = os.path.join(in_dir2, "Other Song")
+    os.makedirs(song_dir2, exist_ok=True)
+
+    lang3 = repair.resolve_language(
+        _FakeTxtLang(), "audio.wav", "fr", song_dir2, out_dir2)
+    check(f"resolve_language: forced value used and persisted when no "
+          f"file exists yet (got {lang3!r})", lang3 == "fr")
+    with open(os.path.join(out_dir2, "Other Song", "language.txt"),
+             encoding="utf-8") as f:
+        saved = f.read().strip()
+    check(f"resolve_language: the forced value was written to the file "
+          f"(got {saved!r})", saved == "fr")
+
+repair.detect_language = _orig_detect_language
+
+# --------------------------------------------------------------------------
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")
