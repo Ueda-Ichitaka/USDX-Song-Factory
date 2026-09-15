@@ -359,13 +359,18 @@ def __get_year(recording):
         # VALID_INCLUDES has it only for "release", not "recording") -
         # fetch the release itself, which DOES support that include, to
         # get its release-group id first
-        release_lookup = __musicbrainz_request(lambda: musicbrainzngs.get_release_by_id(
+        # __safe_lookup (not the bare __musicbrainz_request) - a
+        # ResponseError here (e.g. a merged/redirected MusicBrainz id, a
+        # real MB behavior) must be treated the same as "no year found",
+        # never allowed to crash the whole song's generation over what is
+        # meant to be optional supplementary metadata
+        release_lookup = __safe_lookup(lambda: musicbrainzngs.get_release_by_id(
             release['id'], includes=["release-groups"]))
         if release_lookup is None or 'release-group' not in release_lookup.get('release', {}):
             return year
         release_group_id = release_lookup['release']['release-group']['id']
 
-    release_group = __musicbrainz_request(lambda: musicbrainzngs.get_release_group_by_id(release_group_id))
+    release_group = __safe_lookup(lambda: musicbrainzngs.get_release_group_by_id(release_group_id))
 
     if release_group is None:
         return year

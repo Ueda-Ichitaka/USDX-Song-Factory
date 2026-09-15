@@ -3,8 +3,17 @@
 import unittest
 from unittest.mock import patch
 import musicbrainzngs
+from src.modules import musicbrainz_client as _mb_client_module
 from src.modules.musicbrainz_client import (
     search_musicbrainz, lookup_musicbrainz_by_id, get_song_info)
+
+# __get_year is module-private (leading double underscore) - fetched via
+# getattr (a string lookup, never mangled) rather than a literal dotted
+# reference, which WOULD be mangled since this file's test methods live
+# inside unittest.TestCase class bodies (Python mangles any literal
+# "__name" text inside a class body, including attribute access like
+# "module.__name" - not just plain identifiers).
+_get_year = getattr(_mb_client_module, "__get_year")
 
 
 class TestGetMusicInfos(unittest.TestCase):
@@ -383,6 +392,44 @@ class TestGetSongInfo(unittest.TestCase):
         get_song_info('Some Title', 'Some Artist', None)
 
         mock_search_recordings.assert_called()
+
+
+class TestGetYearRobustness(unittest.TestCase):
+    """__get_year() (year/genre/cover are all supposed to be OPTIONAL
+    supplementary metadata - see get_song_info()'s own docstring) must
+    never let a MusicBrainz-server-side error crash the whole song's
+    generation. Found live 2026-09-15: unlike the top-level recording/
+    release lookup (protected by __safe_lookup), __get_year()'s own two
+    network calls (added for the release-groups fix earlier tonight, plus
+    the pre-existing get_release_group_by_id call) had no such
+    protection - a ResponseError from either (e.g. a merged/redirected
+    MusicBrainz ID, a real, documented MB behavior - not hypothetical)
+    propagated straight out and would crash the entire song generation
+    over what is meant to be a soft, best-effort metadata lookup."""
+
+    @patch('musicbrainzngs.get_release_by_id')
+    def test_response_error_from_get_release_by_id_does_not_crash(
+            self, mock_get_release_by_id):
+        mock_get_release_by_id.side_effect = musicbrainzngs.ResponseError()
+        # no 'release-group' embedded -> takes the get_release_by_id path
+        recording = {'release-list': [{'id': 'rel-1'}]}
+        self.assertIsNone(_get_year(recording))
+
+    @patch('musicbrainzngs.get_release_group_by_id')
+    def test_response_error_from_get_release_group_by_id_does_not_crash(
+            self, mock_get_release_group_by_id):
+        mock_get_release_group_by_id.side_effect = musicbrainzngs.ResponseError()
+        # 'release-group' already embedded -> skips get_release_by_id,
+        # goes straight to get_release_group_by_id
+        recording = {'release-list': [{'id': 'rel-1', 'release-group': {'id': 'rg-1'}}]}
+        self.assertIsNone(_get_year(recording))
+
+    @patch('musicbrainzngs.get_release_group_by_id')
+    def test_still_returns_the_year_on_success(self, mock_get_release_group_by_id):
+        mock_get_release_group_by_id.return_value = {
+            'release-group': {'first-release-date': '2019-03-01'}}
+        recording = {'release-list': [{'id': 'rel-1', 'release-group': {'id': 'rg-1'}}]}
+        self.assertEqual(_get_year(recording), '2019')
 
 
 if __name__ == '__main__':
