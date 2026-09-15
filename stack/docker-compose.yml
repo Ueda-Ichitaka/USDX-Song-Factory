@@ -82,6 +82,14 @@ services:
     # No hard memory limit on purpose: the host has ~8 GB RAM free for this
     # stack plus 250 GB zram0 swap; the kernel swaps out spikes automatically.
     command: ["python", "/app/orchestrator/orchestrator.py"]
+    # auto-resume if the container dies for a reason outside the stack's
+    # own control (killed externally, host-level hiccup, ...) - state.json
+    # makes any restart safe (already-done jobs are just skipped again).
+    # NOT `unless-stopped`: orchestrator.py exits 0 for a normal completion
+    # or a deliberate interactive `stop`, and only exits non-zero for an
+    # external kill (see main()/cmd_run()) - `on-failure` restarts ONLY
+    # for that non-zero case, so a finished/user-stopped run stays stopped.
+    restart: on-failure
 
   # AMD GPU variant (ROCm). Start with:
   #   docker compose --profile rocm up ultrasinger-rocm
@@ -112,3 +120,5 @@ services:
       - /dev/kfd
       - /dev/dri
     command: ["python", "/app/orchestrator/orchestrator.py"]
+    # see the CPU service above for why `on-failure`, not `unless-stopped`
+    restart: on-failure

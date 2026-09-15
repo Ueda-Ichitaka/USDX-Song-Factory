@@ -72,7 +72,15 @@ def remove_audio_from_video(input_video_path: str, output_video_path: str) -> No
 
 
 def is_video_file(file_path: str) -> bool:
-    """Check if file contains video streams using ffprobe"""
+    """True when file_path's first video-coded stream is real video
+    content - not just an embedded cover-art image. ffprobe reports an
+    mp3's ID3 cover art as a genuine "video" stream (codec mjpeg), so
+    checking codec_type alone wrongly treats any audio file with artwork
+    as a video file - which then makes separate_audio_video() try to
+    ffmpeg-extract audio from the file into itself (found live
+    2026-09-15 on a real mp3 with embedded cover art: "FFmpeg cannot
+    edit existing files in-place"). ffprobe's own attached_pic
+    disposition flag distinguishes the two cases."""
     try:
         _, ffprobe_path = get_ffmpeg_and_ffprobe_paths()
 
@@ -80,13 +88,16 @@ def is_video_file(file_path: str) -> bool:
             ffprobe_path,
             "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "stream=codec_type",
-            "-of", "default=noprint_wrappers=1:nokey=1",
+            "-show_entries", "stream=codec_type:stream_disposition=attached_pic",
+            "-of", "default=noprint_wrappers=1",
             file_path
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
-        return result.returncode == 0 and result.stdout.strip() == "video"
+        if result.returncode != 0:
+            return False
+        output = result.stdout
+        return "codec_type=video" in output and "attached_pic=1" not in output
     except Exception:
         return False
 

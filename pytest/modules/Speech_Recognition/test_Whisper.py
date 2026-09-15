@@ -4,6 +4,7 @@ import unittest
 from src.modules.Speech_Recognition.TranscribedData import TranscribedData
 from src.modules.Speech_Recognition.Whisper import (
     convert_to_transcribed_data, drop_trailing_speech_blurb, number_to_words,
+    resolve_language_from_multiple_windows,
 )
 
 
@@ -132,5 +133,78 @@ class ConvertToTranscribedDataTest(unittest.TestCase):
 
         # Assert
         self.assertEqual(result, expected_output)
+class ResolveLanguageFromMultipleWindowsTest(unittest.TestCase):
+    """whisperx's own language-ID only ever samples the FIRST 30s of
+    whatever audio array it is given (see whisperx.asr.FasterWhisperPipeline.
+    detect_language()'s hardcoded audio[:N_SAMPLES]) - trusting that single
+    guess caused real, verified misdetections on 2026-09-15 (German
+    "Moskau" guessed as English, English "A Rose For Epona" guessed as
+    Norwegian Nynorsk - both instrumental-heavy intros). The public
+    detect_language() only returns a language string (no confidence), so
+    the mitigation is majority vote across a few different offsets into
+    the song rather than a confidence threshold - agreement across
+    independent samples is itself the trust signal."""
+
+    def test_returns_the_majority_language_across_windows(self):
+        results = {0: "en", 45 * 16000: "de", 90 * 16000: "de"}
+
+        def fake_detect(offset_samples):
+            return results[offset_samples]
+
+        lang = resolve_language_from_multiple_windows(
+            fake_detect, audio_len_samples=100 * 16000, sample_rate=16000,
+            offsets_s=(0, 45, 90))
+        self.assertEqual(lang, "de")
+
+    def test_ties_are_broken_in_favor_of_the_earliest_window(self):
+        results = {0: "en", 45 * 16000: "de"}
+
+        def fake_detect(offset_samples):
+            return results[offset_samples]
+
+        lang = resolve_language_from_multiple_windows(
+            fake_detect, audio_len_samples=100 * 16000, sample_rate=16000,
+            offsets_s=(0, 45))
+        self.assertEqual(lang, "en")
+
+    def test_skips_offsets_past_the_end_of_the_audio(self):
+        calls = []
+
+        def fake_detect(offset_samples):
+            calls.append(offset_samples)
+            return "en"
+
+        # audio is only 40s long - the 45s and 90s offsets must be skipped
+        resolve_language_from_multiple_windows(
+            fake_detect, audio_len_samples=40 * 16000, sample_rate=16000,
+            offsets_s=(0, 45, 90))
+        self.assertEqual(calls, [0])
+
+    def test_single_window_when_audio_is_short(self):
+        calls = []
+
+        def fake_detect(offset_samples):
+            calls.append(offset_samples)
+            return "en"
+
+        lang = resolve_language_from_multiple_windows(
+            fake_detect, audio_len_samples=10 * 16000, sample_rate=16000,
+            offsets_s=(0, 45, 90))
+        self.assertEqual(lang, "en")
+        self.assertEqual(calls, [0])
+
+    def test_all_available_windows_are_sampled_even_when_they_agree(self):
+        calls = []
+
+        def fake_detect(offset_samples):
+            calls.append(offset_samples)
+            return "de"
+
+        resolve_language_from_multiple_windows(
+            fake_detect, audio_len_samples=100 * 16000, sample_rate=16000,
+            offsets_s=(0, 45, 90))
+        self.assertEqual(calls, [0, 45 * 16000, 90 * 16000])
+
+
 if __name__ == "__main__":
     unittest.main()

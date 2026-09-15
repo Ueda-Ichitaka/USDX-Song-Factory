@@ -46,6 +46,46 @@ MEMORY_ERROR_MESSAGE = f"{ULTRASINGER_HEAD} {blue_highlighted('whisper')} ran ou
 ENDCARD_MIN_GAP_S = float(os.environ.get("ENDCARD_MIN_GAP_S", "8.0"))
 ENDCARD_MAX_DUR_S = float(os.environ.get("ENDCARD_MAX_DUR_S", "20.0"))
 
+# language-ID windows to try (seconds into the song) when no language is
+# already known - see resolve_language_from_multiple_windows()
+LANGUAGE_ID_WINDOW_OFFSETS_S = tuple(
+    float(x) for x in os.environ.get("LANGUAGE_ID_WINDOW_OFFSETS_S", "0,45,90").split(","))
+
+
+def resolve_language_from_multiple_windows(detect_fn, audio_len_samples: int,
+                                           sample_rate: int,
+                                           offsets_s=LANGUAGE_ID_WINDOW_OFFSETS_S):
+    """whisperx's own language-ID (FasterWhisperPipeline.detect_language())
+    always samples just the FIRST 30s of whatever audio array it is
+    given - a single guess that is well known to be unreliable on an
+    instrumental-heavy intro (verified live 2026-09-15: German "Moskau"
+    guessed as English, English "A Rose For Epona" guessed as Norwegian
+    Nynorsk - both intros with little/no clear vocal). The public
+    detect_language() only returns a language string, not a confidence,
+    so the mitigation is majority vote across a few different offsets
+    into the song - agreement across independent samples is itself the
+    trust signal, rather than a numeric threshold.
+
+    Calls `detect_fn` (offset_samples -> language str) at each offset in
+    `offsets_s` that still leaves audio to sample, and returns whichever
+    language got the most votes (ties broken in favor of the
+    earliest-sampled window - the closest thing to the previous
+    single-guess default when windows disagree evenly)."""
+    votes = []
+    for offset_s in offsets_s:
+        offset_samples = int(offset_s * sample_rate)
+        if offset_samples >= audio_len_samples:
+            continue
+        votes.append(detect_fn(offset_samples))
+    if not votes:
+        return None
+    counts = {}
+    first_seen = {}
+    for i, lang in enumerate(votes):
+        counts[lang] = counts.get(lang, 0) + 1
+        first_seen.setdefault(lang, i)
+    return max(counts, key=lambda lang: (counts[lang], -first_seen[lang]))
+
 class WhisperModel(Enum):
     """Whisper model"""
     TINY = "tiny"
@@ -125,6 +165,14 @@ def transcribe_with_whisper(
 
         audio = whisperx.load_audio(audio_path)
 
+        if language is None:
+            def _detect_at(offset_samples):
+                return loaded_whisper_model.detect_language(audio[offset_samples:])
+
+            language = resolve_language_from_multiple_windows(_detect_at, len(audio), 16000)
+            print(f"{ULTRASINGER_HEAD} resolved language {blue_highlighted(str(language))} "
+                  "after checking multiple windows")
+
         print(f"{ULTRASINGER_HEAD} Transcribing {audio_path}")
 
         result = loaded_whisper_model.transcribe(
@@ -132,8 +180,6 @@ def transcribe_with_whisper(
         )
 
         detected_language = result["language"]
-        if language is None:
-            language = detected_language
 
         # load alignment model and metadata
         try:
