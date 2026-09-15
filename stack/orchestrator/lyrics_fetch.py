@@ -85,8 +85,57 @@ def parse_lrc(lrc_text: str) -> list:
     return lines
 
 
+SECTION_TAG_RE = re.compile(r"^\[([^\[\]]+)\]$")
+
+
+def resolve_and_strip_section_markers(text: str) -> str:
+    """Genius (and some plain lyrics_url sources) lyrics carry bracket
+    section markers ("[Chorus]", "[Verse 1]", "[Strophe 1]", ...). Left
+    as-is these become literal "sung" lines that repair.py's force-
+    alignment tries to match against real singing - a bad alignment
+    right there that then drifts everything after it.
+
+    A tag's first occurrence with real lyrics following it just has its
+    tag line dropped (the lyrics themselves are kept, and remembered). A
+    later BARE occurrence of the same tag (nothing but blank lines before
+    the next tag or the end of the text) is a shorthand placeholder for
+    "repeat that section" and is resolved to the first occurrence's real
+    content - dropping it outright would silently delete real sung
+    lyrics from the song. A later occurrence that DOES have its own
+    (different) content is kept as-is, never overwritten by the first
+    capture. A bare tag with nothing captured for it yet is dropped
+    silently (nothing to substitute, never guessed)."""
+    raw_lines = text.splitlines()
+    n = len(raw_lines)
+    captured = {}
+    output_lines = []
+    i = 0
+    while i < n:
+        line = raw_lines[i]
+        m = SECTION_TAG_RE.match(line.strip())
+        if not m:
+            output_lines.append(line)
+            i += 1
+            continue
+        tag_key = m.group(1).strip().lower()
+        j = i + 1
+        content = []
+        while j < n and not SECTION_TAG_RE.match(raw_lines[j].strip()):
+            content.append(raw_lines[j])
+            j += 1
+        if any(l.strip() for l in content):
+            if tag_key not in captured:
+                captured[tag_key] = content
+            output_lines.extend(content)
+        elif tag_key in captured:
+            output_lines.extend(captured[tag_key])
+        i = j
+    return "\n".join(output_lines)
+
+
 def parse_plain(text: str) -> list:
     """Plain lyrics: one non-empty line = one sung line, no timing."""
+    text = resolve_and_strip_section_markers(text)
     return [{"text": line.strip(), "start": None}
             for line in text.splitlines() if line.strip()]
 

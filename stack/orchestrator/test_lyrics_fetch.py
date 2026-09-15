@@ -75,6 +75,62 @@ check("parse_plain lines carry no timing",
       all(l["start"] is None for l in plain_lines))
 
 # --------------------------------------------------------------------------
+# resolve_and_strip_section_markers(): Genius (and some plain lyrics_url
+# sources) lyrics carry bracket section markers ("[Chorus]", "[Verse 1]",
+# "[Strophe 1]", ...). Left as-is these become literal "sung" lines that
+# repair.py's force-alignment tries to match against real singing -
+# producing a bad alignment right there that drifts everything after it.
+# A REPEATED bare tag (no lyrics of its own before the next tag/end) is a
+# shorthand placeholder for "repeat that section" and must be resolved to
+# the real text, not just dropped - dropping it would silently delete
+# real sung lyrics from the song.
+# --------------------------------------------------------------------------
+
+section_basic = "[Chorus]\nLine one\nLine two\n[Verse 1]\nLine three"
+resolved_basic = lf.resolve_and_strip_section_markers(section_basic)
+check("resolve_and_strip_section_markers drops tag lines, keeps real lyrics",
+      resolved_basic == "Line one\nLine two\nLine three")
+
+section_placeholder = (
+    "[Chorus]\nHey hey\nHo ho\n"
+    "[Verse 1]\nSome verse text\n"
+    "[Chorus]\n"  # bare repeat - no content before the next tag/end
+    "[Verse 2]\nMore verse text"
+)
+resolved_placeholder = lf.resolve_and_strip_section_markers(section_placeholder)
+check("resolve_and_strip_section_markers substitutes a bare repeated tag "
+      f"with its first captured content (got {resolved_placeholder!r})",
+      resolved_placeholder ==
+      "Hey hey\nHo ho\nSome verse text\nHey hey\nHo ho\nMore verse text")
+
+section_real_repeat = (
+    "[Verse 1]\nFirst verse text\n"
+    "[Verse 1]\nGenuinely different second verse text"
+)
+resolved_real_repeat = lf.resolve_and_strip_section_markers(section_real_repeat)
+check("resolve_and_strip_section_markers keeps a same-named tag's OWN "
+      "content when it actually has some (not a placeholder) - never "
+      "overwritten by the first occurrence's text",
+      resolved_real_repeat ==
+      "First verse text\nGenuinely different second verse text")
+
+section_unmatched_bare = "[Outro]\nReal line"
+resolved_unmatched = lf.resolve_and_strip_section_markers(section_unmatched_bare)
+check("resolve_and_strip_section_markers drops a bare tag with nothing "
+      "captured for it yet, without crashing",
+      resolved_unmatched == "Real line")
+
+no_markers = "Just a normal line\nAnother normal line"
+check("resolve_and_strip_section_markers is a no-op when there are no "
+      "section markers at all",
+      lf.resolve_and_strip_section_markers(no_markers) == no_markers)
+
+check("parse_plain applies section-marker resolution automatically "
+      "(Genius/plain-url text always funnels through it)",
+      [l["text"] for l in lf.parse_plain(section_basic)] ==
+      ["Line one", "Line two", "Line three"])
+
+# --------------------------------------------------------------------------
 # Genius page-artifact stripping
 # --------------------------------------------------------------------------
 
