@@ -12,6 +12,14 @@ Automates UltraSinger inside the docker stack:
 Commands
 --------
   (no args)      run all pending jobs
+  run --only X   run only some jobs; X = generated, usdb, repairs (comma list)
+                 generated = new songs USDB does NOT have (created from scratch)
+                 usdb      = new songs USDB has (pulled from USDB)
+                 repairs   = songs repaired from the input folder
+                 (--only-new = generated,usdb; --only-repairs = repairs)
+  run --match T  only jobs whose label contains T (combines with --only)
+  run --no-usdb  developer override: generate every new song from scratch
+                 even when USDB has it (e.g. to compare alignment quality)
   list           show the planned jobs and their status (dry run)
   report         print + write the tabular finishing report (output/report.md):
                  which songs were created, which were repaired, which failed
@@ -20,7 +28,15 @@ Commands
   run-one URL    create a single new song (no state tracking)
   repair-one DIR repair a single song folder (no state tracking)
   reset          mark failed jobs as pending again (retry on next run)
-  reset --all    mark ALL jobs (incl. done) as pending again
+  reset --all    mark ALL jobs (incl. done) as pending again (same as --done)
+  reset --prune  remove stored jobs that are no longer in the song list or
+                 input folder (state backed up first; output never touched;
+                 --only / --match narrow it; not combinable with --done)
+  reset --done --only X --match T
+                 mark finished jobs as pending again, narrowed by category
+                 (generated / usdb / repairs) and/or label text; without
+                 --done only the failed jobs of that selection are retried
+  (list and report accept --only / --match too)
 
 A "new" song's url column may be a YouTube link (starting with "https://")
 or a local audio/video file path (resolved relative to input/ when not
@@ -292,6 +308,14 @@ def job_display_name(job: dict) -> str:
     title = (job.get("title") or "").strip()
     combined = " - ".join(x for x in (band, title) if x)
     return combined or slugify(job.get("id", "job"))
+
+
+# "auto" (the policy): a new song is pulled from USDB when USDB has it, else
+# generated. "off" is the explicit developer override --no-usdb: never look
+# at USDB, always generate (e.g. to compare alignment quality on a song USDB
+# also has). Which songs a run touches is decided BEFORE it starts by
+# split_by_usdb_availability().
+USDB_MODE = "auto"
 
 
 def get_usdb_session_and_catalog():
@@ -656,17 +680,175 @@ def find_lyrics_file(folder: str):
     return None
 
 
-def build_job_plan(state: State, only=None) -> list:
+SELECTION_CATEGORIES = ("generated", "usdb", "repairs")
+
+
+class Selection:
+    """Which jobs a command applies to: `categories` (None = all, else a set
+    of "generated" | "usdb" | "repairs"), `match` (case-insensitive label
+    substring, None = any) and `no_usdb` (developer override: generate every
+    new song from scratch even when USDB has it)."""
+
+    def __init__(self, categories=None, match=None, no_usdb=False):
+        self.categories = categories
+        self.match = match
+        self.no_usdb = no_usdb
+
+
+def parse_selection(args: list) -> Selection:
+    """Read --only / --match (and the older --only-new / --only-repairs
+    aliases) out of a command's arguments; other flags are ignored.
+    Raises ValueError for an unknown or missing value.
+
+      --only generated,usdb,repairs   comma list, `--only X` or `--only=X`
+      --only-new                      = generated,usdb (every new song)
+      --only-repairs                  = repairs
+      --match TEXT / --match=TEXT     label contains TEXT
+      --no-usdb                       developer override: never pull from USDB"""
+    categories = None
+    match = None
+    no_usdb = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        value = None
+        if arg in ("--only", "--match"):
+            if i + 1 >= len(args):
+                raise ValueError(f"{arg} needs a value")
+            value = args[i + 1]
+            i += 1
+        elif arg.startswith(("--only=", "--match=")):
+            arg, value = arg.split("=", 1)
+        elif arg == "--only-new":
+            categories = (categories or set()) | {"generated", "usdb"}
+        elif arg == "--only-repairs":
+            categories = (categories or set()) | {"repairs"}
+        elif arg == "--no-usdb":
+            no_usdb = True
+        i += 1
+        if arg == "--only":
+            wanted = {v.strip() for v in value.split(",") if v.strip()}
+            unknown = wanted - set(SELECTION_CATEGORIES)
+            if not wanted or unknown:
+                raise ValueError(
+                    f"--only takes {'/'.join(SELECTION_CATEGORIES)} (comma separated), "
+                    f"got {value!r}")
+            categories = (categories or set()) | wanted
+        elif arg == "--match":
+            if not value:
+                raise ValueError("--match needs a value")
+            match = value
+    if no_usdb and new_song_mode(categories) == "usdb":
+        raise ValueError("--no-usdb contradicts --only usdb")
+    return Selection(categories, match, no_usdb)
+
+
+def new_song_mode(categories):
+    """Which new songs a selection covers: "auto" (all of them, each one
+    pulled from USDB when USDB has it, else generated - also when nothing is
+    selected), "generated" (only the songs USDB does NOT have), "usdb"
+    (only the songs USDB has) or None (repairs only: no new songs)."""
+    if categories is None:
+        return "auto"
+    wants_generated = "generated" in categories
+    wants_usdb = "usdb" in categories
+    if wants_generated and wants_usdb:
+        return "auto"
+    if wants_generated:
+        return "generated"
+    if wants_usdb:
+        return "usdb"
+    return None
+
+
+def job_category(job: dict) -> str:
+    """"repairs", "usdb" (finished new song pulled from USDB) or
+    "generated" (every other new song)."""
+    if job.get("kind") == "repair":
+        return "repairs"
+    if (job.get("lyrics_source") or "").startswith("usdb:"):
+        return "usdb"
+    return "generated"
+
+
+def filter_jobs(jobs: list, categories, match) -> list:
+    """Jobs a RUN/list/report selection covers. Whether a new song is
+    generated or pulled from USDB is only decided when it runs, so here
+    "generated" and "usdb" both select every new song (see
+    new_song_mode()/split_by_usdb_availability() for the rest)."""
+    kinds = None
+    if categories is not None:
+        kinds = set()
+        if categories & {"generated", "usdb"}:
+            kinds.add("new")
+        if "repairs" in categories:
+            kinds.add("repair")
+    needle = match.lower() if match else None
+    return [j for j in jobs
+            if (kinds is None or j["kind"] in kinds)
+            and (needle is None or needle in (j.get("label") or "").lower())]
+
+
+def usdb_has_match(job: dict) -> bool:
+    band = (job.get("band") or "").strip()
+    title = (job.get("title") or "").strip()
+    if not band or not title:
+        return False
+    try:
+        return find_usdb_match(band, title) is not None
+    except Exception as exc:  # noqa: BLE001
+        out(f"  !! usdb lookup for {job_display_name(job)} failed: {exc}")
+        return False
+
+
+def split_by_usdb_availability(queue: list, mode: str):
+    """(kept, left_pending) for a run of new-song `mode` (see
+    new_song_mode()). Every non-new job is kept; with "usdb" a new song is
+    kept only when USDB has a confident match, with "generated" only when
+    it has not; "auto" holds nothing back."""
+    if mode not in ("usdb", "generated"):
+        return list(queue), []
+    kept, left = [], []
+    for job in queue:
+        if job["kind"] != "new" or usdb_has_match(job) == (mode == "usdb"):
+            kept.append(job)
+        else:
+            left.append(job)
+    return kept, left
+
+
+def song_label(song: dict) -> str:
+    return " - ".join(x for x in (song["band"], song["title"]) if x) or song["url"]
+
+
+def new_job_id(song: dict) -> str:
+    """State key of a song-list row: its url, or (skipped rows) its label."""
+    if song["url"] == "skip":
+        return f"new|skip|{song_label(song)}"
+    return f"new|{song['url']}"
+
+
+def repair_job_id(folder: str) -> str:
+    return f"repair|{os.path.basename(folder.rstrip('/'))}"
+
+
+def current_job_ids() -> set:
+    """Ids of every job the song list and the input folder define right now
+    (what build_job_plan() would register) - without touching the state.
+    Jobs stored in the state but missing here are orphans (see cmd_prune())."""
+    ids = {new_job_id(song) for song in parse_songs_file(SONGS_FILE)}
+    ids |= {repair_job_id(folder) for folder in scan_repair_jobs(INPUT_DIR)}
+    return ids
+
+
+def build_job_plan(state: State) -> list:
     """Collect all jobs (new songs + repairs) and register them in state."""
     jobs = []
 
     for song in parse_songs_file(SONGS_FILE):
         url = song["url"]
-        label = " - ".join(x for x in (song["band"], song["title"]) if x) or url
-        if url == "skip":
-            job_id = f"new|skip|{label}"
-        else:
-            job_id = f"new|{url}"
+        label = song_label(song)
+        job_id = new_job_id(song)
         job = state.get_or_create(
             job_id, kind="new", label=label, url=url,
             band=song["band"], title=song["title"],
@@ -680,7 +862,7 @@ def build_job_plan(state: State, only=None) -> list:
 
     for folder in scan_repair_jobs(INPUT_DIR):
         name = os.path.basename(folder.rstrip("/"))
-        job_id = f"repair|{name}"
+        job_id = repair_job_id(folder)
         lyrics_file = find_lyrics_file(folder)
         report = match_broken_report(folder, broken_reports)
         category = report["category"] if report else ""
@@ -726,8 +908,6 @@ def build_job_plan(state: State, only=None) -> list:
             job["status"] = "needs_review"
         jobs.append(job)
 
-    if only:
-        jobs = [j for j in jobs if j["kind"] in only]
     return jobs
 
 
@@ -759,12 +939,46 @@ def count_usdb_sourced(jobs) -> int:
               and (j.get("lyrics_source") or "").startswith("usdb:"))
 
 
+def mark_run_started(state) -> None:
+    """Record when this stack run starts (the progress view's "Elapsed" counts
+    from here, not from the very first job ever started)."""
+    state.data["run_started_at"] = now_iso()
+    state.save()
+
+
+def run_elapsed_seconds(state_data):
+    """Seconds since the current run started: up to now while a job is
+    running, else up to the last job it finished. None when unknown (no
+    recorded start, or nothing finished yet in this run)."""
+    start_iso = state_data.get("run_started_at")
+    if not start_iso:
+        return None
+    start = datetime.fromisoformat(start_iso)
+    jobs = list(state_data["jobs"].values())
+    if any(j["status"] == "running" for j in jobs):
+        end = datetime.now().astimezone()
+    else:
+        finished = [datetime.fromisoformat(j["finished_at"]) for j in jobs
+                    if j.get("finished_at")]
+        finished = [t for t in finished if t >= start]
+        if not finished:
+            return None
+        end = max(finished)
+    return max(0.0, (end - start).total_seconds())
+
+
 def render_progress(state_data, cpu_percent=None, ram_usage=None,
-                    gpu_usage=None, device=None) -> str:
+                    gpu_usage=None, device=None, active_ids=None) -> str:
     """The live status dashboard (docker compose exec ... progress [-w]).
     cpu_percent/ram_usage/gpu_usage/device default to live readings
     (resource_monitor.py / the DEVICE env var) - tests pass explicit
-    values instead for determinism."""
+    values instead for determinism.
+
+    `active_ids` (see current_job_ids()): count only these jobs. The state
+    remembers every job ever planned, so a song removed from the list would
+    otherwise stay counted as "pending" forever although no run ever queues
+    it; such orphans are reported on their own line instead. None counts
+    every stored job."""
     if cpu_percent is None:
         cpu_percent = resource_monitor.read_cpu_percent()
     if ram_usage is None:
@@ -775,22 +989,17 @@ def render_progress(state_data, cpu_percent=None, ram_usage=None,
         gpu_usage = resource_monitor.read_gpu_usage()
 
     jobs = list(state_data["jobs"].values())
+    orphans = []
+    if active_ids is not None:
+        orphans = [j for j in jobs if j["id"] not in active_ids]
+        jobs = [j for j in jobs if j["id"] in active_ids]
     new = count_statuses(jobs, "new")
     rep = count_statuses(jobs, "repair")
 
     done_jobs = [j for j in jobs if j["status"] == "done" and j.get("duration_s")]
     running = next((j for j in jobs if j["status"] == "running"), None)
 
-    started = [j["started_at"] for j in jobs if j.get("started_at")]
-    elapsed = None
-    if started:
-        t0 = min(datetime.fromisoformat(s) for s in started)
-        t1 = max(
-            [datetime.fromisoformat(j["finished_at"]) for j in jobs
-             if j.get("finished_at")]
-            or [datetime.now().astimezone()]
-        )
-        elapsed = (t1 - t0).total_seconds()
+    elapsed = run_elapsed_seconds(state_data)
 
     lines = []
     lines.append("=" * 74)
@@ -808,6 +1017,9 @@ def render_progress(state_data, cpu_percent=None, ram_usage=None,
     lines.append(row("NEW SONGS", new))
     lines.append(row("REPAIRS", rep))
     lines.append(f"  Pulled from USDB: {count_usdb_sourced(jobs)}")
+    if orphans:
+        lines.append(f"  Not counted: {len(orphans)} stored job(s) no longer in the "
+                     "song list / input folder (`reset --prune` removes them)")
 
     device_label = {"cpu": "CPU", "cuda": "GPU (cuda/ROCm)"}.get(device, device)
     resource_bits = []
@@ -824,14 +1036,19 @@ def render_progress(state_data, cpu_percent=None, ram_usage=None,
     lines.append(f"  Device: {device_label}" + (
         "   " + " | ".join(resource_bits) if resource_bits else ""))
 
+    n_done = len(done_jobs)
+    avg = sum(j["duration_s"] for j in done_jobs) / n_done if n_done else None
+    remaining = new["pending"] + new["failed"] + rep["pending"] + rep["failed"]
+    eta = avg * remaining if avg and remaining else None
+    timing = []
     if elapsed is not None:
-        n_done = len(done_jobs)
-        avg = sum(j["duration_s"] for j in done_jobs) / n_done if n_done else None
-        remaining = new["pending"] + new["failed"] + rep["pending"] + rep["failed"]
-        eta = avg * remaining if avg and remaining else None
-        avg_s = f" | avg {fmt_duration(avg)}/song" if avg else ""
-        eta_s = f" | ETA ~{fmt_duration(eta)}" if eta else ""
-        lines.append(f"  Elapsed {fmt_duration(elapsed)}{avg_s}{eta_s}")
+        timing.append(f"Elapsed {fmt_duration(elapsed)}")
+    if avg:
+        timing.append(f"avg {fmt_duration(avg)}/song")
+    if eta:
+        timing.append(f"ETA ~{fmt_duration(eta)}")
+    if timing:
+        lines.append("  " + " | ".join(timing))
 
     if running:
         run_secs = None
@@ -859,10 +1076,21 @@ def _folder_of(output_path) -> str:
     return os.path.basename(os.path.dirname(output_path)) if output_path else "-"
 
 
-def render_report(state_data) -> str:
+def skip_reason(job: dict, active_ids=None) -> str:
+    """Why a job is skipped: a song-list row without a link can't be created;
+    a skipped record that no longer belongs to the song list is just stale
+    (typically the row got a link later and was created as a new job)."""
+    if active_ids is not None and job["id"] not in active_ids:
+        return ("no longer in the song list (stale record - the song may "
+                "have been created under a new entry; `reset --prune` removes it)")
+    return "no link in the song list (empty, `-` or `skip`)"
+
+
+def render_report(state_data, active_ids=None) -> str:
     """Tabular finishing report: which songs were created, which were
     repaired, and which jobs failed (with where their partial output was
-    quarantined to)."""
+    quarantined to). `active_ids` (see current_job_ids()) only tells stale
+    skipped records from real skips in the Skipped section."""
     jobs = list(state_data["jobs"].values())
     new_done = [j for j in jobs if j["kind"] == "new" and j["status"] == "done"]
     repair_done = [j for j in jobs if j["kind"] == "repair" and j["status"] == "done"]
@@ -942,14 +1170,17 @@ def render_report(state_data) -> str:
         lines.append("")
         lines.append(f"## Skipped ({len(skipped)})")
         lines.append("")
-        lines.append(", ".join(j["label"] for j in sorted(skipped, key=by_label)))
+        lines.append("| Song | Reason |")
+        lines.append("|---|---|")
+        for j in sorted(skipped, key=by_label):
+            lines.append(f"| {j['label']} | {skip_reason(j, active_ids)} |")
 
     return "\n".join(lines) + "\n"
 
 
-def write_report(state_data) -> str:
+def write_report(state_data, active_ids=None) -> str:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    text = render_report(state_data)
+    text = render_report(state_data, active_ids)
     tmp = REPORT_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
@@ -1154,6 +1385,8 @@ def prepare_usdb_job(job: dict) -> dict:
     repair.py --mode gap against staging_dir to re-detect #GAP for
     whatever media actually got downloaded) or None to fall back to
     normal generation - must never raise or fail the job."""
+    if USDB_MODE == "off":
+        return None
     band = (job.get("band") or "").strip()
     title = (job.get("title") or "").strip()
     if not band or not title:
@@ -1767,6 +2000,12 @@ class JobRunner:
 # interactive commands (stdin, e.g. via `docker compose attach`)
 # --------------------------------------------------------------------------
 
+def progress_text(state_data) -> str:
+    """The progress view counting only the jobs the song list and input
+    folder define right now."""
+    return render_progress(state_data, active_ids=current_job_ids())
+
+
 def stdin_listener(cmd_queue, control, state_data_fn):
     while True:
         try:
@@ -1779,7 +2018,7 @@ def stdin_listener(cmd_queue, control, state_data_fn):
         if not cmd:
             continue
         if cmd in ("s", "status", "progress"):
-            out(render_progress(state_data_fn()))
+            out(progress_text(state_data_fn()))
         elif cmd == "skip":
             control.request_skip()
             out(">> skipping current job ...")
@@ -1797,9 +2036,11 @@ def stdin_listener(cmd_queue, control, state_data_fn):
 # main command handlers
 # --------------------------------------------------------------------------
 
-def cmd_run(state, only=None, control=None):
+def cmd_run(state, selection=None, control=None):
+    global USDB_MODE
     control = control or CONTROL or Control()
-    jobs = build_job_plan(state, only=only)
+    selection = selection or Selection()
+    jobs = filter_jobs(build_job_plan(state), selection.categories, selection.match)
     state.save()
 
     eligible = [j for j in jobs if j["status"] == "pending"]
@@ -1807,12 +2048,26 @@ def cmd_run(state, only=None, control=None):
                  if j["status"] == "failed" and j["attempts"] < MAX_ATTEMPTS]
     run_queue = eligible + retryable
 
+    USDB_MODE = "off" if selection.no_usdb else "auto"
+    if selection.no_usdb:
+        out("--no-usdb: USDB is ignored, every new song is generated from scratch")
+    mode = new_song_mode(selection.categories)
+    if mode in ("usdb", "generated") and not selection.no_usdb:
+        out(f"Checking which pending new songs USDB has (selection: {mode}) ...")
+        run_queue, left = split_by_usdb_availability(run_queue, mode)
+        if left:
+            why = "not on USDB" if mode == "usdb" else "on USDB"
+            out(f"  {len(left)} new song(s) left pending ({why}): "
+                + ", ".join(job_display_name(j) for j in left[:8])
+                + (" ..." if len(left) > 8 else ""))
+
     if not run_queue:
-        out(render_progress(state.data))
-        out("Nothing to do - all jobs are done or skipped. "
-            "(Use `reset --all` to re-run everything.)")
+        out(progress_text(state.data))
+        out("Nothing to do - no matching pending jobs. "
+            "(Use `reset --done [--only ...] [--match ...]` to re-run finished ones.)")
         return
 
+    mark_run_started(state)
     out(f"Jobs to process: {len(run_queue)} "
         f"({len(eligible)} pending, {len(retryable)} retries)")
     out(resource_profile.describe_profile(
@@ -1880,28 +2135,31 @@ def cmd_run(state, only=None, control=None):
     else:
         out("")
         out("All jobs processed. Final state:")
-    report_path = write_report(state.data)
+    report_path = write_report(state.data, current_job_ids())
     out(f"Report written to {report_path}")
-    out(render_progress(state.data))
+    out(progress_text(state.data))
 
 
-def cmd_list(state, only=None):
-    jobs = build_job_plan(state, only=only)
+def cmd_list(state, selection=None):
+    selection = selection or Selection()
+    jobs = filter_jobs(build_job_plan(state), selection.categories, selection.match)
     state.save()
     out(f"{'STATUS':<9} {'KIND':<7} LABEL")
     out("-" * 74)
     for j in jobs:
         out(f"{j['status']:<9} {j['kind']:<7} {j['label']}")
     out("-" * 74)
-    out(render_progress(state.data))
+    out(progress_text(state.data))
 
 
-def cmd_report(state, only=None):
-    jobs = build_job_plan(state, only=only)
+def cmd_report(state, selection=None):
+    selection = selection or Selection()
+    jobs = filter_jobs(build_job_plan(state), selection.categories, selection.match)
     state.save()
-    text = render_report(state.data)
+    active_ids = current_job_ids()
+    text = render_report(state.data, active_ids)
     out(text)
-    path = write_report(state.data)
+    path = write_report(state.data, active_ids)
     out(f"Report written to {path}")
 
 
@@ -1909,7 +2167,7 @@ def cmd_progress(watch=False, interval=10):
     state = State()
     while True:
         state.load(recover_running=False)  # do not mutate running jobs for display
-        text = render_progress(state.data)
+        text = progress_text(state.data)
         if watch:
             sys.stdout.write("\x1b[2J\x1b[H")  # clear screen
         sys.stdout.write(text + "\n")
@@ -1952,9 +2210,18 @@ def cmd_repair_one(folder):
     sys.exit(0 if result["status"] == "done" else 1)
 
 
-def cmd_reset(state, all_jobs=False):
+def cmd_reset(state, all_jobs=False, categories=None, match=None):
+    """Put jobs back to pending: failed/running/needs_review ones, plus the
+    finished ones when `all_jobs` (--done / --all). `categories` (a set of
+    "generated" | "usdb" | "repairs", see job_category()) and `match` (label
+    substring) narrow which jobs are touched."""
+    needle = match.lower() if match else None
     n = 0
     for job in state.data["jobs"].values():
+        if categories is not None and job_category(job) not in categories:
+            continue
+        if needle is not None and needle not in (job.get("label") or "").lower():
+            continue
         if job["status"] in ("failed", "running", "needs_review") or \
                 (all_jobs and job["status"] == "done"):
             job["status"] = "pending"
@@ -1963,6 +2230,34 @@ def cmd_reset(state, all_jobs=False):
             n += 1
     state.save()
     print(f"reset {n} jobs to pending")
+
+
+def cmd_prune(state, active_ids, categories=None, match=None) -> int:
+    """Remove the stored jobs that are no longer in the song list or input
+    folder (`active_ids`, see current_job_ids()); returns how many.
+    Whatever their status, except a running job. The state file is backed up
+    to state/backups/ first; output folders are never touched. `categories`
+    and `match` narrow the selection like for reset."""
+    needle = match.lower() if match else None
+    doomed = [job_id for job_id, job in state.data["jobs"].items()
+              if job_id not in active_ids and job["status"] != "running"
+              and (categories is None or job_category(job) in categories)
+              and (needle is None or needle in (job.get("label") or "").lower())]
+    if not doomed:
+        print("pruned 0 orphaned jobs")
+        return 0
+    backups = os.path.join(STATE_DIR, "backups")
+    os.makedirs(backups, exist_ok=True)
+    backup_path = os.path.join(
+        backups, datetime.now().strftime("state-%Y%m%d-%H%M%S.json"))
+    with open(backup_path, "w", encoding="utf-8") as f:
+        json.dump(state.data, f, indent=2, ensure_ascii=False)
+    for job_id in doomed:
+        job = state.data["jobs"].pop(job_id)
+        print(f"  pruned [{job['status']}] {job.get('label') or job_id}")
+    state.save()
+    print(f"pruned {len(doomed)} orphaned jobs (backup: {backup_path})")
+    return len(doomed)
 
 
 # --------------------------------------------------------------------------
@@ -1981,6 +2276,12 @@ def main():
     global CONTROL
     args = sys.argv[1:]
     state = State()
+    try:
+        selection = parse_selection(args)
+    except ValueError as exc:
+        print(f"error: {exc}\n")
+        print(__doc__)
+        sys.exit(2)
 
     if not args or args[0] == "run":
         CONTROL = Control()
@@ -1989,18 +2290,13 @@ def main():
         signal.signal(signal.SIGTERM, handle_signals)
         signal.signal(signal.SIGINT, handle_signals)
         state.load()
-        only = None
-        if "--only-new" in args:
-            only = ["new"]
-        elif "--only-repairs" in args:
-            only = ["repair"]
-        cmd_run(state, only=only)
+        cmd_run(state, selection=selection)
     elif args[0] == "list":
         state.load()
-        cmd_list(state)
+        cmd_list(state, selection)
     elif args[0] == "report":
         state.load()
-        cmd_report(state)
+        cmd_report(state, selection)
     elif args[0] == "progress":
         cmd_progress(watch="-w" in args or "--watch" in args)
     elif args[0] == "run-one" and len(args) > 1:
@@ -2009,7 +2305,16 @@ def main():
         cmd_repair_one(args[1])
     elif args[0] == "reset":
         state.load()
-        cmd_reset(state, all_jobs="--all" in args)
+        if "--prune" in args:
+            if "--all" in args or "--done" in args:
+                print("error: --prune cannot be combined with --done/--all\n")
+                print(__doc__)
+                sys.exit(2)
+            cmd_prune(state, current_job_ids(),
+                      categories=selection.categories, match=selection.match)
+        else:
+            cmd_reset(state, all_jobs="--all" in args or "--done" in args,
+                      categories=selection.categories, match=selection.match)
     else:
         print(__doc__)
         sys.exit(1)

@@ -1643,6 +1643,397 @@ check("cmd_reset (no --all) also un-flags needs_review jobs back to pending",
       review_reset_state.data["jobs"]["repair|r1"]["status"] == "pending")
 
 # --------------------------------------------------------------------------
+# job selection: `--only generated|usdb|repairs`, `--match TEXT` (run, list,
+# report, reset), plus the old `--only-new` / `--only-repairs` as aliases
+# --------------------------------------------------------------------------
+
+sel = orch.parse_selection([])
+check("parse_selection: no flags selects everything",
+      sel.categories is None and sel.match is None)
+check("parse_selection: --only generated",
+      orch.parse_selection(["--only", "generated"]).categories == {"generated"})
+check("parse_selection: --only=usdb,repairs (comma list, = form)",
+      orch.parse_selection(["--only=usdb,repairs"]).categories == {"usdb", "repairs"})
+check("parse_selection: the old --only-new alias means generated + usdb "
+      "(every new song, USDB pulled where possible - the old behaviour)",
+      orch.parse_selection(["--only-new"]).categories == {"generated", "usdb"})
+check("parse_selection: the old --only-repairs alias",
+      orch.parse_selection(["--only-repairs"]).categories == {"repairs"})
+check("parse_selection: --match TEXT and --match=TEXT",
+      orch.parse_selection(["--match", "Rauta"]).match == "Rauta" and
+      orch.parse_selection(["--match=Rauta"]).match == "Rauta")
+check("parse_selection: flags for other commands (--all, --done) are ignored",
+      orch.parse_selection(["--all", "--done"]).categories is None)
+check("parse_selection: --no-usdb is the explicit dev override, off by default",
+      orch.parse_selection(["--no-usdb"]).no_usdb is True and
+      orch.parse_selection([]).no_usdb is False)
+try:
+    orch.parse_selection(["--no-usdb", "--only", "usdb"])
+    _no_usdb_conflict = False
+except ValueError:
+    _no_usdb_conflict = True
+check("parse_selection: --no-usdb together with --only usdb is contradictory",
+      _no_usdb_conflict)
+for bad in (["--only", "bogus"], ["--only"], ["--only="], ["--match"]):
+    try:
+        orch.parse_selection(bad)
+        raised = False
+    except ValueError:
+        raised = True
+    check(f"parse_selection: {bad!r} is rejected with ValueError", raised)
+
+check("new_song_mode: nothing chosen -> the normal policy (pull from USDB "
+      "when it has the song, else generate)",
+      orch.new_song_mode(None) == "auto")
+check("new_song_mode: generated + usdb -> the normal policy",
+      orch.new_song_mode({"generated", "usdb"}) == "auto")
+check("new_song_mode: generated only -> just the songs USDB does NOT have",
+      orch.new_song_mode({"generated"}) == "generated" and
+      orch.new_song_mode({"generated", "repairs"}) == "generated")
+check("new_song_mode: usdb only -> just the songs USDB has",
+      orch.new_song_mode({"usdb"}) == "usdb" and
+      orch.new_song_mode({"usdb", "repairs"}) == "usdb")
+check("new_song_mode: repairs only -> no new songs at all",
+      orch.new_song_mode({"repairs"}) is None)
+
+sel_jobs = [
+    {"id": "new|a", "kind": "new", "label": "Korpiklaani - Rauta", "status": "pending"},
+    {"id": "new|b", "kind": "new", "label": "Therion - Sitra Ahra", "status": "pending"},
+    {"id": "repair|c", "kind": "repair", "label": "Boney M. - Daddy Cool", "status": "pending"},
+]
+check("filter_jobs: repairs only",
+      [j["id"] for j in orch.filter_jobs(sel_jobs, {"repairs"}, None)] == ["repair|c"])
+check("filter_jobs: generated or usdb both select the new songs",
+      [j["id"] for j in orch.filter_jobs(sel_jobs, {"generated"}, None)] == ["new|a", "new|b"] and
+      [j["id"] for j in orch.filter_jobs(sel_jobs, {"usdb"}, None)] == ["new|a", "new|b"])
+check("filter_jobs: --match is a case-insensitive label substring",
+      [j["id"] for j in orch.filter_jobs(sel_jobs, None, "rAuTa")] == ["new|a"])
+check("filter_jobs: no selection keeps everything",
+      len(orch.filter_jobs(sel_jobs, None, None)) == 3)
+
+check("job_category: repair jobs are repairs",
+      orch.job_category({"kind": "repair"}) == "repairs")
+check("job_category: a finished new song whose lyrics source is usdb:... is usdb",
+      orch.job_category({"kind": "new", "status": "done",
+                         "lyrics_source": "usdb:animux:31262"}) == "usdb")
+check("job_category: any other new song counts as generated",
+      orch.job_category({"kind": "new", "status": "done",
+                         "lyrics_source": "online:genius"}) == "generated" and
+      orch.job_category({"kind": "new", "status": "pending"}) == "generated")
+
+# USDB mode "off": prepare_usdb_job must not even look at USDB
+_saved_find = orch.find_usdb_match
+_saved_mode = orch.USDB_MODE
+lookups = []
+
+
+def _spy_find(band, title):
+    lookups.append((band, title))
+    return {"site": "animux", "song_id": "1", "video_url": "https://x", "txt": "", "cover_bytes": None}
+
+
+try:
+    orch.find_usdb_match = _spy_find
+    orch.USDB_MODE = "off"
+    off_result = orch.prepare_usdb_job({"id": "new|a", "band": "B", "title": "T", "url": "https://y"})
+finally:
+    orch.find_usdb_match = _saved_find
+    orch.USDB_MODE = _saved_mode
+check("prepare_usdb_job: with the explicit --no-usdb override (mode off) it "
+      "returns None without any USDB lookup",
+      off_result is None and lookups == [])
+
+# usdb selection: pending new songs without a USDB match stay pending;
+# generated selection: the ones USDB HAS stay pending
+try:
+    orch.find_usdb_match = lambda band, title: (
+        {"site": "animux", "song_id": "9"} if title == "Rauta" else None)
+    queue = [
+        {"id": "new|a", "kind": "new", "band": "Korpiklaani", "title": "Rauta", "label": "Korpiklaani - Rauta"},
+        {"id": "new|b", "kind": "new", "band": "Therion", "title": "Sitra Ahra", "label": "Therion - Sitra Ahra"},
+        {"id": "repair|c", "kind": "repair", "label": "Daddy Cool"},
+    ]
+    kept, left = orch.split_by_usdb_availability(queue, "usdb")
+    kept_g, left_g = orch.split_by_usdb_availability(queue, "generated")
+    kept_auto, left_auto = orch.split_by_usdb_availability(queue, "auto")
+finally:
+    orch.find_usdb_match = _saved_find
+check("split_by_usdb_availability usdb: keeps songs USDB has and every "
+      "repair, leaves the rest pending",
+      [j["id"] for j in kept] == ["new|a", "repair|c"] and
+      [j["id"] for j in left] == ["new|b"])
+check("split_by_usdb_availability generated: keeps songs USDB lacks and "
+      "every repair, leaves the USDB ones pending",
+      [j["id"] for j in kept_g] == ["new|b", "repair|c"] and
+      [j["id"] for j in left_g] == ["new|a"])
+check("split_by_usdb_availability auto: nothing is held back",
+      len(kept_auto) == 3 and left_auto == [])
+
+try:
+    def _boom(band, title):
+        raise RuntimeError("usdb down")
+    orch.find_usdb_match = _boom
+    kept2, left2 = orch.split_by_usdb_availability(
+        [{"id": "new|a", "kind": "new", "band": "B", "title": "T", "label": "B - T"}], "usdb")
+finally:
+    orch.find_usdb_match = _saved_find
+check("split_by_usdb_availability: a lookup that raises counts as 'not on USDB'",
+      kept2 == [] and len(left2) == 1)
+
+# reset with a selection
+def _reset_state():
+    st = orch.State()
+    st.data = {"version": 1, "jobs": {
+        "new|gen": {"id": "new|gen", "kind": "new", "label": "Korpiklaani - Rauta",
+                    "status": "done", "lyrics_source": "online:lyrics_url (genius)", "attempts": 1},
+        "new|usdb": {"id": "new|usdb", "kind": "new", "label": "Cypecore - Identity",
+                     "status": "done", "lyrics_source": "usdb:animux:31262", "attempts": 1},
+        "new|bad": {"id": "new|bad", "kind": "new", "label": "Therion - Poupee",
+                    "status": "failed", "attempts": 3, "error": "exit code 1"},
+        "repair|r": {"id": "repair|r", "kind": "repair", "label": "Boney M. - Daddy Cool",
+                     "status": "done", "attempts": 1},
+    }}
+    return st
+
+
+def _statuses(st):
+    return {k: v["status"] for k, v in st.data["jobs"].items()}
+
+
+st = _reset_state()
+orch.cmd_reset(st, all_jobs=True, categories={"usdb"})
+check("cmd_reset --done --only usdb: only the USDB-pulled song goes back to pending",
+      _statuses(st) == {"new|gen": "done", "new|usdb": "pending",
+                        "new|bad": "failed", "repair|r": "done"})
+
+st = _reset_state()
+orch.cmd_reset(st, all_jobs=True, categories={"generated"})
+check("cmd_reset --done --only generated: generated songs (done and failed) "
+      "reset, USDB and repairs untouched",
+      _statuses(st) == {"new|gen": "pending", "new|usdb": "done",
+                        "new|bad": "pending", "repair|r": "done"})
+
+st = _reset_state()
+orch.cmd_reset(st, all_jobs=True, categories={"repairs"})
+check("cmd_reset --done --only repairs",
+      _statuses(st) == {"new|gen": "done", "new|usdb": "done",
+                        "new|bad": "failed", "repair|r": "pending"})
+
+st = _reset_state()
+orch.cmd_reset(st, all_jobs=True, match="rauta")
+check("cmd_reset --done --match: a single song can be reset",
+      _statuses(st) == {"new|gen": "pending", "new|usdb": "done",
+                        "new|bad": "failed", "repair|r": "done"})
+
+st = _reset_state()
+orch.cmd_reset(st, categories={"generated"})
+check("cmd_reset without --done leaves finished songs alone even with a selection "
+      "(only failed ones are retried)",
+      _statuses(st) == {"new|gen": "done", "new|usdb": "done",
+                        "new|bad": "pending", "repair|r": "done"})
+
+st = _reset_state()
+orch.cmd_reset(st)
+check("cmd_reset with no arguments still only retries failed jobs",
+      _statuses(st) == {"new|gen": "done", "new|usdb": "done",
+                        "new|bad": "pending", "repair|r": "done"})
+
+# --------------------------------------------------------------------------
+# orphaned jobs: state.json keeps a record of every job ever planned, so a
+# song removed from song-requests.csv (or a folder removed from input/)
+# stays behind as a "pending" ghost that the progress view counts but no run
+# ever queues (found live: 25 such ghosts kept the progress table at "25
+# pending" for days). progress now counts only CURRENT jobs and lists the
+# orphans separately; `reset --prune` removes them.
+# --------------------------------------------------------------------------
+
+check("new_job_id: a youtube song is keyed by its url",
+      orch.new_job_id({"band": "A", "title": "B", "url": "https://y/1"}) == "new|https://y/1")
+check("new_job_id: a skipped row is keyed by its label",
+      orch.new_job_id({"band": "A", "title": "B", "url": "skip"}) == "new|skip|A - B")
+check("repair_job_id: keyed by the folder name",
+      orch.repair_job_id("/data/input/Some Song/") == "repair|Some Song")
+
+_saved_songs, _saved_input = orch.SONGS_FILE, orch.INPUT_DIR
+_ids_dir = tempfile.mkdtemp(prefix="ids-")
+try:
+    with open(os.path.join(_ids_dir, "songs.csv"), "w", encoding="utf-8") as f:
+        f.write("band name,song name,youtube link\n"
+                "A,One,https://y/1\nB,Two,skip\n")
+    os.makedirs(os.path.join(_ids_dir, "input", "Fix Me"))
+    with open(os.path.join(_ids_dir, "input", "Fix Me", "Fix Me.txt"), "w") as f:
+        f.write("#TITLE:x\n#BPM:100\n: 0 4 0 la\nE\n")
+    os.makedirs(os.path.join(_ids_dir, "input", "Not A Song"))
+    orch.SONGS_FILE = os.path.join(_ids_dir, "songs.csv")
+    orch.INPUT_DIR = os.path.join(_ids_dir, "input")
+    _current_ids = orch.current_job_ids()
+    _plan_state = orch.State()
+    _plan_ids = {j["id"] for j in orch.build_job_plan(_plan_state)}
+finally:
+    orch.SONGS_FILE, orch.INPUT_DIR = _saved_songs, _saved_input
+check(f"current_job_ids: every song-list row and every input folder with a "
+      f"song txt, nothing else (got {sorted(_current_ids)})",
+      _current_ids == {"new|https://y/1", "new|skip|B - Two", "repair|Fix Me"})
+check("current_job_ids: agrees with the jobs build_job_plan() registers",
+      _current_ids == _plan_ids)
+
+_orphan_state = {"jobs": {
+    "new|a": {"id": "new|a", "kind": "new", "status": "done", "label": "Kept Done", "duration_s": 60},
+    "new|b": {"id": "new|b", "kind": "new", "status": "pending", "label": "Kept Pending"},
+    "new|gone1": {"id": "new|gone1", "kind": "new", "status": "pending", "label": "Ghost 1"},
+    "new|gone2": {"id": "new|gone2", "kind": "new", "status": "done", "label": "Ghost 2", "duration_s": 60},
+    "repair|gone3": {"id": "repair|gone3", "kind": "repair", "status": "failed", "label": "Ghost 3"},
+}}
+_active = {"new|a", "new|b"}
+_all_text = orch.render_progress(_orphan_state, cpu_percent=1, ram_usage=None,
+                                 gpu_usage=None, device="cpu")
+_active_text = orch.render_progress(_orphan_state, cpu_percent=1, ram_usage=None,
+                                    gpu_usage=None, device="cpu", active_ids=_active)
+check("render_progress without active_ids still counts every stored job",
+      "(4 total)" in _all_text)
+check("render_progress with active_ids counts only the current jobs",
+      "(2 total)" in _active_text and "1 pending" in _active_text)
+check("render_progress with active_ids names the excluded orphans and how to "
+      "remove them",
+      "3" in _active_text and "reset --prune" in _active_text)
+check("render_progress with active_ids does not list an orphan as a failed job",
+      "Ghost 3" not in _active_text)
+check("render_progress: no orphan line when every stored job is current",
+      "reset --prune" not in orch.render_progress(
+          _orphan_state, cpu_percent=1, ram_usage=None, gpu_usage=None,
+          device="cpu", active_ids=set(_orphan_state["jobs"])))
+
+def _prune_state():
+    st = orch.State()
+    st.data = {"version": 1, "jobs": {k: dict(v) for k, v in _orphan_state["jobs"].items()}}
+    st.data["jobs"]["new|running-gone"] = {
+        "id": "new|running-gone", "kind": "new", "status": "running", "label": "Busy Ghost"}
+    return st
+
+_prune_st = _prune_state()
+orch.State.save(_prune_st)  # make sure STATE_FILE exists for the backup step
+_pruned = orch.cmd_prune(_prune_st, _active)
+check("cmd_prune: removes every job that is not current, whatever its status, "
+      "and keeps the current ones",
+      set(_prune_st.data["jobs"]) == {"new|a", "new|b", "new|running-gone"} and _pruned == 3)
+check("cmd_prune: never removes a running job",
+      "new|running-gone" in _prune_st.data["jobs"])
+check("cmd_prune: writes a backup of the state file first",
+      any(n.startswith("state-") for n in os.listdir(os.path.join(orch.STATE_DIR, "backups"))))
+
+_prune_st = _prune_state()
+_pruned = orch.cmd_prune(_prune_st, _active, categories={"repairs"})
+check("cmd_prune: honours --only (only orphaned repairs removed)",
+      _pruned == 1 and "repair|gone3" not in _prune_st.data["jobs"] and
+      "new|gone1" in _prune_st.data["jobs"])
+_prune_st = _prune_state()
+_pruned = orch.cmd_prune(_prune_st, _active, match="ghost 2")
+check("cmd_prune: honours --match",
+      _pruned == 1 and "new|gone2" not in _prune_st.data["jobs"] and
+      "new|gone1" in _prune_st.data["jobs"])
+_prune_st = _prune_state()
+check("cmd_prune: nothing to prune is a clean no-op",
+      orch.cmd_prune(_prune_st, set(_prune_st.data["jobs"])) == 0)
+
+# `reset` for new songs / repairs: the older aliases already work with it
+st = _reset_state()
+orch.cmd_reset(st, all_jobs=True, categories=orch.parse_selection(["--only-new"]).categories)
+check("reset --done --only-new resets every new song (generated and USDB), "
+      "leaves repairs",
+      _statuses(st) == {"new|gen": "pending", "new|usdb": "pending",
+                        "new|bad": "pending", "repair|r": "done"})
+st = _reset_state()
+orch.cmd_reset(st, all_jobs=True, categories=orch.parse_selection(["--only-repairs"]).categories)
+check("reset --done --only-repairs resets repairs only",
+      _statuses(st) == {"new|gen": "done", "new|usdb": "done",
+                        "new|bad": "failed", "repair|r": "pending"})
+
+# --------------------------------------------------------------------------
+# "Elapsed" in the progress view = time since the CURRENT stack run started
+# (it used to be first job ever started -> last finished, i.e. 257h)
+# --------------------------------------------------------------------------
+
+from datetime import datetime, timedelta  # noqa: E402
+
+
+def _progress(state_data):
+    return orch.render_progress(state_data, cpu_percent=1, ram_usage=None,
+                                gpu_usage=None, device="cpu")
+
+
+_old_finish = "2026-09-16T11:00:00+02:00"
+_elapsed_state = {"run_started_at": "2026-09-21T10:00:00+02:00", "jobs": {
+    "new|old": {"id": "new|old", "kind": "new", "status": "done", "label": "Old",
+                "started_at": "2026-09-10T09:00:00+02:00", "finished_at": _old_finish,
+                "duration_s": 120},
+    "new|now": {"id": "new|now", "kind": "new", "status": "done", "label": "Now",
+                "started_at": "2026-09-21T10:05:00+02:00",
+                "finished_at": "2026-09-21T10:30:00+02:00", "duration_s": 300},
+}}
+check("run_elapsed_seconds: a finished run lasts from its start to its last "
+      "finished job, ignoring older runs",
+      orch.run_elapsed_seconds(_elapsed_state) == 30 * 60)
+check("render_progress: shows the elapsed time of the current run only",
+      "Elapsed 30m00s" in _progress(_elapsed_state) and "257h" not in _progress(_elapsed_state))
+
+_running_start = (datetime.now().astimezone() - timedelta(seconds=125)).isoformat()
+_running_state = {"run_started_at": _running_start, "jobs": {
+    "new|r": {"id": "new|r", "kind": "new", "status": "running", "label": "Busy",
+              "started_at": _running_start, "attempts": 1},
+}}
+_running_elapsed = orch.run_elapsed_seconds(_running_state)
+check(f"run_elapsed_seconds: while a job runs the run is still going - "
+      f"counted up to now (got {_running_elapsed})",
+      124 <= _running_elapsed <= 130)
+
+check("run_elapsed_seconds: no recorded run start (a state from before this "
+      "existed) -> unknown",
+      orch.run_elapsed_seconds({"jobs": {}}) is None)
+check("render_progress: no Elapsed at all when the run start is unknown",
+      "Elapsed" not in _progress({"jobs": _elapsed_state["jobs"]}))
+check("render_progress: still shows the average time per song without a run start",
+      "avg" in _progress({"jobs": _elapsed_state["jobs"]}))
+check("run_elapsed_seconds: a run that finished no job yet -> unknown",
+      orch.run_elapsed_seconds({"run_started_at": "2026-09-22T10:00:00+02:00",
+                                "jobs": _elapsed_state["jobs"]}) is None)
+
+_mark_state = orch.State()
+_before = datetime.now().astimezone()
+orch.mark_run_started(_mark_state)
+check("mark_run_started: records the start of the run in the state",
+      datetime.fromisoformat(_mark_state.data["run_started_at"]) >= _before.replace(microsecond=0))
+
+# --------------------------------------------------------------------------
+# report: the Skipped section says WHY each song was skipped
+# --------------------------------------------------------------------------
+
+_skip_state = {"jobs": {
+    "new|skip|Lil Mariko - Catboys": {
+        "id": "new|skip|Lil Mariko - Catboys", "kind": "new", "status": "skipped",
+        "label": "Lil Mariko - Catboys", "url": "skip"},
+    "new|skip|Nanowar - Valhalleluja": {
+        "id": "new|skip|Nanowar - Valhalleluja", "kind": "new", "status": "skipped",
+        "label": "Nanowar - Valhalleluja", "url": "skip"},
+}}
+_skip_report = orch.render_report(_skip_state)
+check("report: Skipped is a table with a reason column",
+      "| Song | Reason |" in _skip_report and "## Skipped (2)" in _skip_report)
+check("report: a row without a link says so",
+      "| Lil Mariko - Catboys | no link in the song list" in _skip_report)
+
+_skip_report_active = orch.render_report(
+    _skip_state, active_ids={"new|skip|Lil Mariko - Catboys"})
+check("report: a skipped job that is no longer in the song list is labelled "
+      "as a stale record, not as a missing link",
+      "| Nanowar - Valhalleluja | no longer in the song list" in _skip_report_active and
+      "| Lil Mariko - Catboys | no link in the song list" in _skip_report_active)
+check("report: the stale-record reason points to the fix",
+      "reset --prune" in _skip_report_active)
+
+check("write_report passes the current job ids through (file content has the reason)",
+      "no link in the song list" in open(orch.write_report(_skip_state, active_ids=set(_skip_state["jobs"]))).read())
+
+# --------------------------------------------------------------------------
 
 print()
 if failures:

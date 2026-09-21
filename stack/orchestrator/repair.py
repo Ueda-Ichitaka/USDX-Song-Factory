@@ -45,12 +45,14 @@ import shutil
 import sys
 
 sys.path.insert(0, "/app/UltraSinger/src")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import ctc_align  # noqa: E402
 from modules.Audio.convert_audio import convert_audio_to_mono_wav  # noqa: E402
 from modules.Audio.denoise import denoise_vocal_audio  # noqa: E402
 from modules.Audio.separation import DemucsModel  # noqa: E402
 from modules.Audio.separation import separate_vocal_from_audio  # noqa: E402
-from modules.Audio.silence_processing import mute_no_singing_parts  # noqa: E402
+from modules.Audio.silence_processing import get_silence_sections, mute_no_singing_parts  # noqa: E402
 from modules.language_file import resolve_language_with_file  # noqa: E402
 from modules.Midi.midi_creator import create_midi_note_from_pitched_data  # noqa: E402
 from modules.Pitcher.pitcher import get_pitch_with_file  # noqa: E402
@@ -78,6 +80,41 @@ MAX_LOCAL_DEVIATION = float(os.environ.get("REPAIR_MAX_LOCAL_DEVIATION", "3.0"))
 REPAIR_MAX_ALIGN_ATTEMPTS = int(os.environ.get("REPAIR_MAX_ALIGN_ATTEMPTS", "3"))
 REPAIR_ALIGN_GOOD_ENOUGH_FRACTION = float(
     os.environ.get("REPAIR_ALIGN_GOOD_ENOUGH_FRACTION", "0.5"))
+# a lyric line whose mean CTC posterior is below this was barely audible to
+# the aligner (wordless vocals, mumbling): its placement is a guess. Only
+# used for the log line - measured on 100 hand-synced songs, replacing
+# such lines by interpolation made results worse, so nothing acts on it.
+GLOBAL_CONFIDENT_LINE_SCORE = 0.25
+# a word's letters can end up seconds apart where the aligner heard nothing
+# (found live: one word got 25 s); hand-synced words are longer than 3 s
+# only ~0.5% of the time, and capping changed no measured end error
+MAX_ALIGNED_WORD_SECONDS = float(os.environ.get("MAX_ALIGNED_WORD_SECONDS", "4.0"))
+# real pauses for silence-aware seeding/interpolation (see
+# seed_lyric_windows()/interpolate_word_timings()) - get_silence_sections()'s
+# own default (50ms) flags ordinary inter-syllable micro-pauses WITHIN
+# active singing too (verified live 2026-09-16: 83 detected "silences" on
+# a real 194s song, most under 0.4s, scattered through a section that
+# measured a steady -20dBFS throughout - not actually silent at all).
+# Fragmenting a whole-song seeding pass on dozens of these compounds into
+# badly wrong line positions; only a genuinely noticeable pause should
+# ever be treated as skippable dead time.
+LYRICS_MIN_SILENCE_MS = int(os.environ.get("LYRICS_MIN_SILENCE_MS", "1200"))
+# distribute_over_non_silent_span()'s scale-to-fill-usable-span behavior
+# is correct for a run whose natural total duration roughly matches the
+# usable span, but a SPARSE run (1-2 dropped words) inside a wide,
+# mostly-non-silent gap (a quiet instrumental passage, or singing Whisper
+# just failed to match) got stretched by the same scale, gluing the
+# word(s) to the far end of the gap instead of near their natural
+# position. Verified live 2026-09-17 on real audio: Therion - Kali Yuga
+# III's source line "Mistress of Time" (one line, no break) came out as
+# "Mistress of" then "Time" 21s later, right before the next line;
+# Letzte Instanz - Rapunzel's whole opening got compressed into the
+# wrong span (GAP=5.97s vs real vocal onset ~20s). Capping how far the
+# scale can stretch a run keeps sparse runs near their natural size and
+# anchored at the near edge of the usable span instead of consuming all
+# of it.
+INTERP_MAX_STRETCH_FACTOR = float(
+    os.environ.get("INTERP_MAX_STRETCH_FACTOR", "3.0"))
 # lyrics-mode line-splitting (see split_long_lyric_units()) - a source's
 # own line breaks alone can produce a "line" that's way too long on
 # screen, or spans a real instrumental/breathing gap
@@ -899,7 +936,76 @@ def detect_lyrics_mismatch(txt, units, aligned_units):
     return frac > 0.35, frac, detail
 
 
-def interpolate_word_timings(flat_words: list) -> None:
+def get_non_silent_subintervals(region_start: float, region_end: float,
+                                silence_sections: list) -> list:
+    """The parts of [region_start, region_end] NOT covered by any
+    (start, end) tuple in `silence_sections`, in chronological order.
+    Returns [(region_start, region_end)] unchanged when there is no
+    silence to subtract."""
+    if not silence_sections:
+        return [(region_start, region_end)]
+    clipped = []
+    for s, e in silence_sections:
+        s = max(s, region_start)
+        e = min(e, region_end)
+        if e > s:
+            clipped.append((s, e))
+    clipped.sort()
+    result = []
+    cursor = region_start
+    for s, e in clipped:
+        if s > cursor:
+            result.append((cursor, s))
+        cursor = max(cursor, e)
+    if cursor < region_end:
+        result.append((cursor, region_end))
+    return result
+
+
+def distribute_over_non_silent_span(region_start: float, region_end: float,
+                                    durations: list, silence_sections: list = None) -> list:
+    """Proportionally distributes `durations` (original/scaffold word
+    durations) across [region_start, region_end], packing forward and
+    SKIPPING any real silence within the span (see
+    get_non_silent_subintervals()) instead of blindly stretching words
+    across a silent gap - the words are scaled to exactly fill whatever
+    non-silent time actually exists, jumping to the next non-silent
+    sub-interval once the current one fills up.
+
+    Falls back to using the whole span (old, silence-blind behavior)
+    when there is no usable non-silent time at all - never produces a
+    degenerate/empty result."""
+    total = sum(durations) or 1.0
+    intervals = get_non_silent_subintervals(region_start, region_end, silence_sections)
+    usable = sum(e - s for s, e in intervals)
+    if usable <= 0:
+        intervals = [(region_start, region_end)]
+        usable = region_end - region_start
+
+    scale = usable / total if total else 1.0
+    scale = min(scale, INTERP_MAX_STRETCH_FACTOR)
+    result = []
+    interval_i = 0
+    cursor = intervals[0][0]
+    remaining = intervals[0][1] - intervals[0][0]
+    for d in durations:
+        need = d * scale
+        while need > remaining and interval_i < len(intervals) - 1:
+            interval_i += 1
+            cursor = intervals[interval_i][0]
+            remaining = intervals[interval_i][1] - intervals[interval_i][0]
+        start = cursor
+        end = min(start + need, intervals[interval_i][1])
+        end = max(end, start + 0.01)
+        result.append((start, end))
+        consumed = end - start
+        cursor = end
+        remaining -= consumed
+    return result
+
+
+def interpolate_word_timings(flat_words: list, silence_sections: list = None,
+                             audio_dur: float = None) -> None:
     """Fill in flat_words[i]['interp'] = (start, end) for every entry
     whose 'timing' is falsy, given only the generic fields 'timing',
     'orig_start', 'orig_end', 'orig_dur' - works for ANY flat word list
@@ -912,7 +1018,25 @@ def interpolate_word_timings(flat_words: list) -> None:
     a trailing run keeps its ORIGINAL timing if it starts after the last
     aligned word (e.g. an outro after a long gap); a leading run stacks
     backwards from the first aligned word.
-    """
+
+    `silence_sections` (optional [(start, end), ...] in seconds, real
+    detected silence - see get_silence_sections()) makes the leading-run
+    and middle-run cases skip real pauses within the gap instead of
+    blindly stretching words across them - found live 2026-09-16 from
+    real manual USDX testing across a full batch regeneration: without
+    this, "the lyrics keep going" straight through an actual pause in the
+    vocals, the single most commonly reported symptom. Omitting it (the
+    default) keeps the old, silence-blind behavior unchanged.
+
+    `audio_dur` (optional, seconds) clamps a TRAILING run (no aligned
+    word anywhere after it) so it never ends past the real audio length -
+    without this there is NO upper bound at all on a trailing run, so
+    several consecutive lines failing alignment at the end of a song
+    stack their natural durations one after another straight past the
+    real end of the audio. Found live 2026-09-17 on real audio: Lord of
+    the Lost - Beyond Beautiful's last lyric line ended at 259.5s on a
+    239.45s audio file. Omitting it (the default) keeps the old,
+    unclamped behavior unchanged."""
     n_words = len(flat_words)
     i = 0
     while i < n_words:
@@ -933,19 +1057,35 @@ def interpolate_word_timings(flat_words: list) -> None:
                 w["interp"] = (w["orig_start"], w["orig_end"])
         elif prv is None:
             nxt_start = max(0.05, nxt["start"])
-            span = min(total, max(0.1, nxt_start))
-            # scale down like the middle-run branch below does - without
-            # this, a leading run whose ORIGINAL total duration exceeds
-            # the real time available before the next aligned word (an
-            # ordinary situation: the opening lines of a song, before the
-            # aligner locks on) overran straight past that word's own
-            # start, corrupting the very beginning of the repaired song
-            scale = span / total
-            cursor = nxt_start - span
-            for w, d in zip(run, orig_durs):
-                scaled_d = d * scale
-                w["interp"] = (cursor, cursor + scaled_d)
-                cursor += scaled_d
+            if silence_sections is not None:
+                # mirror time around nxt_start so the same forward-packing
+                # distributor can anchor the run to END exactly at
+                # nxt_start while still skipping real silence - a leading
+                # run has the identical blind spot as a middle run
+                # (verified live 2026-09-16: a wrong #GAP at the very
+                # start of a song came from exactly this)
+                mirrored_silence = [(nxt_start - e, nxt_start - s)
+                                   for s, e in silence_sections if s < nxt_start]
+                mirrored = distribute_over_non_silent_span(
+                    0.0, nxt_start, list(reversed(orig_durs)), mirrored_silence)
+                positions = [(nxt_start - e, nxt_start - s) for s, e in reversed(mirrored)]
+                for w, (s, e) in zip(run, positions):
+                    w["interp"] = (s, max(e, s + 0.03))
+            else:
+                span = min(total, max(0.1, nxt_start))
+                # scale down like the middle-run branch below does -
+                # without this, a leading run whose ORIGINAL total
+                # duration exceeds the real time available before the
+                # next aligned word (an ordinary situation: the opening
+                # lines of a song, before the aligner locks on) overran
+                # straight past that word's own start, corrupting the
+                # very beginning of the repaired song
+                scale = span / total
+                cursor = nxt_start - span
+                for w, d in zip(run, orig_durs):
+                    scaled_d = d * scale
+                    w["interp"] = (cursor, cursor + scaled_d)
+                    cursor += scaled_d
         elif nxt is None:
             # trailing run: keep the original txt timing when it stays after
             # the last aligned word (e.g. an outro after a long gap)
@@ -959,6 +1099,17 @@ def interpolate_word_timings(flat_words: list) -> None:
                 for w, d in zip(run, orig_durs):
                     w["interp"] = (cursor, cursor + d)
                     cursor += d
+            if audio_dur is not None:
+                for w in run:
+                    s, e = w["interp"]
+                    e = min(e, audio_dur)
+                    s = min(s, max(e - 0.03, 0.0))
+                    w["interp"] = (s, e)
+        elif silence_sections is not None:
+            positions = distribute_over_non_silent_span(
+                prv["end"], nxt["start"], orig_durs, silence_sections)
+            for w, (s, e) in zip(run, positions):
+                w["interp"] = (s, max(e, s + 0.03))
         else:
             span = max(0.03, nxt["start"] - prv["end"])
             scale = span / total
@@ -1376,7 +1527,7 @@ def parse_lyrics_lines(lines_data: list) -> list:
 
 
 def seed_lyric_windows(units: list, scaffold_lines: list, txt: Txt,
-                       audio_dur: float) -> None:
+                       audio_dur: float, silence_sections: list = None) -> None:
     """Fill in unit['seed_start']/unit['seed_end'] in place - the rough
     per-line time estimate progressively_align_lyrics() anchors its search
     windows on.
@@ -1386,7 +1537,18 @@ def seed_lyric_windows(units: list, scaffold_lines: list, txt: Txt,
     scaffold's existing lines when the counts match exactly; else
     distribute proportionally (by word count) across the scaffold's total
     vocal-active span (or the whole audio if there is no usable scaffold).
-    """
+
+    The proportional tier is the DOMINANT path for real lyrics-mode jobs
+    (an exact scaffold-line-count match is rare - editorial line breaks
+    from a lyrics source almost never match whisper's own), so its
+    blindness to real silence within the span was the true root cause
+    behind badly-wrong seed windows even after later rescue attempts
+    (verified live 2026-09-16 on real manual USDX testing). When
+    `silence_sections` (real detected silence in seconds - see
+    get_silence_sections()) is given, this tier packs lines into the
+    real non-silent time only, via distribute_over_non_silent_span() -
+    exactly the same mechanism interpolate_word_timings() uses for
+    individual words."""
     if units and all(u["start"] is not None for u in units):
         for i, u in enumerate(units):
             u["seed_start"] = max(0.0, u["start"])
@@ -1410,11 +1572,21 @@ def seed_lyric_windows(units: list, scaffold_lines: list, txt: Txt,
 
     total_start, total_end = (scaffold_spans[0][0], scaffold_spans[-1][1]) \
         if scaffold_spans else (0.0, audio_dur)
-    total_words = sum(len(u["words"]) for u in units) or 1
-    span = max(0.1, min(audio_dur, total_end) - total_start)
+    total_end = min(audio_dur, total_end)
+    word_counts = [len(u["words"]) for u in units]
+
+    if silence_sections is not None:
+        positions = distribute_over_non_silent_span(
+            total_start, total_end, word_counts, silence_sections)
+        for u, (s, e) in zip(units, positions):
+            u["seed_start"], u["seed_end"] = s, min(audio_dur, e)
+        return
+
+    total_words = sum(word_counts) or 1
+    span = max(0.1, total_end - total_start)
     cursor = total_start
-    for u in units:
-        dur = span * (len(u["words"]) / total_words)
+    for u, wc in zip(units, word_counts):
+        dur = span * (wc / total_words)
         u["seed_start"] = cursor
         u["seed_end"] = min(audio_dur, cursor + dur)
         cursor += dur
@@ -1598,11 +1770,22 @@ def rescue_dropped_lyric_units(units, aligned_units, model, meta, audio16k, audi
         prev_end = timed[-1]["end"]
 
 
-def build_syllables_from_lyric_units(units, aligned_units, language) -> list:
+def build_syllables_from_lyric_units(units, aligned_units, language,
+                                     silence_sections: list = None,
+                                     audio_dur: float = None) -> list:
     """Hyphenate each word and distribute its (aligned or interpolated)
     time evenly across its syllables (reuses UltraSinger's OWN
     hyphenate_each_word/add_hyphen_to_data - the exact same functions a
     brand-new song's whisper transcription goes through).
+
+    `silence_sections` (optional, real detected silence in seconds - see
+    get_silence_sections()) is passed straight through to
+    interpolate_word_timings() so unaligned words skip real pauses in the
+    vocals instead of being stretched blindly across them.
+
+    `audio_dur` (optional, seconds) is also passed straight through, so a
+    trailing run of unaligned words at the very end of the song can never
+    be placed past the real end of the audio.
 
     Returns one syllable list per lyric UNIT (line):
     [[(word_field, start, end), ...], ...] - word_field already carries
@@ -1628,7 +1811,8 @@ def build_syllables_from_lyric_units(units, aligned_units, language) -> list:
             })
             word_unit_idx.append(ui)
 
-    interpolate_word_timings(flat_words)
+    interpolate_word_timings(flat_words, silence_sections=silence_sections,
+                             audio_dur=audio_dur)
 
     transcribed = []
     for w in flat_words:
@@ -1714,8 +1898,32 @@ def lyrics_txt_lines(per_unit_syllables: list) -> list:
             for unit in per_unit_syllables if unit]
 
 
+def clamp_beat_to_max(beat: int, dur: int, prev_end_beat, max_beat: int = None):
+    """Apply write_lyrics_result()'s existing monotonic-forward clamp (a
+    note can never start before the previous note's own end, so notes
+    render in chronological order), then - if `max_beat` is given - cap
+    the result so no note is ever placed past the real end of the audio.
+
+    Without the second cap, a single real but slightly out-of-order
+    timestamp anywhere in the song forces every LATER note forward by
+    that same offset via the forward clamp alone, with nothing to stop
+    it compounding indefinitely. Found live 2026-09-17 on real audio:
+    Lord of the Lost - Beyond Beautiful's last note ended at 259.5s on
+    audio only 239.45s long - purely from this uncapped cascade.
+
+    Returns (beat, dur, new_prev_end_beat)."""
+    if prev_end_beat is not None:
+        beat = max(beat, prev_end_beat)
+    if max_beat is not None:
+        if beat >= max_beat:
+            beat = max(0, max_beat - 1)
+        dur = max(1, min(dur, max_beat - beat))
+    return beat, dur, beat + dur
+
+
 def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
-                        per_unit_syllables: list, processing_audio: str):
+                        per_unit_syllables: list, processing_audio: str,
+                        audio_dur: float = None):
     """Build a FRESH UltraStar txt from per-unit syllable lists (start/end
     in seconds), re-pitching every syllable with SwiftF0. Unlike
     write_repaired() (which maps new timing onto an EXISTING note
@@ -1763,6 +1971,9 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
         else:
             out_lines.append(raw)
 
+    max_beat = max(0, round(sec_to_beat(audio_dur - gap_s))) \
+        if audio_dur is not None else None
+
     prev_end_beat = None
     for unit_syllables in per_unit_syllables:
         if not unit_syllables:
@@ -1778,9 +1989,8 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
                 pitch = 0
             beat = max(0, round(sec_to_beat(start - gap_s)))
             dur = max(1, round(sec_to_beat(end - start)))
-            if prev_end_beat is not None:
-                beat = max(beat, prev_end_beat)
-            prev_end_beat = beat + dur
+            beat, dur, prev_end_beat = clamp_beat_to_max(
+                beat, dur, prev_end_beat, max_beat)
             out_lines.append(f": {_fmt_num(beat)} {_fmt_num(dur)} "
                              f"{_fmt_num(pitch)} {word_field}")
         out_lines.append(f"- {_fmt_num(prev_end_beat)}")
@@ -1805,6 +2015,58 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
 
     print(f"{ULTRASINGER_HEAD} {green_highlighted('wrote')} {out_path}")
     return out_path
+
+
+def align_units_globally(units, model, meta, audio16k, device: str = "cpu"):
+    """Force-align EVERY lyric word in one global, monotonic CTC pass (see
+    ctc_align.py) and return (aligned_units, n_aligned) in the per-unit
+    structure build_syllables_from_lyric_units() consumes:
+    {"words": [timing-dict | None, ...], "text", "score", "word_orig_starts",
+    "word_orig_ends"} - positional per unit. A word with nothing alignable
+    stays None and is placed by interpolate_word_timings(); its natural
+    duration (from its length) is only used to share out the gap between
+    its timed neighbours.
+
+    Replaces the per-line window search (seed_lyric_windows() ->
+    progressively_align_lyrics() -> reanchor/rescue), whose windows let a
+    repeated line re-match the previous occurrence and chained every later
+    window off that mistake. If the GPU run fails (e.g. out of memory) the
+    emissions are recomputed on the CPU."""
+    words = [w for u in units for w in u["words"]]
+    try:
+        emission = ctc_align.emissions_for_audio(model, meta, audio16k, device)
+    except RuntimeError as exc:
+        if device == "cpu":
+            raise
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('aligner failed on')} "
+              f"{device} ({exc}) - retrying on cpu")
+        emission = ctc_align.emissions_for_audio(model, meta, audio16k, "cpu")
+    timings = ctc_align.align_words_globally(words, emission, meta)
+
+    aligned_units, n_aligned, k = [], 0, 0
+    for unit in units:
+        unit_words, unit_scores, starts, ends = [], [], [], []
+        for word in unit["words"]:
+            timing = timings[k]
+            k += 1
+            if timing:
+                start, end, score = timing
+                end = min(max(end, start + 0.03), start + MAX_ALIGNED_WORD_SECONDS)
+                unit_words.append({"start": start, "end": end, "score": score})
+                unit_scores.append(score)
+                starts.append(start)
+                ends.append(end)
+                n_aligned += 1
+            else:
+                unit_words.append(None)
+                starts.append(0.0)
+                ends.append(0.1 + 0.06 * len(word))
+        aligned_units.append({
+            "words": unit_words, "text": unit["text"],
+            "score": sum(unit_scores) / len(unit_scores) if unit_scores else None,
+            "word_orig_starts": starts, "word_orig_ends": ends,
+        })
+    return aligned_units, n_aligned
 
 
 def run_alignment_with_retries(align_attempt_fn, max_attempts: int = None):
@@ -1854,6 +2116,12 @@ def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir:
     print(f"{ULTRASINGER_HEAD} separating vocals (demucs, device={device})")
     vocals_audio, processing_audio = prepare_processing_audio(
         audio_path, work_dir, device)
+    # real detected silence (processing_audio is already muted wherever
+    # this found silence, so it's cheap and reliable to scan here) - lets
+    # the interpolation of words the aligner could not place skip real
+    # pauses instead of stretching them across (see interpolate_word_timings())
+    silence_sections = get_silence_sections(
+        processing_audio, min_silence_len=LYRICS_MIN_SILENCE_MS)
 
     audio16k = load_audio_16k(vocals_audio)
     audio_dur = len(audio16k) / 16000.0
@@ -1867,23 +2135,13 @@ def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir:
         lang = resolve_language(txt, vocals_audio, language, song_dir, out_dir)
         model, meta, lang = load_aligner(lang, "cpu")
 
-    scaffold_lines = txt.lyric_lines()
-
-    def _align_attempt():
-        attempt_units = copy.deepcopy(lyrics_units)
-        seed_lyric_windows(attempt_units, scaffold_lines, txt, audio_dur)
-        attempt_aligned = progressively_align_lyrics(
-            attempt_units, model, meta, audio16k, audio_dur)
-        reanchor_outlier_lyric_units(
-            attempt_units, attempt_aligned, model, meta, audio16k, audio_dur)
-        rescue_dropped_lyric_units(
-            attempt_units, attempt_aligned, model, meta, audio16k, audio_dur)
-        n_aligned = sum(1 for a in attempt_aligned for w in a["words"] if w)
-        n_total = sum(len(u["words"]) for u in attempt_units)
-        return attempt_units, attempt_aligned, n_aligned, n_total
-
-    lyrics_units, aligned_units, n_aligned, n_total = run_alignment_with_retries(
-        _align_attempt)
+    aligned_units, n_aligned = align_units_globally(
+        lyrics_units, model, meta, audio16k, device)
+    n_total = sum(len(u["words"]) for u in lyrics_units)
+    confident = sum(1 for a in aligned_units
+                    if a["score"] is not None and a["score"] >= GLOBAL_CONFIDENT_LINE_SCORE)
+    print(f"{ULTRASINGER_HEAD} global lyrics alignment: {n_aligned}/{n_total} "
+          f"words placed, {confident}/{len(aligned_units)} lines confident")
 
     if n_total and n_aligned / n_total < 0.5:
         print(f"{ULTRASINGER_HEAD} {red_highlighted('warning:')} only "
@@ -1892,9 +2150,11 @@ def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir:
               "anyway (lyrics mode never falls back to re-transcription)")
 
     per_unit_syllables = build_syllables_from_lyric_units(
-        lyrics_units, aligned_units, lang)
+        lyrics_units, aligned_units, lang, silence_sections=silence_sections,
+        audio_dur=audio_dur)
     out_path = write_lyrics_result(
-        txt, song_dir, out_dir, per_unit_syllables, processing_audio)
+        txt, song_dir, out_dir, per_unit_syllables, processing_audio,
+        audio_dur=audio_dur)
     if out_path is None:
         return None
 

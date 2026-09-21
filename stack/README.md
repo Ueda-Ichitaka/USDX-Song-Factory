@@ -191,9 +191,49 @@ just relabeled), reset that job explicitly:
 docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --all
 ```
 
-(there's currently no per-job reset - `reset --all` re-does every job,
-including repairs; see `state/state.json` if you need to hand-edit a
-single job's `"status"` back to `"pending"` instead).
+To redo only some songs, narrow the reset (see "Choosing which jobs run"
+below) - e.g. `reset --done --match "Rauta"` resets one song.
+
+### Choosing which jobs run
+
+`run`, `list`, `report` and `reset` accept the same selection flags:
+
+| Flag | Meaning |
+|---|---|
+| `--only generated` | new songs USDB does **not** have - created from scratch |
+| `--only usdb` | new songs USDB has - pulled from USDB (notes, video/audio, corrected `#GAP`) |
+| `--only repairs` | songs repaired from `input/` |
+| `--only a,b` | any comma-separated combination |
+| `--only-new` / `--only-repairs` | older aliases: every new song / repairs only |
+| `--match TEXT` | only jobs whose label contains TEXT (case-insensitive) |
+| `--no-usdb` | developer override for `run`: never pull from USDB, generate every new song from scratch (to compare alignment quality on a song USDB also has). Contradicts `--only usdb` |
+
+The normal policy is unchanged: without `--no-usdb`, a new song that USDB
+has is always pulled from USDB. `--only generated` / `--only usdb` first
+check each pending new song against USDB and leave the ones that don't
+fit the selection pending.
+
+```bash
+# only songs to be created from scratch
+docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py run --only generated
+# redo every finished generated song, then run just those
+docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --done --only generated
+# redo one song
+docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --done --match "Rauta"
+```
+
+**Leftover jobs.** `state/state.json` remembers every job ever planned, so
+a song you later remove from `song-requests.csv` (or a folder removed from
+`input/`) stays behind as an "orphan" that no run ever queues. The progress
+view counts only the jobs the song list and input folder define right now
+and shows the orphans on a separate "Not counted" line; `reset --prune`
+deletes them from the state (backup in `state/backups/`, output folders
+untouched).
+
+`reset` classifies finished songs from `state.json` (a lyrics source
+starting with `usdb:` counts as `usdb`); it only flips jobs back to
+`pending` and does not delete output folders. Without `--done` it retries
+only failed jobs of the selection.
 
 ## Repairing existing songs
 
@@ -437,7 +477,10 @@ docker compose run --rm ultrasinger python /app/orchestrator/romanize.py --txt "
 Every run writes `output/report.md`: a tabular summary of every new song
 created (with where its lyrics came from - see "Lyrics sources" above),
 every song repaired (with its repair mode), and every job that failed
-(with its error and where its quarantined output ended up). Also printed
+(with its error and where its quarantined output ended up). Songs that
+were skipped are listed with the reason: normally "no link in the song
+list" (an empty, `-` or `skip` link cell), or "no longer in the song list"
+for a stale record that `reset --prune` removes. Also printed
 to the console at the end of a run. Regenerate/view it any time without
 running anything:
 
@@ -477,6 +520,7 @@ docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py rep
 # state management:
 docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset          # retry failed jobs
 docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --all    # re-do everything
+docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --done --only generated --match "Rauta"   # see "Choosing which jobs run"
 
 # shell inside the container (for debugging):
 docker compose run --rm ultrasinger bash
@@ -555,6 +599,163 @@ it once and exits.
   number `uptime`/`top` show), not a precise instantaneous reading. The
   GPU row is omitted entirely on the CPU service (`DEVICE=cpu`).
 
+### Manual page: `orchestrator.py`
+
+The same information as a man-style reference. Inside the container the
+program is `python /app/orchestrator/orchestrator.py`; from the host prefix
+it with `docker compose run --rm ultrasinger` (GPU: `ultrasinger-rocm`,
+with `--profile rocm`).
+
+```text
+ORCHESTRATOR.PY(1)              UltraStar Song Factory              ORCHESTRATOR.PY(1)
+
+NAME
+    orchestrator.py - create new UltraStar songs and repair existing ones in
+    batch, with resumable per-song state
+
+SYNOPSIS
+    orchestrator.py [run] [SELECTION] [--no-usdb]
+    orchestrator.py list|report [SELECTION]
+    orchestrator.py progress [-w | --watch]
+    orchestrator.py reset [--all | --done] [SELECTION]
+    orchestrator.py reset --prune [SELECTION]
+    orchestrator.py run-one URL
+    orchestrator.py repair-one DIR
+
+    SELECTION = [--only CATEGORY[,CATEGORY...]] [--match TEXT]
+
+DESCRIPTION
+    Reads the want-list (input/song-requests.csv) and the song folders in
+    input/, plans one job per song, runs the pending ones one after another
+    and records every result in state/state.json. Finished jobs are skipped
+    on the next run, so a run can be stopped and resumed at any time.
+
+    A "new" song is created in this order: if USDB has the song, its notes
+    are pulled from USDB, the fitting video and audio are added and #GAP is
+    re-detected; otherwise the song is generated from scratch (vocal
+    separation, transcription, and online lyrics force-aligned to the audio
+    when a lyrics source is found). A repair job fixes a song folder from
+    input/ (#GAP only, resync, or trusted lyrics - see "Repairing existing
+    songs").
+
+COMMANDS
+    run                 Process all pending jobs. This is the default when no
+                        command is given (and what `docker compose up` runs).
+    list                Show the planned jobs and their status; nothing runs.
+    report              Print and write the finishing report (output/report.md).
+    progress [-w]       Print the progress overview once; with -w/--watch keep
+                        redrawing it every 10 seconds.
+    reset               Put failed, running and needs_review jobs back to
+                        pending so the next run retries them.
+    reset --done        Additionally put FINISHED jobs back to pending.
+    reset --all         Same as --done.
+    reset --prune       Remove stored jobs that are no longer in the song list
+                        or the input folder ("orphans"). The state file is
+                        backed up to state/backups/ first, output folders are
+                        never touched, running jobs are kept. SELECTION
+                        narrows it; cannot be combined with --done/--all.
+    run-one URL         Create one song from a YouTube URL, bypassing the queue
+                        and the state file.
+    repair-one DIR      Repair one song folder, bypassing the queue and the
+                        state file.
+
+SELECTION OPTIONS  (run, list, report, reset)
+    --only CATEGORY[,CATEGORY...]
+                        Restrict to job categories (also --only=VALUE):
+                          generated  new songs USDB does not have; created
+                                     from scratch
+                          usdb       new songs USDB has; pulled from USDB
+                          repairs    songs repaired from input/
+                        Whether a new song is "generated" or "usdb" is only
+                        known from a USDB lookup, so before a run with
+                        `generated` or `usdb` every pending new song is
+                        checked against USDB and the ones that do not fit are
+                        left pending (without USDB credentials every song
+                        counts as "not on USDB"). For reset, the category
+                        comes from the recorded result (lyrics source
+                        "usdb:...").
+    --only-new          Older alias for --only generated,usdb.
+    --only-repairs      Older alias for --only repairs. Both work with reset,
+                        e.g. `reset --done --only-new` redoes every new song,
+                        `reset --done --only-repairs` every repair.
+    --match TEXT        Only jobs whose label contains TEXT (case-insensitive).
+                        Combines with --only.
+
+RUN OPTIONS
+    --no-usdb           Developer override: never pull from USDB, generate
+                        every new song from scratch even if USDB has it (to
+                        compare alignment quality, for example). Off by
+                        default - the normal policy always pulls a song that
+                        USDB has. Cannot be combined with --only usdb.
+
+INTERACTIVE COMMANDS  (attached to a running `docker compose up`)
+    s, status           Print the progress overview.
+    skip                Abort the current song (marked failed), go on.
+    stop, q             Finish the current song, then exit.
+    h                   Help.
+    See "Attaching to the running session".
+
+ENVIRONMENT
+    SONGS_FILE, BROKEN_CSV, INPUT_DIR, OUTPUT_DIR, NEW_SONGS_DIR, STATE_DIR,
+    LOGS_DIR, WORK_DIR, MAX_ATTEMPTS, JOB_TIMEOUT_MIN, LYRICS_ENABLED,
+    GENIUS_API_KEY, USDB_USERNAME, USDB_PASSWORD, USDB_EU_EMAIL,
+    USDB_EU_PASSWORD, ROMANIZE, WHISPER_MODEL, DEMUCS_MODEL.
+    Meaning and defaults: see "Configuration (environment variables)".
+
+FILES
+    input/song-requests.csv   want-list of new songs
+    input/broken.csv          reports describing what is wrong with a repair
+    input/<song folder>/      songs to repair
+    output/new/               created songs
+    output/repaired/          repaired songs
+    output/failed/<kind>/     partial output of failed jobs
+    output/report.md          finishing report
+    state/state.json          per-job status (can be hand-edited)
+    logs/<job>.log            full verbose output of each job
+    cookies/cookies.txt       optional YouTube cookies (age-restricted videos)
+
+EXIT STATUS
+    0     the command completed (run also exits 0 after a deliberate stop)
+    1     unknown command; run-one / repair-one failed or got a bad argument
+    2     invalid SELECTION option value
+
+EXAMPLES
+    Run everything that is pending:
+        orchestrator.py run
+
+    Only the songs that must be created from scratch:
+        orchestrator.py run --only generated
+
+    Only songs available on USDB, plus all repairs:
+        orchestrator.py run --only usdb,repairs
+
+    Generate a song from scratch although USDB has it (comparison):
+        orchestrator.py reset --done --match "Daddy Cool"
+        orchestrator.py run --match "Daddy Cool" --no-usdb
+
+    Redo every finished generated song, then run just those:
+        orchestrator.py reset --done --only generated
+        orchestrator.py run --only generated
+
+    Retry only the failed jobs:
+        orchestrator.py reset
+        orchestrator.py run
+
+    Preview what a selection would touch:
+        orchestrator.py list --only repairs --match "Nightwish"
+
+    Redo all new songs / all repairs:
+        orchestrator.py reset --done --only-new
+        orchestrator.py reset --done --only-repairs
+
+    Drop jobs whose song was removed from the list or input folder:
+        orchestrator.py reset --prune
+
+SEE ALSO
+    "Choosing which jobs run", "Repairing existing songs", "USDB integration",
+    "Configuration (environment variables)", "Failed jobs".
+```
+
 ## Resource budget & model auto-selection
 
 Transcription/re-pitching/lyrics quality (mis-heard words, garbled repeated
@@ -620,8 +821,8 @@ Set in `docker-compose.yml` (or an `.env` file next to it):
 | `WHISPER_BATCH_SIZE` | auto-selected | force a specific whisper batch size |
 | `REPAIR_MODE` | `sync` | `gap` or `sync` (see above) |
 | `ULTRASINGER_ARGS` | - | extra args for every UltraSinger run, e.g. `"--disable_hyphenation --format_version 1.1.0"` |
-| `MAX_ATTEMPTS` | `2` | attempts per song before it stays failed |
-| `JOB_TIMEOUT_MIN` | `240` | hard timeout per song in minutes |
+| `MAX_ATTEMPTS` | `3` | attempts per song before it stays failed |
+| `JOB_TIMEOUT_MIN` | `90` | hard timeout per song in minutes |
 | `SONGS_FILE` | `/data/input/song-requests.csv` | the want-list file inside the container |
 | `NEW_SONGS_DIR` | `/data/output/new` | where newly created songs are written |
 | `FAILED_DIR` | `/data/output/failed` | where a failed job's partial output is quarantined |
@@ -676,22 +877,23 @@ If memory gets tight, use a smaller whisper model
 
 yt-dlp occasionally hits YouTube bot protection, and age-restricted videos
 always need this. Export your browser's YouTube cookies once, on the host
-(not inside the container - the container has no browser):
+(not inside the container - the container has no browser and no login),
+then verify them through the docker image (below) rather than on the host -
+see why under "Verify the cookies" first if you're tempted to skip it.
 
 ```bash
 # close the browser first - it locks its cookie DB while running, which
 # makes yt-dlp fail with "database is locked"
-yt-dlp --cookies-from-browser firefox --cookies stack/cookies/cookies.txt \
-  --skip-download "https://www.youtube.com/watch?v=<any-video-id>"
+yt-dlp --cookies-from-browser firefox --cookies stack/cookies/cookies.txt
 ```
 
 - `--cookies-from-browser` also accepts `chrome`, `brave`, `edge`, ... - and
   a specific profile if you have more than one: `firefox:default-release`,
   `chrome:Profile 2`.
-- The trailing URL is required (yt-dlp refuses to run with none) and is only
-  used to trigger the extraction - `--skip-download` means nothing is
-  downloaded. Using the actual blocked video's URL here also confirms the
-  cookies work for that specific video before you retry the batch.
+- No video URL is needed for the export itself - yt-dlp still prints
+  `error: You must provide at least one URL` and exits non-zero, but only
+  AFTER writing the cookie file, so that message is expected and harmless
+  here (verify the file, not the exit code).
 - The output file must be in Mozilla/Netscape format (first line `# Netscape
   HTTP Cookie File`) - `--cookies-from-browser` + `--cookies <file>` writes
   it in that format automatically, don't hand-edit it.
@@ -701,6 +903,79 @@ yt-dlp --cookies-from-browser firefox --cookies stack/cookies/cookies.txt \
 The orchestrator automatically passes `--cookiefile` to UltraSinger when
 `cookies/cookies.txt` exists - no further config needed once the file is in
 place.
+
+### If `yt-dlp` isn't installed on the host
+
+The command above needs a real `yt-dlp` on the host - the one baked into
+the docker image can't reach a browser's cookie database or its login
+keyring. Give it a throwaway environment instead of installing anything
+system-wide:
+
+```bash
+# uv (https://docs.astral.sh/uv/): ephemeral venv, removed when you're done
+uv venv /tmp/ytdlp-cookies-env
+uv pip install --python /tmp/ytdlp-cookies-env/bin/python yt-dlp secretstorage
+/tmp/ytdlp-cookies-env/bin/yt-dlp --cookies-from-browser firefox \
+  --cookies stack/cookies/cookies.txt
+rm -rf /tmp/ytdlp-cookies-env
+
+# or plain pip, if you don't mind it staying installed
+pip install --user yt-dlp secretstorage
+```
+
+`secretstorage` is only needed on Linux, and only when your cookies are
+encrypted with the desktop's keyring/wallet (see below) - Firefox doesn't
+need it.
+
+### Chromium-based browsers (Chrome/Brave/Edge/...) installed as a Flatpak
+
+`--cookies-from-browser` looks for the browser's *native* Linux install
+path (e.g. `~/.config/BraveSoftware/Brave-Browser`). A Flatpak install
+lives elsewhere and needs its profile folder given explicitly as
+`BROWSER:PATH`:
+
+```bash
+# find it first - the "Cookies" file lives inside a profile folder such as
+# "Default" or "Profile 1"
+find ~/.var/app/*/config -mindepth 1 -maxdepth 1 -iname '*rowser*' 2>/dev/null
+find ~/.var/app/com.brave.Browser/config -iname Cookies
+
+# then pass that profile folder (the one CONTAINING "Cookies", not the
+# file itself) after the browser name
+yt-dlp --cookies-from-browser \
+  "brave:$HOME/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser/Default" \
+  --cookies stack/cookies/cookies.txt
+```
+
+On Linux, Chromium-based browsers encrypt cookie values with a key stored
+in the desktop's keyring (GNOME Keyring, KDE's `ksecretd`/KWallet, ...) via
+the `org.freedesktop.secrets` D-Bus service - `secretstorage` (installed
+above) is yt-dlp's client for that. This only works from a normal desktop
+session (a real `DBUS_SESSION_BUS_ADDRESS`, so a plain SSH shell won't have
+it) and will prompt you to unlock the keyring/wallet if it's locked. If
+extraction reports 0 cookies or decryption failures, the keyring is most
+likely locked or unreachable.
+
+Firefox stores cookies unencrypted in its own SQLite database (no keyring
+involved), which is why it needs no keyring/`secretstorage` step.
+
+### Verify the cookies
+
+Do this through the docker image, not a bare host `yt-dlp` - resolving a
+real YouTube format needs a JS runtime for YouTube's signature challenge
+(the image bundles `deno` for exactly this; a plain `pip`/`uv`-installed
+`yt-dlp` on the host does not), so a host-only check can fail with an
+unrelated `Signature solving failed` / `age-restricted` error even when the
+cookies themselves are perfectly good:
+
+```bash
+docker compose run --rm ultrasinger yt-dlp --cookies /data/cookies/cookies.txt \
+  --skip-download --print title "https://www.youtube.com/watch?v=<the-blocked-video-id>"
+```
+
+Printing the real title (instead of a bot-check/age error) confirms the
+cookies work - use the actual previously-blocked video's URL here to
+confirm it specifically before you retry the batch.
 
 ## Troubleshooting
 

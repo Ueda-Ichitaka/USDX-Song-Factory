@@ -283,6 +283,222 @@ check("interpolate_word_timings: a leading run that already fits is "
       abs(leading_fits[1]["interp"][1] - 5.0) < 1e-9)
 
 # --------------------------------------------------------------------------
+# get_non_silent_subintervals() / distribute_over_non_silent_span() /
+# interpolate_word_timings(..., silence_sections=...): a real pause in the
+# vocals within an interpolated gap was being completely ignored - the
+# unaligned words were blindly stretched across the WHOLE gap (including
+# the silent part), so the lyrics "kept going" right through a real pause
+# instead of waiting for it to end. Found live 2026-09-16 from the user's
+# own manual USDX testing of a full batch regeneration: reported as the
+# dominant symptom across most songs ("lyrics directly proceed to next
+# line, but vocals have a gap until they actually start" - Bella Ciao,
+# Rauta, Moorsoldaten, Omnos, In My Sword I Trust, Mon Amour Mon Ami,
+# Lai Lai Hei all independently described the same pattern), and also
+# explains wrong #GAP values at the very start (Inis Mona) since a
+# leading run has the identical blind spot. Confirmed on real audio:
+# Rauta's vocals track measured -20dBFS during real singing vs -65 to
+# -86dBFS during the actual pause between lines 4 and 5 - a huge, clean
+# margin the existing -50dBFS default threshold already separates
+# correctly. The bug was never CONSULTING silence detection at all in
+# repair.py's interpolation path, not a broken threshold.
+# --------------------------------------------------------------------------
+
+check("get_non_silent_subintervals: no silence -> whole span unchanged",
+      repair.get_non_silent_subintervals(10.0, 15.0, []) == [(10.0, 15.0)])
+check("get_non_silent_subintervals: silence fully inside the span splits "
+      "it into a before/after pair",
+      repair.get_non_silent_subintervals(10.0, 15.0, [(11.0, 13.0)]) ==
+      [(10.0, 11.0), (13.0, 15.0)])
+check("get_non_silent_subintervals: silence at the very start of the "
+      "span leaves only the remainder",
+      repair.get_non_silent_subintervals(10.0, 15.0, [(9.0, 13.0)]) ==
+      [(13.0, 15.0)])
+check("get_non_silent_subintervals: silence outside the span is ignored",
+      repair.get_non_silent_subintervals(10.0, 15.0, [(20.0, 22.0)]) ==
+      [(10.0, 15.0)])
+check("get_non_silent_subintervals: multiple silences produce multiple "
+      "sub-intervals, in order",
+      repair.get_non_silent_subintervals(
+          0.0, 10.0, [(2.0, 3.0), (6.0, 7.0)]) ==
+      [(0.0, 2.0), (3.0, 6.0), (7.0, 10.0)])
+
+# a real pause (10.0-13.0) sits at the START of the gap (10.0-15.0) -
+# words must be packed into the remaining non-silent time (13.0-15.0),
+# not stretched across the whole 5s span including the silent part
+positions = repair.distribute_over_non_silent_span(
+    10.0, 15.0, [1.0, 1.0, 1.0], [(10.0, 13.0)])
+check(f"distribute_over_non_silent_span: skips the real silence at the "
+      f"start of the gap instead of starting immediately (got {positions!r})",
+      positions[0][0] >= 13.0 - 1e-9)
+check("distribute_over_non_silent_span: still ends by the gap's own end",
+      positions[-1][1] <= 15.0 + 1e-9)
+check("distribute_over_non_silent_span: 3 words scaled to fill the 2.0s "
+      "of real non-silent time (not the full 5.0s span)",
+      abs(positions[-1][1] - positions[0][0] - 2.0) < 1e-6)
+
+no_silence_positions = repair.distribute_over_non_silent_span(
+    10.0, 15.0, [1.0, 1.0, 1.0], [])
+check("distribute_over_non_silent_span: with no silence, matches the old "
+      "whole-span proportional stretch",
+      abs(no_silence_positions[0][0] - 10.0) < 1e-9 and
+      abs(no_silence_positions[-1][1] - 15.0) < 1e-9)
+
+check("distribute_over_non_silent_span: falls back to the whole span "
+      "instead of crashing when silence covers everything",
+      repair.distribute_over_non_silent_span(
+          10.0, 15.0, [1.0, 1.0], [(10.0, 15.0)]) is not None)
+
+# --------------------------------------------------------------------------
+# distribute_over_non_silent_span(): a SPARSE run (1-2 dropped words) in a
+# wide, mostly-non-silent gap (quiet instrumental, or singing Whisper just
+# failed to match) was stretched by the same scale as a dense run, gluing
+# the word(s) to the far end of the gap instead of near their natural
+# position/size. Found live 2026-09-17 from broader real-song testing
+# (Feuerschwanz/Therion/Hannes Wader/Letzte Instanz) after the pause-aware
+# fix above: Therion - Kali Yuga III's "Mistress of Time" (one source
+# line) came out as "Mistress of" ... 21s gap ... "Time", right before the
+# next line; Letzte Instanz - Rapunzel's whole opening (GAP=5.97s) landed
+# nowhere near the real ~20s vocal onset.
+# --------------------------------------------------------------------------
+
+sparse_positions = repair.distribute_over_non_silent_span(
+    0.0, 30.0, [1.0], [])
+check(f"distribute_over_non_silent_span: a single sparse word in a wide "
+      f"30s gap is NOT stretched to fill the whole gap (got "
+      f"{sparse_positions!r})",
+      sparse_positions[-1][1] < 30.0 - 1e-9)
+check(f"distribute_over_non_silent_span: the sparse word stays within a "
+      f"capped multiple ({repair.INTERP_MAX_STRETCH_FACTOR}x) of its "
+      f"natural 1.0s duration (got {sparse_positions!r})",
+      sparse_positions[-1][1] - sparse_positions[0][0] <=
+      repair.INTERP_MAX_STRETCH_FACTOR + 1e-9)
+check("distribute_over_non_silent_span: the sparse word is anchored at "
+      "the near edge of the usable span, not the far edge",
+      sparse_positions[0][0] < 1.0)
+
+dense_positions = repair.distribute_over_non_silent_span(
+    10.0, 15.0, [1.0, 1.0, 1.0], [])
+check("distribute_over_non_silent_span: a dense run whose natural total "
+      "(3.0s) is close to the usable span (5.0s) is unaffected by the "
+      "stretch cap - still ends exactly at the gap's own end",
+      abs(dense_positions[-1][1] - 15.0) < 1e-9)
+
+compressed_positions = repair.distribute_over_non_silent_span(
+    10.0, 12.0, [1.0, 1.0, 1.0], [])
+check("distribute_over_non_silent_span: a run that needs to COMPRESS "
+      "(natural total 3.0s > 2.0s usable span) is unaffected by the "
+      "stretch cap (only expansion is capped) - still ends exactly at "
+      "the gap's own end",
+      abs(compressed_positions[-1][1] - 12.0) < 1e-9)
+
+# interpolate_word_timings() end-to-end: a middle run with a real pause
+# right after the previous aligned word (matches the Rauta/Bella Ciao
+# pattern exactly) must skip into the non-silent remainder
+middle_with_pause = [
+    _fake_word(10.0, 10.5, timing={"start": 10.0, "end": 10.0}),
+    _fake_word(10.5, 11.5), _fake_word(11.5, 12.5), _fake_word(12.5, 13.5),
+    _fake_word(13.5, 14.0, timing={"start": 15.0, "end": 15.5}),
+]
+repair.interpolate_word_timings(middle_with_pause, silence_sections=[(10.0, 13.0)])
+check(f"interpolate_word_timings: with silence_sections, a middle run "
+      f"skips a real pause instead of starting immediately after the "
+      f"previous word (got {middle_with_pause[1]['interp']!r})",
+      middle_with_pause[1]["interp"][0] >= 13.0 - 1e-9)
+
+middle_no_silence_info = [
+    _fake_word(10.0, 10.5, timing={"start": 10.0, "end": 10.0}),
+    _fake_word(10.5, 11.5), _fake_word(11.5, 12.5), _fake_word(12.5, 13.5),
+    _fake_word(13.5, 14.0, timing={"start": 15.0, "end": 15.5}),
+]
+repair.interpolate_word_timings(middle_no_silence_info)
+check("interpolate_word_timings: omitting silence_sections (the default) "
+      "behaves exactly like before - starts right after the previous word",
+      abs(middle_no_silence_info[1]["interp"][0] - 10.0) < 1e-9)
+
+# leading run with real silence before the first confident word (matches
+# the Inis Mona wrong-#GAP pattern) - must not backward-stack across it
+leading_with_pause = [
+    _fake_word(0.0, 1.0), _fake_word(1.0, 2.0),
+    _fake_word(2.0, 2.5, timing={"start": 8.0, "end": 8.5}),
+]
+repair.interpolate_word_timings(leading_with_pause, silence_sections=[(0.0, 4.0)])
+check(f"interpolate_word_timings: a leading run with silence_sections "
+      f"does not place words inside real silence before the first "
+      f"confident word (got {leading_with_pause[0]['interp']!r})",
+      leading_with_pause[0]["interp"][0] >= 4.0 - 1e-9)
+
+# --------------------------------------------------------------------------
+# interpolate_word_timings(..., audio_dur=...): a TRAILING run (no aligned
+# word AFTER it in the whole song) had NO upper bound at all - if several
+# consecutive lines at the end of a song all failed alignment/rescue, their
+# natural durations got stacked one after another with nothing to stop
+# them running past the real end of the audio. Found live 2026-09-17 on
+# real audio: Lord of the Lost - Beyond Beautiful's last lyric line ended
+# at 259.5s on a 239.45s audio file - 20 real seconds of lyrics displayed
+# after the song had already ended.
+# --------------------------------------------------------------------------
+
+trailing_overrun = [
+    _fake_word(50.0, 51.0, timing={"start": 8.0, "end": 9.0}),
+    _fake_word(51.0, 56.0), _fake_word(56.0, 61.0), _fake_word(61.0, 66.0),
+]
+repair.interpolate_word_timings(trailing_overrun, audio_dur=10.0)
+check(f"interpolate_word_timings: with audio_dur given, a trailing run is "
+      f"never placed past the real end of the audio (got "
+      f"{[w['interp'] for w in trailing_overrun[1:]]!r})",
+      all(w["interp"][1] <= 10.0 + 1e-9 for w in trailing_overrun[1:]))
+
+trailing_no_audio_dur = [
+    _fake_word(50.0, 51.0, timing={"start": 8.0, "end": 9.0}),
+    _fake_word(51.0, 56.0), _fake_word(56.0, 61.0), _fake_word(61.0, 66.0),
+]
+repair.interpolate_word_timings(trailing_no_audio_dur)
+check("interpolate_word_timings: omitting audio_dur (the default) behaves "
+      "exactly like before - a trailing run keeps stacking unclamped",
+      trailing_no_audio_dur[-1]["interp"][1] > 10.0)
+
+trailing_fits = [
+    _fake_word(8.0, 8.5, timing={"start": 8.0, "end": 8.5}),
+    _fake_word(8.5, 9.0), _fake_word(9.0, 9.4),
+]
+repair.interpolate_word_timings(trailing_fits, audio_dur=10.0)
+check(f"interpolate_word_timings: a trailing run that already fits within "
+      f"audio_dur is unaffected by the clamp (got "
+      f"{trailing_fits[-1]['interp']!r})",
+      abs(trailing_fits[-1]["interp"][1] - 9.45) < 1e-6)
+
+# --------------------------------------------------------------------------
+# clamp_beat_to_max(): write_lyrics_result()'s existing monotonic-forward
+# clamp (a note can never start before the previous note's own end, so
+# notes render in order) has NO ceiling at all - a single real but
+# slightly out-of-order timestamp anywhere in the song forces every
+# LATER note forward by that same offset, compounding with no upper
+# bound. Found live 2026-09-17 on real audio: Lord of the Lost - Beyond
+# Beautiful's last note ended at beat 4865 (259.5s) on audio only 239.45s
+# long - the monotonic clamp alone had pushed the whole tail of the song
+# 20 real seconds past where the audio literally ends.
+# --------------------------------------------------------------------------
+
+check("clamp_beat_to_max: normal in-order note is unaffected",
+      repair.clamp_beat_to_max(10, 5, None, None) == (10, 5, 15))
+check("clamp_beat_to_max: the existing forward clamp still applies "
+      "(an out-of-order note is pushed to start right after the "
+      "previous note's end)",
+      repair.clamp_beat_to_max(3, 5, 20, None) == (20, 5, 25))
+check(f"clamp_beat_to_max: a note that would start past max_beat is "
+      f"capped to end AT max_beat, not past it (got "
+      f"{repair.clamp_beat_to_max(50, 10, None, 30)!r})",
+      repair.clamp_beat_to_max(50, 10, None, 30)[0] +
+      repair.clamp_beat_to_max(50, 10, None, 30)[1] <= 30)
+check(f"clamp_beat_to_max: a cascading prev_end_beat already past "
+      f"max_beat still gets capped, not left to overshoot further "
+      f"(got {repair.clamp_beat_to_max(5, 5, 200, 30)!r})",
+      repair.clamp_beat_to_max(5, 5, 200, 30)[0] +
+      repair.clamp_beat_to_max(5, 5, 200, 30)[1] <= 30)
+check("clamp_beat_to_max: a note well within max_beat is untouched",
+      repair.clamp_beat_to_max(10, 5, None, 100) == (10, 5, 15))
+
+# --------------------------------------------------------------------------
 # resolve_language(): must persist <out_dir>/<song_name>/language.txt (the
 # OUTPUT folder - repair.py never writes into the original input song_dir,
 # see write_repaired()/write_lyrics_result()'s identical out_song_dir
