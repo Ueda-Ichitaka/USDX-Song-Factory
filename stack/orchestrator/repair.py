@@ -48,14 +48,16 @@ sys.path.insert(0, "/app/UltraSinger/src")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import ctc_align  # noqa: E402
+import pitch_normalise  # noqa: E402
 from modules.Audio.convert_audio import convert_audio_to_mono_wav  # noqa: E402
 from modules.Audio.denoise import denoise_vocal_audio  # noqa: E402
 from modules.Audio.separation import DemucsModel  # noqa: E402
 from modules.Audio.separation import separate_vocal_from_audio  # noqa: E402
 from modules.Audio.silence_processing import get_silence_sections, mute_no_singing_parts  # noqa: E402
 from modules.language_file import resolve_language_with_file  # noqa: E402
-from modules.Midi.midi_creator import create_midi_note_from_pitched_data  # noqa: E402
+from modules.Midi.midi_creator import create_midi_note_from_pitched_data, find_nearest_index  # noqa: E402
 from modules.Pitcher.pitcher import get_pitch_with_file  # noqa: E402
+from modules.Pitcher.pitched_data_helper import CONFIDENCE_THRESHOLD  # noqa: E402
 from modules.console_colors import (  # noqa: E402
     ULTRASINGER_HEAD,
     blue_highlighted,
@@ -98,6 +100,10 @@ LYRICS_LINE_OUTLIER_GAP_S = float(os.environ.get("LYRICS_LINE_OUTLIER_GAP_S", "3
 WORD_END_EXTEND_DROP_DB = float(os.environ.get("WORD_END_EXTEND_DROP_DB", "6.0"))
 WORD_END_EXTEND_MAX_S = float(os.environ.get("WORD_END_EXTEND_MAX_S", "3.0"))
 WORD_START_LEAD_S = float(os.environ.get("WORD_START_LEAD_S", "0.04"))
+# a note's pitch is picked from at least this much audio around its centre -
+# the pitch detector fails most on short notes (measured on 110 hand-made
+# songs, stack/work/bench/an11.py: 0.3-0.5 s best, 0.4 s chosen)
+PITCH_MIN_WINDOW_S = float(os.environ.get("PITCH_MIN_WINDOW_S", "0.4"))
 # real pauses for silence-aware seeding/interpolation (see
 # seed_lyric_windows()/interpolate_word_timings()) - get_silence_sections()'s
 # own default (50ms) flags ordinary inter-syllable micro-pauses WITHIN
@@ -1907,6 +1913,31 @@ def lyrics_txt_lines(per_unit_syllables: list) -> list:
             for unit in per_unit_syllables if unit]
 
 
+def pitch_window(start: float, end: float, min_len: float = None):
+    """The span a note's pitch is picked from: the note itself, widened
+    around its centre to at least `min_len` seconds (PITCH_MIN_WINDOW_S),
+    never before 0."""
+    min_len = PITCH_MIN_WINDOW_S if min_len is None else min_len
+    if end - start >= min_len:
+        return start, end
+    extra = (min_len - (end - start)) / 2
+    return max(0.0, start - extra), end + extra
+
+
+def sure_pitch_fraction(start: float, end: float, pitched,
+                        threshold: float = CONFIDENCE_THRESHOLD) -> float:
+    """Share of the pitch frames of [start, end] whose confidence is above
+    `threshold` - the same frames and threshold
+    create_midi_note_from_pitched_data() picks the note from."""
+    first = find_nearest_index(pitched.times, start)
+    last = find_nearest_index(pitched.times, end)
+    confidences = (pitched.confidence[first:last] if last > first
+                   else [pitched.confidence[first]])
+    if len(confidences) == 0:
+        return 0.0
+    return sum(1 for c in confidences if c > threshold) / len(confidences)
+
+
 def clamp_beat_to_max(beat: int, dur: int, prev_end_beat, max_beat: int = None):
     """Apply write_lyrics_result()'s existing monotonic-forward clamp (a
     note can never start before the previous note's own end, so notes
@@ -1939,7 +1970,11 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
     sequence), this builds an entirely new note sequence - the
     syllable/line count is whatever the lyrics source produced, not the
     original file's, EXCEPT a unit too long on screen or spanning a long
-    internal pause gets split further (see split_long_lyric_units()). BPM
+    internal pause gets split further (see split_long_lyric_units()). The
+    pitch of a short note is picked from at least PITCH_MIN_WINDOW_S around
+    it, and the detected pitches are normalised for the whole song (octave errors
+    folded back, unsure notes set to the local melody level - see
+    pitch_normalise.py). BPM
     is kept from the scaffold (audio-only, lyrics don't change it);
     header tags are kept verbatim except #GAP."""
     per_unit_syllables = split_long_lyric_units(per_unit_syllables)
@@ -1983,29 +2018,38 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
     max_beat = max(0, round(sec_to_beat(audio_dur - gap_s))) \
         if audio_dur is not None else None
 
-    prev_end_beat = None
-    for unit_syllables in per_unit_syllables:
-        if not unit_syllables:
-            continue
+    # first every note's detected pitch and how sure the detector was, then
+    # the whole song's pitches are normalised together (pitch_normalise.py)
+    notes, pitches, sure = [], [], []
+    for ui, unit_syllables in enumerate(per_unit_syllables):
         for word_field, start, end in unit_syllables:
             start = max(start, gap_s)
             end = max(end, start + 0.05)
+            pitch_start, pitch_end = pitch_window(start, end)
             try:
                 seg = create_midi_note_from_pitched_data(
-                    start, end, pitched, word_field.strip() or "~", None)
-                pitch = int(librosa.note_to_midi(seg.note)) - 48
+                    pitch_start, pitch_end, pitched, word_field.strip() or "~", None)
+                pitches.append(int(librosa.note_to_midi(seg.note)) - 48)
+                sure.append(sure_pitch_fraction(pitch_start, pitch_end, pitched))
             except Exception:  # noqa: BLE001
-                pitch = 0
-            beat = max(0, round(sec_to_beat(start - gap_s)))
-            dur = max(1, round(sec_to_beat(end - start)))
-            beat, dur, prev_end_beat = clamp_beat_to_max(
-                beat, dur, prev_end_beat, max_beat)
-            out_lines.append(f": {_fmt_num(beat)} {_fmt_num(dur)} "
-                             f"{_fmt_num(pitch)} {word_field}")
-        out_lines.append(f"- {_fmt_num(prev_end_beat)}")
+                pitches.append(0)
+                sure.append(0.0)
+            notes.append((ui, word_field, start, end))
+    pitches = pitch_normalise.normalise_pitches(pitches, sure)
 
-    if out_lines and out_lines[-1].startswith("- "):
-        out_lines.pop()  # no line-break needed after the very last line
+    prev_end_beat = None
+    current_unit = None
+    for (ui, word_field, start, end), pitch in zip(notes, pitches):
+        if current_unit is not None and ui != current_unit:
+            out_lines.append(f"- {_fmt_num(prev_end_beat)}")
+        current_unit = ui
+        beat = max(0, round(sec_to_beat(start - gap_s)))
+        dur = max(1, round(sec_to_beat(end - start)))
+        beat, dur, prev_end_beat = clamp_beat_to_max(
+            beat, dur, prev_end_beat, max_beat)
+        out_lines.append(f": {_fmt_num(beat)} {_fmt_num(dur)} "
+                         f"{_fmt_num(pitch)} {word_field}")
+
     out_lines.append("E")
 
     out_path = os.path.join(out_song_dir, os.path.basename(txt.path))

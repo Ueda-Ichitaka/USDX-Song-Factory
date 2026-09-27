@@ -17,7 +17,7 @@ dependencies = [
     "language_data",
     "packaging",
     "librosa",
-    "swift-f0",
+    "swift-f0[audio]>=0.3.0",
     "pydub",
     "demucs",
     "ffmpeg-python",

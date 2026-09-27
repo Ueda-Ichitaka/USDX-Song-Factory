@@ -622,6 +622,103 @@ check("refine_global_alignment: an outlier opening word is re-placed before "
       abs(_rf[0]["words"][1]["start"] - (10.0 - repair.WORD_START_LEAD_S)) < 1e-9)
 
 # --------------------------------------------------------------------------
+# write_lyrics_result(): note pitches are normalised (pitch_normalise.py) -
+# octave errors folded back, unsure notes take the local melody level
+# --------------------------------------------------------------------------
+
+class _PitchTxt:
+    path = "song.txt"
+    real_bpm = 60.0  # one beat per second
+    lines = [{"raw": "#TITLE:Song"}, {"raw": "#BPM:15"}, {"raw": "#GAP:0"}]
+
+
+class _FakePitched:
+    def __init__(self, melody, unsure):
+        self.times, self.frequencies, self.confidence = [], [], []
+        for i, pitch in enumerate(melody):
+            hz = 440.0 * 2 ** ((pitch + 48 - 69) / 12)
+            for f in range(100):
+                self.times.append(i + f / 100)
+                self.frequencies.append(hz)
+                self.confidence.append(0.1 if i in unsure else 0.9)
+
+
+_melody = [4, 5, 7, 5, 28, 2, 4, 5, 40, 9, 7, 5]
+_saved_pitch = repair.get_pitch_with_file
+_pitch_song = tempfile.mkdtemp()
+_pitch_out = tempfile.mkdtemp()
+try:
+    repair.get_pitch_with_file = lambda path: _FakePitched(_melody, {8})
+    _pitch_path = repair.write_lyrics_result(
+        _PitchTxt(), _pitch_song, _pitch_out,
+        [[(f"w{i} ", float(i), i + 0.8) for i in range(12)]], "/p.wav",
+        audio_dur=20.0)
+finally:
+    repair.get_pitch_with_file = _saved_pitch
+_written = [int(l.split()[3]) for l in open(_pitch_path, encoding="utf-8")
+            if l.startswith(": ")]
+check(f"write_lyrics_result: a note two octaves off is folded back (got {_written})",
+      _written[4] == 4)
+check("write_lyrics_result: an unsure note takes the local melody level",
+      abs(_written[8] - 5) <= 2)
+check("write_lyrics_result: correct notes keep their pitch",
+      [_written[i] for i in (0, 1, 2, 3, 5, 6, 7, 9, 10, 11)] ==
+      [4, 5, 7, 5, 2, 4, 5, 9, 7, 5])
+
+# pitch_window(): a short note is judged over at least PITCH_MIN_WINDOW_S
+# (0.4 s, centred) - measured on 110 hand-made songs, short notes are where
+# the detector fails most
+_pw = repair.pitch_window(10.0, 10.1)
+check(f"pitch_window: a note shorter than the minimum is widened around its centre (got {_pw})",
+      abs(_pw[0] - 9.85) < 1e-9 and abs(_pw[1] - 10.25) < 1e-9)
+check("pitch_window: a long enough note keeps its own span",
+      repair.pitch_window(10.0, 10.6) == (10.0, 10.6))
+check("pitch_window: never before the start of the audio",
+      repair.pitch_window(0.05, 0.1)[0] == 0.0)
+check("pitch_window: the minimum is 0.4 s", repair.PITCH_MIN_WINDOW_S == 0.4)
+
+
+class _GlidePitched:
+    """Per 1 s slot: a steady note (pitch `steady`) with a 0.1 s different
+    blip (pitch `blip`) exactly where the short syllable sits."""
+
+    def __init__(self, steady, blip, slots):
+        self.times, self.frequencies, self.confidence = [], [], []
+        for i in range(slots):
+            for f in range(100):
+                t = i + f / 100
+                pitch = blip if 0.3 <= f / 100 < 0.4 else steady
+                self.times.append(t)
+                self.frequencies.append(440.0 * 2 ** ((pitch + 48 - 69) / 12))
+                self.confidence.append(0.9)
+
+
+_saved_pitch = repair.get_pitch_with_file
+_glide_out = tempfile.mkdtemp()
+try:
+    repair.get_pitch_with_file = lambda path: _GlidePitched(5, 8, 12)
+    _glide_path = repair.write_lyrics_result(
+        _PitchTxt(), tempfile.mkdtemp(), _glide_out,
+        [[(f"w{i} ", i + 0.3, i + 0.4) for i in range(12)]], "/p.wav",
+        audio_dur=20.0)
+finally:
+    repair.get_pitch_with_file = _saved_pitch
+_glide = [int(l.split()[3]) for l in open(_glide_path, encoding="utf-8")
+          if l.startswith(": ")]
+check(f"write_lyrics_result: a short note takes the pitch sung around it, not a "
+      f"0.1 s blip (got {_glide})", all(p == 5 for p in _glide))
+
+# sure_pitch_fraction() uses the shared confidence threshold (0.2 for SwiftF0 0.3.0)
+class _ConfPitched:
+    times = [0.0, 0.1, 0.2, 0.3]
+    frequencies = [220.0] * 4
+    confidence = [0.1, 0.25, 0.3, 0.9]
+
+
+check("sure_pitch_fraction: frames above the shared threshold 0.2 count as sure",
+      abs(repair.sure_pitch_fraction(0.0, 0.3, _ConfPitched()) - 2 / 3) < 1e-9)
+
+# --------------------------------------------------------------------------
 # repair_txt_with_lyrics(): lyrics mode aligns via ONE global pass now
 # (everything heavy stubbed out - this checks the wiring only)
 # --------------------------------------------------------------------------
