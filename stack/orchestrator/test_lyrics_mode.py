@@ -489,6 +489,139 @@ check("align_units_globally: falls back to the CPU when the GPU run fails",
       _g_n2 == 3 and abs(_g_aligned2[0]["words"][0]["start"] - 0.20) < 1e-9)
 
 # --------------------------------------------------------------------------
+# refinement of the global alignment (measured on 104 hand-synced songs:
+# first word >1 s early 19% -> 13.5%, long-note ends within 0.3 s 55% -> 66%,
+# word starts within 0.1 s 55% -> 59%)
+# --------------------------------------------------------------------------
+
+def _w(start, end, score=0.9):
+    return {"start": start, "end": end, "score": score}
+
+
+def _unit(words, texts=None):
+    return {"words": words, "text": " ".join(texts or ["x"] * len(words)),
+            "score": 0.9, "word_orig_starts": [0.0] * len(words),
+            "word_orig_ends": [0.1] * len(words)}
+
+
+# place_line_outliers(): a word far away from the rest of its own line is
+# matched to some other sound; it goes back next to its line at natural
+# length (0.1 s + 0.06 s per character)
+_lo_units = [{"words": ["ab", "c", "d", "efg"]}, {"words": ["h", "i"]}]
+_lo = [_unit([_w(0.0, 0.3), _w(10.0, 10.3), _w(10.4, 10.6), _w(30.0, 34.0)]),
+       _unit([_w(40.0, 40.3), _w(42.5, 42.8)])]
+repair.place_line_outliers(_lo, _lo_units, 3.0)
+check("place_line_outliers: an outlier before the rest of its line ends where "
+      f"the line starts, at natural length (got {_lo[0]['words'][0]})",
+      abs(_lo[0]["words"][0]["start"] - 9.78) < 1e-9 and
+      abs(_lo[0]["words"][0]["end"] - 10.0) < 1e-9 and
+      _lo[0]["words"][0]["score"] == 0.0)
+check("place_line_outliers: an outlier after the rest of its line starts where "
+      f"the line ends, at natural length - never its old (long) duration "
+      f"(got {_lo[0]['words'][3]})",
+      abs(_lo[0]["words"][3]["start"] - 10.6) < 1e-9 and
+      abs(_lo[0]["words"][3]["end"] - 10.88) < 1e-9)
+check("place_line_outliers: the kept words stay where they are",
+      _lo[0]["words"][1] == _w(10.0, 10.3) and _lo[0]["words"][2] == _w(10.4, 10.6))
+check("place_line_outliers: a line without such a gap stays untouched",
+      _lo[1]["words"] == [_w(40.0, 40.3), _w(42.5, 42.8)])
+_lo_tie = [_unit([_w(0.0, 0.3, 0.2), _w(10.0, 10.3, 0.8)])]
+repair.place_line_outliers(_lo_tie, [{"words": ["a", "b"]}], 3.0)
+check("place_line_outliers: between equally large clusters the better-scored "
+      f"one is kept (got {_lo_tie[0]['words']})",
+      abs(_lo_tie[0]["words"][0]["start"] - 9.84) < 1e-9 and
+      _lo_tie[0]["words"][1] == _w(10.0, 10.3, 0.8))
+_lo_two = [_unit([_w(0.0, 0.3), _w(0.5, 0.7), _w(10.0, 10.3), _w(10.4, 10.6), _w(10.7, 11.0)])]
+repair.place_line_outliers(_lo_two, [{"words": ["a", "b", "c", "d", "e"]}], 3.0)
+check("place_line_outliers: several outliers keep their order before the line",
+      abs(_lo_two[0]["words"][1]["end"] - 10.0) < 1e-9 and
+      abs(_lo_two[0]["words"][0]["end"] - _lo_two[0]["words"][1]["start"]) < 1e-9 and
+      abs(_lo_two[0]["words"][0]["start"] - 9.68) < 1e-9)
+_lo_none = [_unit([None, _w(10.0, 10.3), None])]
+repair.place_line_outliers(_lo_none, [{"words": ["a", "b", "c"]}], 3.0)
+check("place_line_outliers: untimed words are left to interpolation",
+      _lo_none[0]["words"][0] is None and _lo_none[0]["words"][2] is None)
+
+# place_leading_words(): untimed words before the first timed word
+_pl_units = [{"words": ["abc", "de"]}, {"words": ["f"]}]
+_pl = [_unit([None, None]), _unit([_w(20.0, 20.3)])]
+repair.place_leading_words(_pl, _pl_units, [(0.0, 15.0)])
+check("place_leading_words: leading words sit directly before the first timed "
+      f"word at natural length (got {[_pl[0]['words'][i] for i in (0, 1)]})",
+      abs(_pl[0]["words"][0]["start"] - 19.5) < 1e-9 and
+      abs(_pl[0]["words"][0]["end"] - 19.78) < 1e-9 and
+      abs(_pl[0]["words"][1]["start"] - 19.78) < 1e-9 and
+      abs(_pl[0]["words"][1]["end"] - 20.0) < 1e-9)
+check("place_leading_words: placed words carry score 0.0",
+      _pl[0]["words"][0]["score"] == 0.0)
+_pl2 = [_unit([None, None]), _unit([_w(20.0, 20.3)])]
+repair.place_leading_words(_pl2, _pl_units, [(0.0, 19.6)])
+check("place_leading_words: a short sung stretch before the first word is "
+      "used compressed instead of jumping back into the intro",
+      abs(_pl2[0]["words"][0]["start"] - 19.6) < 1e-9 and
+      abs(_pl2[0]["words"][1]["end"] - 20.0) < 1e-9)
+_pl3 = [_unit([None, None]), _unit([_w(20.0, 20.3)])]
+repair.place_leading_words(_pl3, _pl_units, [(0.0, 19.9)])
+check("place_leading_words: with no usable stretch at all the words still end "
+      "at the first timed word",
+      abs(_pl3[0]["words"][1]["end"] - 20.0) < 1e-9 and
+      abs(_pl3[0]["words"][0]["start"] - 19.5) < 1e-9)
+_pl4 = [_unit([_w(1.0, 1.2), None])]
+repair.place_leading_words(_pl4, [{"words": ["a", "b"]}], [])
+check("place_leading_words: nothing to do when the first word is timed",
+      _pl4[0]["words"][1] is None)
+_pl5 = [_unit([None, None])]
+repair.place_leading_words(_pl5, [{"words": ["a", "b"]}], [])
+check("place_leading_words: nothing to do when no word is timed at all",
+      _pl5[0]["words"] == [None, None])
+
+# frame_levels_db(): 20 ms frame levels of the 16 kHz vocal stem
+_levels = repair.frame_levels_db([0.5] * 640 + [0.0] * 320)
+check("frame_levels_db: one level per 20 ms frame, in dBFS",
+      len(_levels) == 3 and abs(_levels[0] + 6.0206) < 1e-3 and _levels[2] < -100)
+
+# extend_word_ends(): a held note keeps sounding after its last letter
+_lv = [-40.0] * 50 + [-10.0] * 50 + [-30.0] * 100  # loud from 1.0 s to 2.0 s
+_ex = [_unit([_w(1.0, 1.2), _w(3.0, 3.2)])]
+repair.extend_word_ends(_ex, _lv, 6.0, 3.0)
+check("extend_word_ends: the end follows the singing while it stays within "
+      f"6 dB of the word's own level (got {_ex[0]['words'][0]['end']})",
+      abs(_ex[0]["words"][0]["end"] - 2.0) < 1e-9)
+_ex2 = [_unit([_w(1.0, 1.2), _w(1.5, 1.7)])]
+repair.extend_word_ends(_ex2, _lv, 6.0, 3.0)
+check("extend_word_ends: never closer than 40 ms to the next word",
+      abs(_ex2[0]["words"][0]["end"] - 1.46) < 1e-9)
+_ex3 = [_unit([_w(1.0, 1.91)])]
+repair.extend_word_ends(_ex3, [-10.0] * 95 + [-40.0] * 105, 6.0, 3.0)
+check("extend_word_ends: a word is never shortened (its end frame is already "
+      "quiet)", abs(_ex3[0]["words"][0]["end"] - 1.91) < 1e-9)
+_ex4 = [_unit([_w(0.0, 0.2)])]
+repair.extend_word_ends(_ex4, [-10.0] * 1000, 6.0, 3.0)
+check("extend_word_ends: extends at most max_ext seconds",
+      abs(_ex4[0]["words"][0]["end"] - 3.2) < 1e-9)
+_ex5 = [_unit([_w(0.0, 3.5)])]
+repair.extend_word_ends(_ex5, [-10.0] * 1000, 6.0, 3.0)
+check("extend_word_ends: never beyond the maximum word length",
+      abs(_ex5[0]["words"][0]["end"] - repair.MAX_ALIGNED_WORD_SECONDS) < 1e-9)
+
+# lead_word_starts(): aligned starts are ~50 ms later than hand-synced ones
+_ls = [_unit([_w(0.02, 0.5), None, _w(1.0, 1.5)])]
+repair.lead_word_starts(_ls, 0.04)
+check("lead_word_starts: timed starts move earlier, never below 0, ends stay",
+      abs(_ls[0]["words"][0]["start"]) < 1e-9 and
+      abs(_ls[0]["words"][2]["start"] - 0.96) < 1e-9 and
+      abs(_ls[0]["words"][2]["end"] - 1.5) < 1e-9 and _ls[0]["words"][1] is None)
+
+# refine_global_alignment(): all steps in the measured order
+_rf_units = [{"words": ["ab", "c", "d"]}]
+_rf = [_unit([_w(0.0, 0.2), _w(10.0, 10.2), _w(10.3, 10.5)])]
+repair.refine_global_alignment(_rf, _rf_units, [0.5] * (16000 * 12), [])
+check("refine_global_alignment: an outlier opening word is re-placed before "
+      f"the rest of its line and all starts lead by 40 ms (got {_rf[0]['words']})",
+      abs(_rf[0]["words"][0]["start"] - (10.0 - 0.22 - repair.WORD_START_LEAD_S)) < 1e-9 and
+      abs(_rf[0]["words"][1]["start"] - (10.0 - repair.WORD_START_LEAD_S)) < 1e-9)
+
+# --------------------------------------------------------------------------
 # repair_txt_with_lyrics(): lyrics mode aligns via ONE global pass now
 # (everything heavy stubbed out - this checks the wiring only)
 # --------------------------------------------------------------------------
@@ -502,8 +635,8 @@ _wiring = {}
 _saved = {n: getattr(repair, n) for n in (
     "locate_audio", "prepare_processing_audio", "get_silence_sections",
     "load_audio_16k", "resolve_language", "load_aligner",
-    "align_units_globally", "build_syllables_from_lyric_units",
-    "write_lyrics_result")}
+    "align_units_globally", "refine_global_alignment",
+    "build_syllables_from_lyric_units", "write_lyrics_result")}
 
 
 def _fake_align(units, model, meta, audio16k, device="cpu"):
@@ -512,6 +645,11 @@ def _fake_align(units, model, meta, audio16k, device="cpu"):
              "text": u["text"], "score": 0.5,
              "word_orig_starts": [0.0] * len(u["words"]),
              "word_orig_ends": [1.0] * len(u["words"])} for u in units], 5
+
+
+def _fake_refine(aligned, units, audio16k, silence_sections):
+    _wiring["refine"] = (len(units), len(audio16k), silence_sections)
+    aligned[0]["refined"] = True
 
 
 def _fake_build(units, aligned, lang, silence_sections=None, audio_dur=None):
@@ -532,6 +670,7 @@ try:
     repair.resolve_language = lambda *a, **k: "en"
     repair.load_aligner = lambda lang, device: ("MODEL", "META", "en")
     repair.align_units_globally = _fake_align
+    repair.refine_global_alignment = _fake_refine
     repair.build_syllables_from_lyric_units = _fake_build
     repair.write_lyrics_result = _fake_write
     _wiring_result = repair.repair_txt_with_lyrics(
@@ -544,6 +683,11 @@ finally:
 check("repair_txt_with_lyrics: aligns every unit with one align_units_globally "
       f"call on the loaded aligner and the separated vocals (got {_wiring.get('align', ('',) * 5)[1:]})",
       _wiring["align"][1:] == ("MODEL", "META", 16000 * 3, "cuda"))
+check("repair_txt_with_lyrics: refines the alignment with the units, the "
+      f"vocals and the detected silence (got {_wiring.get('refine')})",
+      _wiring.get("refine") == (1, 16000 * 3, [(1.0, 2.0)]))
+check("repair_txt_with_lyrics: build_syllables gets the REFINED alignment",
+      _wiring["build"][0][0].get("refined") is True)
 check("repair_txt_with_lyrics: build_syllables gets the global alignment, "
       "the detected silence and the real audio length",
       _wiring["build"][0][0]["score"] == 0.5 and

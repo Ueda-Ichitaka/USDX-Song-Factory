@@ -85,7 +85,14 @@ def parse_lrc(lrc_text: str) -> list:
     return lines
 
 
-SECTION_TAG_RE = re.compile(r"^\[([^\[\]]+)\]$")
+# a repeat count such as "x2", "2x", "x 2" or "×2", inside the tag
+# ("[Chorus x2]") or after it, bare or bracketed ("[Chorus] [x2]",
+# "[Refrain] (2x)", "[Chorus] x2")
+_REPEAT_COUNT = r"(?:[x×]\s*\d+|\d+\s*[x×])"
+SECTION_TAG_RE = re.compile(
+    rf"^\[\s*([^\[\]]+?)(?:\s+{_REPEAT_COUNT})?\s*\]"
+    rf"(?:\s*(?:{_REPEAT_COUNT}|\[\s*{_REPEAT_COUNT}\s*\]|\(\s*{_REPEAT_COUNT}\s*\)))?$",
+    re.IGNORECASE)
 
 
 def resolve_and_strip_section_markers(text: str) -> str:
@@ -104,7 +111,11 @@ def resolve_and_strip_section_markers(text: str) -> str:
     lyrics from the song. A later occurrence that DOES have its own
     (different) content is kept as-is, never overwritten by the first
     capture. A bare tag with nothing captured for it yet is dropped
-    silently (nothing to substitute, never guessed)."""
+    silently (nothing to substitute, never guessed).
+
+    A repeat count on a tag ("[Chorus] [x2]", "[Refrain] (2x)",
+    "[Chorus x2]") makes it the same tag as without the count; the count
+    itself is not applied - the content is used once."""
     raw_lines = text.splitlines()
     n = len(raw_lines)
     captured = {}

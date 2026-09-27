@@ -89,6 +89,15 @@ GLOBAL_CONFIDENT_LINE_SCORE = 0.25
 # (found live: one word got 25 s); hand-synced words are longer than 3 s
 # only ~0.5% of the time, and capping changed no measured end error
 MAX_ALIGNED_WORD_SECONDS = float(os.environ.get("MAX_ALIGNED_WORD_SECONDS", "4.0"))
+# refinement of the global alignment (see refine_global_alignment()), tuned on
+# 104 hand-synced songs: inside one hand-synced lyric line no pause between
+# two words exceeds 2.6 s; a held note is still sounding while the vocal stem
+# stays within 6 dB of the word's own level; aligned word starts are ~50 ms
+# later than hand-synced ones (40 ms lead measured best)
+LYRICS_LINE_OUTLIER_GAP_S = float(os.environ.get("LYRICS_LINE_OUTLIER_GAP_S", "3.0"))
+WORD_END_EXTEND_DROP_DB = float(os.environ.get("WORD_END_EXTEND_DROP_DB", "6.0"))
+WORD_END_EXTEND_MAX_S = float(os.environ.get("WORD_END_EXTEND_MAX_S", "3.0"))
+WORD_START_LEAD_S = float(os.environ.get("WORD_START_LEAD_S", "0.04"))
 # real pauses for silence-aware seeding/interpolation (see
 # seed_lyric_windows()/interpolate_word_timings()) - get_silence_sections()'s
 # own default (50ms) flags ordinary inter-syllable micro-pauses WITHIN
@@ -2060,13 +2069,156 @@ def align_units_globally(units, model, meta, audio16k, device: str = "cpu"):
             else:
                 unit_words.append(None)
                 starts.append(0.0)
-                ends.append(0.1 + 0.06 * len(word))
+                ends.append(_natural_word_seconds(word))
         aligned_units.append({
             "words": unit_words, "text": unit["text"],
             "score": sum(unit_scores) / len(unit_scores) if unit_scores else None,
             "word_orig_starts": starts, "word_orig_ends": ends,
         })
     return aligned_units, n_aligned
+
+
+def _natural_word_seconds(word: str) -> float:
+    """Length given to a word placed without its own timing."""
+    return 0.1 + 0.06 * len(word)
+
+
+def place_line_outliers(aligned_units, units, max_gap: float) -> None:
+    """Inside each lyric line, split the timed words wherever two
+    neighbours are more than `max_gap` seconds apart and keep the largest
+    cluster (ties: the better mean score). A word that far from the rest of
+    its own line was matched to some other sound (an intro chant, a backing
+    vocal); it is placed back next to its line at natural length: words
+    before the kept cluster end where it starts, words after it start where
+    it ends, in lyric order, with score 0.0. Mutates `aligned_units` in
+    place."""
+    for unit, lyric_unit in zip(aligned_units, units):
+        words = unit["words"]
+        timed = [i for i, w in enumerate(words) if w]
+        if len(timed) < 2:
+            continue
+        clusters = [[timed[0]]]
+        for a, b in zip(timed, timed[1:]):
+            if words[b]["start"] - words[a]["end"] > max_gap:
+                clusters.append([])
+            clusters[-1].append(b)
+        if len(clusters) == 1:
+            continue
+        keep = max(clusters, key=lambda c: (
+            len(c), sum(words[i]["score"] for i in c) / len(c)))
+        outliers = [i for c in clusters if c is not keep for i in c]
+        cursor = words[keep[0]]["start"]
+        for i in sorted((i for i in outliers if i < keep[0]), reverse=True):
+            length = _natural_word_seconds(lyric_unit["words"][i])
+            words[i] = {"start": cursor - length, "end": cursor, "score": 0.0}
+            cursor -= length
+        cursor = words[keep[-1]]["end"]
+        for i in sorted(i for i in outliers if i > keep[-1]):
+            length = _natural_word_seconds(lyric_unit["words"][i])
+            words[i] = {"start": cursor, "end": cursor + length, "score": 0.0}
+            cursor += length
+
+
+def place_leading_words(aligned_units, units, silence_sections) -> None:
+    """Give the untimed words before the song's first timed word a timing:
+    packed backwards from that word at their natural length (0.1 s + 0.06 s
+    per character), inside the nearest non-silent stretch before it that
+    offers at least 0.15 s per word, compressed when that stretch is
+    shorter than their natural length. With no such stretch they end at the
+    first timed word. Placed words get score 0.0. Mutates `aligned_units`
+    in place."""
+    leading = []
+    first_start = None
+    for ui, unit in enumerate(aligned_units):
+        for wi, word in enumerate(unit["words"]):
+            if word:
+                first_start = word["start"]
+                break
+            leading.append((ui, wi))
+        if first_start is not None:
+            break
+    if first_start is None or not leading:
+        return
+    natural = [_natural_word_seconds(units[ui]["words"][wi]) for ui, wi in leading]
+    need = 0.15 * len(leading)
+    lo, hi = 0.0, first_start
+    for start, end in reversed(get_non_silent_subintervals(
+            0.0, first_start, silence_sections)):
+        if end - start >= need:
+            lo, hi = start, end
+            break
+    total = sum(natural)
+    span = min(total, hi - lo)
+    scale = span / total
+    cursor = hi - span
+    for (ui, wi), dur in zip(leading, natural):
+        aligned_units[ui]["words"][wi] = {
+            "start": cursor, "end": cursor + dur * scale, "score": 0.0}
+        cursor += dur * scale
+
+
+def frame_levels_db(audio16k):
+    """Level (dBFS) of every 20 ms frame of a 16 kHz track - the same frame
+    grid as the aligner's emissions."""
+    import numpy as np
+    samples = np.asarray(audio16k, dtype=np.float32)
+    n_frames = len(samples) // ctc_align.FRAME_SAMPLES
+    frames = samples[:n_frames * ctc_align.FRAME_SAMPLES].reshape(
+        n_frames, ctc_align.FRAME_SAMPLES)
+    return 10.0 * np.log10(np.mean(frames ** 2, axis=1) + 1e-12)
+
+
+def extend_word_ends(aligned_units, levels_db, drop_db: float,
+                     max_ext: float) -> None:
+    """The aligner ends a word at its last recognised letter, so a held
+    note ends too early. Extend each timed word's end while the vocal stem
+    stays within `drop_db` of the word's own mean level, by at most
+    `max_ext` seconds, never closer than 40 ms to the next timed word and
+    never beyond MAX_ALIGNED_WORD_SECONDS. A word is never shortened.
+    Mutates `aligned_units` in place."""
+    frame_s = ctc_align.FRAME_SECONDS
+    timed = [w for unit in aligned_units for w in unit["words"] if w]
+    n_levels = len(levels_db)
+    for i, word in enumerate(timed):
+        first = int(word["start"] / frame_s)
+        last = max(first + 1, int(word["end"] / frame_s))
+        own = (sum(levels_db[first:last]) / (last - first)
+               if last <= n_levels else -120.0)
+        threshold = own - drop_db
+        if i + 1 < len(timed):
+            next_start = timed[i + 1]["start"] - 0.04
+        else:
+            next_start = word["end"] + max_ext
+        limit = min(next_start, word["start"] + MAX_ALIGNED_WORD_SECONDS,
+                    word["end"] + max_ext)
+        frame = int(word["end"] / frame_s)
+        while (frame < n_levels and (frame + 1) * frame_s <= limit + 1e-9
+               and levels_db[frame] > threshold):
+            frame += 1
+        word["end"] = max(word["end"], min(limit, frame * frame_s))
+
+
+def lead_word_starts(aligned_units, lead_s: float) -> None:
+    """Move every timed word's start `lead_s` earlier (never below 0); the
+    aligner places starts slightly later than a hand-synced song does.
+    Mutates `aligned_units` in place."""
+    for unit in aligned_units:
+        for word in unit["words"]:
+            if word:
+                word["start"] = max(0.0, word["start"] - lead_s)
+
+
+def refine_global_alignment(aligned_units, units, audio16k,
+                            silence_sections) -> None:
+    """Precision pass over align_units_globally()'s result, in the order it
+    was measured in: line outliers back next to their line, leading words
+    directly before the first timed word, word ends follow held notes,
+    starts lead by WORD_START_LEAD_S. Mutates `aligned_units` in place."""
+    place_line_outliers(aligned_units, units, LYRICS_LINE_OUTLIER_GAP_S)
+    place_leading_words(aligned_units, units, silence_sections)
+    extend_word_ends(aligned_units, frame_levels_db(audio16k),
+                     WORD_END_EXTEND_DROP_DB, WORD_END_EXTEND_MAX_S)
+    lead_word_starts(aligned_units, WORD_START_LEAD_S)
 
 
 def run_alignment_with_retries(align_attempt_fn, max_attempts: int = None):
@@ -2148,6 +2300,8 @@ def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir:
               f"{n_aligned}/{n_total} words aligned confidently - the "
               "supplied lyrics may not match this audio well; result kept "
               "anyway (lyrics mode never falls back to re-transcription)")
+
+    refine_global_alignment(aligned_units, lyrics_units, audio16k, silence_sections)
 
     per_unit_syllables = build_syllables_from_lyric_units(
         lyrics_units, aligned_units, lang, silence_sections=silence_sections,

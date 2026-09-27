@@ -120,6 +120,39 @@ check("resolve_and_strip_section_markers drops a bare tag with nothing "
       "captured for it yet, without crashing",
       resolved_unmatched == "Real line")
 
+# Genius tags that carry a repeat count ("[Chorus] [x2]" on Eluveitie -
+# Omnos, "[Refrain] (2x)" on ASP - Denn ich bin der Meister) are tags too:
+# they must never end up as sung text, and a bare one still resolves to
+# the tag's captured content.
+section_counted_own = (
+    "[Chorus]\nVrit-me lindos\n"
+    "[Verse 2]\nVerse text\n"
+    "[Chorus] [x2]\nVrit-me lindos\n"
+    "[Spoken]\nSpoken text"
+)
+resolved_counted_own = lf.resolve_and_strip_section_markers(section_counted_own)
+check("resolve_and_strip_section_markers drops a '[Tag] [x2]' line and keeps "
+      f"its own content (got {resolved_counted_own!r})",
+      resolved_counted_own ==
+      "Vrit-me lindos\nVerse text\nVrit-me lindos\nSpoken text")
+
+section_counted_bare = (
+    "[Refrain]\nDenn ich bin dein Meister\n"
+    "[Bridge]\nBridge text\n"
+    "[Refrain] (2x)"
+)
+resolved_counted_bare = lf.resolve_and_strip_section_markers(section_counted_bare)
+check("resolve_and_strip_section_markers resolves a bare '[Tag] (2x)' line to "
+      f"the tag's captured content (got {resolved_counted_bare!r})",
+      resolved_counted_bare ==
+      "Denn ich bin dein Meister\nBridge text\nDenn ich bin dein Meister")
+
+for counted in ("[Chorus x2]", "[Chorus] x2", "[Chorus] (x2)", "[Chorus] 2x",
+                "[Chorus] [2x]", "[Chorus] (x 2)", "[Chorus] ×2"):
+    check(f"resolve_and_strip_section_markers treats {counted!r} as a chorus tag",
+          lf.resolve_and_strip_section_markers(
+              f"[Chorus]\nHey\n{counted}") == "Hey\nHey")
+
 no_markers = "Just a normal line\nAnother normal line"
 check("resolve_and_strip_section_markers is a no-op when there are no "
       "section markers at all",

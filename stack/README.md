@@ -98,6 +98,7 @@ stack/
 ├── models/            # AI model cache (whisper, demucs, aligners)
 ├── work/              # repair working cache (safe to delete anytime)
 ├── cookies/           # optional cookies.txt for YouTube (see below)
+├── reference/         # approved songs for the regression check (not in git)
 ├── usdb_syncer/       # git submodule - see "USDB integration" below
 └── docker-compose.yml
 ```
@@ -487,6 +488,26 @@ running anything:
 ```bash
 docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py report
 ```
+
+## Reference songs (regression check)
+
+`reference/` holds generated songs whose timing was checked by ear in USDX
+and approved (one folder per song, copied unchanged from `output/new/`). After
+a change to the alignment and a new run, compare the new generation of those
+songs with the approved versions:
+
+```bash
+python3 orchestrator/compare_reference.py
+# other folders: --reference DIR --new DIR
+```
+
+It prints one table row per reference song: how many words both versions
+share, the share of word starts within 0.1 s and 0.3 s of the approved
+version, the median shift (new minus approved, in seconds) and the largest
+shifts. Words are matched by their text, so changed lyrics still compare on
+the words both versions have. A song without a new generation shows up as
+`missing`. The folder is in `.gitignore` (audio and video do not belong in
+git); to add a song, copy its folder from `output/new/`.
 
 ## Failed jobs
 
