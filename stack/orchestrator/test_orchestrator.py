@@ -9,6 +9,7 @@ needed) or inside the container.
 
 import os
 import sys
+import shutil
 import tempfile
 
 TMP_DATA = tempfile.mkdtemp(prefix="ultrasinger-test-")
@@ -656,6 +657,23 @@ check("report shows the online lyrics source without a warning marker",
 check("report flags transcribed-only lyrics with a warning marker",
       "transcribed ⚠" in report_lyrics)
 
+# USDB songs carry community-made lyrics: trusted, never flagged like a
+# transcription (seen live 2026-09-27: both USDB songs of a run were flagged)
+fake_state_usdb = {"jobs": {
+    "new|u3": {"kind": "new", "status": "done", "label": "Band C - Song C",
+              "output_path": "/data/output/new/Band C - Song C/x.txt",
+              "duration_s": 60, "lyrics_source": "usdb:animux:12345"},
+    "new|u4": {"kind": "new", "status": "done", "label": "Band D - Song D",
+              "output_path": "/data/output/new/Band D - Song D/x.txt",
+              "duration_s": 60, "lyrics_source": "usdb:eu:678"},
+}}
+report_usdb = orch.render_report(fake_state_usdb)
+check(f"report shows USDB lyrics without the transcription warning (got {report_usdb!r})",
+      "| usdb:animux:12345 |" in report_usdb and "| usdb:eu:678 |" in report_usdb
+      and "⚠" not in report_usdb)
+check("the transcription note is left out when no song is flagged",
+      "came from audio transcription" not in report_usdb)
+
 # --------------------------------------------------------------------------
 # patch_tag(): rewrite/insert a "#TAG:value" line in a txt's raw content
 # --------------------------------------------------------------------------
@@ -942,6 +960,14 @@ def fake_download_media(url, dest, want_video, log_path):
     return True
 
 
+def fake_extract_audio_mp3(video_path, mp3_path):
+    with open(mp3_path, "wb") as f:
+        f.write(b"mp3")
+    return True
+
+
+_real_extract = getattr(orch, "extract_audio_mp3", None)
+orch.extract_audio_mp3 = fake_extract_audio_mp3
 orig_download_media = orch.download_media
 orch.download_media = fake_download_media
 try:
@@ -964,6 +990,18 @@ try:
         written = f.read()
     check("prepare_usdb_job writes a txt with a #VIDEO tag pointing at the download",
           "#VIDEO:video.mp4" in written)
+    # regression (found 2026-09-27 on real output): #MP3 kept the uploader's
+    # file name (e.g. "Cypecore - Identity.mp3") that does not exist in our
+    # folder, and repair.py's intermediate audio files landed in the song
+    check("prepare_usdb_job points #MP3 at an audio file that exists in the "
+          f"staging dir (got {written!r})",
+          "#MP3:Lacrimosa - Lichtgestalt.mp3" in written and
+          os.path.isfile(os.path.join(result["staging_dir"], "Lacrimosa - Lichtgestalt.mp3")))
+    check("prepare_usdb_job's staging dir is not repair.py's default work dir "
+          "for that song (WORK_DIR/<song name>), so intermediate files stay out "
+          "of the output",
+          os.path.normpath(result["staging_dir"]) !=
+          os.path.normpath(os.path.join(orch.WORK_DIR, "Lacrimosa - Lichtgestalt")))
 finally:
     orch.download_media = orig_download_media
 
@@ -1305,6 +1343,14 @@ try:
     check("find_sync_meta_source finds the *.usdb file in the folder",
           orch.find_sync_meta_source(sync_meta_dir, "video") ==
           "https://www.youtube.com/watch?v=2DG_pIM-Dc4")
+    # square brackets in a song folder name ("[Live]", "[DUET]") are glob
+    # character classes - the folder must still be searched literally
+    _bracket_dir = os.path.join(TMP_DATA, "Band - Song [Live]")
+    os.makedirs(_bracket_dir, exist_ok=True)
+    shutil.copy(os.path.join(sync_meta_dir, "12345.usdb"), _bracket_dir)
+    check("find_sync_meta_source finds the *.usdb file in a folder with [brackets]",
+          orch.find_sync_meta_source(_bracket_dir, "video") ==
+          "https://www.youtube.com/watch?v=2DG_pIM-Dc4")
 finally:
     del sys.modules["usdb_syncer.meta_tags"]
     del sys.modules["usdb_syncer.utils"]
@@ -1364,6 +1410,11 @@ check("prepare_media_repair's staging dir basename matches the original "
       "write_repaired() derives the output folder name from it)",
       os.path.basename(result_link["staging_dir"]) ==
       os.path.basename(media_dir))
+check("prepare_media_repair's staging dir is not repair.py's default work dir "
+      "for that song (WORK_DIR/<song name>), so its intermediate files stay "
+      "out of the repaired song",
+      os.path.normpath(result_link["staging_dir"]) !=
+      os.path.normpath(os.path.join(orch.WORK_DIR, os.path.basename(media_dir))))
 with open(os.path.join(result_link["staging_dir"], "media-song.txt"),
          encoding="utf-8") as f:
     staged_content = f.read()
@@ -2032,6 +2083,281 @@ check("report: the stale-record reason points to the fix",
 
 check("write_report passes the current job ids through (file content has the reason)",
       "no link in the song list" in open(orch.write_report(_skip_state, active_ids=set(_skip_state["jobs"]))).read())
+
+# --------------------------------------------------------------------------
+# karaoke-dashboard export columns added 2026-09-21/26: cover_url (both
+# files) and duet (song-requests.csv: yes / no / blank, blank means no). The
+# same song may appear twice, once with duet=yes.
+# --------------------------------------------------------------------------
+
+_dash_csv = os.path.join(TMP_DATA, "dash-requests.csv")
+with open(_dash_csv, "w", encoding="utf-8") as f:
+    f.write("band name,song name,youtube link,language,musicbrainz_id,lyrics_url,cover_url,duet\n"
+            "Faun,Tanz mit mir,https://yt/faun,de,,,https://img/faun.jpg,no\n"
+            "Faun,Tanz mit mir,https://yt/faun,de,,,,yes\n"
+            "Omnia,Earth Warrior,https://yt/omnia,,,,, YES \n"
+            "ASP,Duett,https://yt/asp,,,,,\n"
+            "Lord of the Lost,Kingdom Come,https://yt/lotl,,,,,maybe\n"
+            "Old Row,Before Duet Column,https://yt/old\n")
+_dash = orch.parse_songs_file(_dash_csv)
+check(f"parse_songs_file: both rows of a song that differ only in duet are kept (got {len(_dash)})",
+      len(_dash) == 6)
+check("parse_songs_file: duet is True only for yes (case/space-insensitive)",
+      [e["duet"] for e in _dash] == [False, True, True, False, False, False])
+check("parse_songs_file: cover_url is read (empty when missing)",
+      _dash[0]["cover_url"] == "https://img/faun.jpg" and _dash[1]["cover_url"] == ""
+      and _dash[5]["cover_url"] == "")
+
+_extra_csv = os.path.join(TMP_DATA, "extra-cells.csv")
+with open(_extra_csv, "w", encoding="utf-8") as f:
+    f.write("band,title,url\nA,B,https://yt/a,surplus,cells\nC,D,https://yt/c\n")
+try:
+    _extra = orch.parse_songs_file(_extra_csv)
+    check(f"parse_songs_file: a row with more cells than the header does not break "
+          f"the file (got {_extra})",
+          [e["url"] for e in _extra] == ["https://yt/a", "https://yt/c"])
+except Exception as exc:  # noqa: BLE001
+    check(f"parse_songs_file: a row with more cells than the header does not break "
+          f"the file (raised {exc!r})", False)
+
+check("new_job_id: a plain song keeps its id (existing state stays valid)",
+      orch.new_job_id(_dash[0]) == "new|https://yt/faun")
+check("new_job_id: the duet version of the same song is a separate job",
+      orch.new_job_id(_dash[1]) == "new|https://yt/faun|duet")
+check("song_label: the duet version is labelled as such",
+      orch.song_label(_dash[1]) == "Faun - Tanz mit mir (Duet)"
+      and orch.song_label(_dash[0]) == "Faun - Tanz mit mir")
+_skip_duet = {"band": "X", "title": "Y", "url": "skip", "duet": True}
+_skip_plain = {"band": "X", "title": "Y", "url": "skip", "duet": False}
+check("new_job_id: skipped rows of the plain and the duet version do not collide",
+      orch.new_job_id(_skip_duet) != orch.new_job_id(_skip_plain))
+
+_orig_songs, _orig_input, _orig_broken = orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV
+orch.SONGS_FILE = _dash_csv
+orch.INPUT_DIR = os.path.join(TMP_DATA, "no-input-dir")
+orch.BROKEN_CSV = os.path.join(TMP_DATA, "no-broken.csv")
+try:
+    _duet_state = orch.State()
+    _duet_jobs = {j["id"]: j for j in orch.build_job_plan(_duet_state)}
+    check(f"build_job_plan: plain and duet version are two jobs (got {sorted(_duet_jobs)})",
+          "new|https://yt/faun" in _duet_jobs and "new|https://yt/faun|duet" in _duet_jobs)
+    check("build_job_plan: the plain version is pending, with its cover_url",
+          _duet_jobs["new|https://yt/faun"]["status"] == "pending"
+          and _duet_jobs["new|https://yt/faun"]["cover_url"] == "https://img/faun.jpg"
+          and _duet_jobs["new|https://yt/faun"]["duet"] is False)
+    check("build_job_plan: a duet version is not run (duet generation does not exist yet)",
+          _duet_jobs["new|https://yt/faun|duet"]["status"] == "skipped"
+          and _duet_jobs["new|https://yt/faun|duet"]["duet"] is True)
+    check("skip_reason: a duet version says why it is not generated",
+          "duet" in orch.skip_reason(_duet_jobs["new|https://yt/faun|duet"]).lower())
+    check("current_job_ids: the duet job counts as current (not an orphan)",
+          "new|https://yt/faun|duet" in orch.current_job_ids())
+    _duet_jobs["new|https://yt/faun"]["status"] = "done"
+    _again = {j["id"]: j for j in orch.build_job_plan(_duet_state)}
+    check("build_job_plan: re-planning keeps a finished plain version done",
+          _again["new|https://yt/faun"]["status"] == "done")
+    _p = orch.render_progress(_duet_state.data)
+    check(f"render_progress: skipped duet versions are named as such (got {_p!r})",
+          "duet" in _p.lower())
+finally:
+    orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV = _orig_songs, _orig_input, _orig_broken
+
+# language: the dashboard also exports the pseudo-code "mixed" (songs that
+# switch language) - no language whisper or the aligner knows, so it must
+# mean "detect it yourself", never be passed on as --language
+_lang_csv = os.path.join(TMP_DATA, "lang-requests.csv")
+with open(_lang_csv, "w", encoding="utf-8") as f:
+    f.write("band name,song name,youtube link,language\n"
+            "A,B,https://yt/1,mixed\nC,D,https://yt/2,DE\nE,F,https://yt/3, en \nG,H,https://yt/4,German\n")
+check("parse_songs_file: 'mixed' and non-ISO languages become unspecified, codes are lower-cased",
+      [e["language"] for e in orch.parse_songs_file(_lang_csv)] == ["", "de", "en", ""])
+
+# broken.csv: cover_url column, extra cells
+import broken_report as _br  # noqa: E402
+_bcsv = os.path.join(TMP_DATA, "dash-broken.csv")
+with open(_bcsv, "w", encoding="utf-8") as f:
+    f.write("band,song name,category,description,lyrics_url,language,cover_url\n"
+            "Queen,I Want To Break Free,gap,,,en,https://img/queen.png\n"
+            "Metric,Black Sheep,async,,,,\n"
+            "Extra,Cells,gap,,,,,surplus\n")
+try:
+    _brows = _br.parse_broken_csv(_bcsv)
+    check("parse_broken_csv: cover_url is read (empty when blank)",
+          _brows[0]["cover_url"] == "https://img/queen.png" and _brows[1]["cover_url"] == "")
+    check("parse_broken_csv: a row with more cells than the header does not break the file",
+          len(_brows) == 3)
+    _blang = os.path.join(TMP_DATA, "lang-broken.csv")
+    with open(_blang, "w", encoding="utf-8") as f:
+        f.write("band,song name,category,description,lyrics_url,language\n"
+                "A,B,async,,,mixed\nC,D,async,,,FI\n")
+    check("parse_broken_csv: 'mixed' becomes unspecified, codes are lower-cased",
+          [r["language"] for r in _br.parse_broken_csv(_blang)] == ["", "fi"])
+except Exception as exc:  # noqa: BLE001
+    check(f"parse_broken_csv: cover_url and extra cells (raised {exc!r})", False)
+
+# apply_cover_url(): the linked image becomes the song's cover
+_JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64
+_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+_cover_dir = os.path.join(TMP_DATA, "cover-song")
+os.makedirs(_cover_dir, exist_ok=True)
+_cover_txt = os.path.join(_cover_dir, "Band - Song.txt")
+
+
+def _write_cover_txt():
+    with open(_cover_txt, "w", encoding="utf-8") as f:
+        f.write("#TITLE:Song\n#ARTIST:Band\n#COVER:Band - Song [CO].jpg\n"
+                "#COVERURL:https://coverartarchive.org/x.jpg\n#BPM:100\n: 0 1 0 Hi\nE\n")
+
+
+_write_cover_txt()
+_ok = orch.apply_cover_url(_cover_txt, "https://img/new.jpg", fetch=lambda url: _JPEG)
+_txt = open(_cover_txt, encoding="utf-8").read()
+check("apply_cover_url: a JPEG link becomes the cover file and #COVER/#COVERURL",
+      _ok is True and open(os.path.join(_cover_dir, "Band - Song [CO].jpg"), "rb").read() == _JPEG
+      and "#COVER:Band - Song [CO].jpg" in _txt and "#COVERURL:https://img/new.jpg" in _txt)
+_write_cover_txt()
+_ok_png = orch.apply_cover_url(_cover_txt, "https://img/new.png", fetch=lambda url: _PNG)
+check("apply_cover_url: a PNG keeps its format (.png file, #COVER points at it)",
+      _ok_png is True and os.path.isfile(os.path.join(_cover_dir, "Band - Song [CO].png"))
+      and "#COVER:Band - Song [CO].png" in open(_cover_txt, encoding="utf-8").read())
+_write_cover_txt()
+_before = open(_cover_txt, encoding="utf-8").read()
+check("apply_cover_url: something that is not an image changes nothing",
+      orch.apply_cover_url(_cover_txt, "https://img/page.html",
+                           fetch=lambda url: b"<html>nope</html>") is False
+      and open(_cover_txt, encoding="utf-8").read() == _before)
+
+
+def _boom(url):
+    raise OSError("network down")
+
+
+check("apply_cover_url: a failed download changes nothing and does not raise",
+      orch.apply_cover_url(_cover_txt, "https://img/x.jpg", fetch=_boom) is False
+      and open(_cover_txt, encoding="utf-8").read() == _before)
+check("apply_cover_url: no link, nothing to do",
+      orch.apply_cover_url(_cover_txt, "", fetch=lambda url: _JPEG) is False)
+
+# finish_done_job(): the post-processing of a finished job, in order
+_calls = []
+_saved_fns = (orch.finalize_new_job_lyrics, orch.run_romanize_step, orch.apply_cover_url)
+orch.finalize_new_job_lyrics = lambda job, path, usdb_id=None: _calls.append("lyrics") or "online:x"
+orch.run_romanize_step = lambda job, path: _calls.append("romanize")
+orch.apply_cover_url = lambda path, url, fetch=None: _calls.append(("cover", url)) or True
+try:
+    _job_new = {"kind": "new", "cover_url": "https://img/c.jpg"}
+    orch.finish_done_job(_job_new, {"output_path": "/o/x.txt", "usdb_song_id": None})
+    check(f"finish_done_job: new song -> lyrics, romanize, then the cover (got {_calls})",
+          _calls == ["lyrics", "romanize", ("cover", "https://img/c.jpg")]
+          and _job_new["lyrics_source"] == "online:x")
+    _calls.clear()
+    orch.finish_done_job({"kind": "repair", "cover_url": "https://img/r.png"},
+                         {"output_path": "/o/y.txt"})
+    check(f"finish_done_job: repair -> romanize, then the report's cover (got {_calls})",
+          _calls == ["romanize", ("cover", "https://img/r.png")])
+    _calls.clear()
+    orch.finish_done_job({"kind": "new", "cover_url": ""}, {"output_path": "/o/z.txt"})
+    check("finish_done_job: no cover_url -> no cover step",
+          not any(isinstance(c, tuple) for c in _calls))
+finally:
+    orch.finalize_new_job_lyrics, orch.run_romanize_step, orch.apply_cover_url = _saved_fns
+
+# prepare_usdb_job(): an existing #AUDIO tag is pointed at the audio too, and
+# a failed audio extraction falls back to normal generation
+def _fake_usdb_with_audio_tag(session, catalog, band, title):
+    return {"song_id": "77", "txt": "#VERSION:1.2.0\n#TITLE:T\n#MP3:orig.mp3\n#AUDIO:orig.mp3\n#BPM:100\n",
+            "details": FakeUsdbDetails(), "video_url": None}
+
+
+_saved_find, _saved_dl = orch.usdb_lookup.find_usdb_song, orch.download_media
+orch.usdb_lookup.find_usdb_song = _fake_usdb_with_audio_tag
+orch.download_media = fake_download_media
+try:
+    _res_audio = orch.prepare_usdb_job(job_usdb)
+    _txt_audio = open(os.path.join(_res_audio["staging_dir"], "song.txt"), encoding="utf-8").read()
+    check("prepare_usdb_job points both #MP3 and #AUDIO at the extracted audio",
+          "#MP3:Lacrimosa - Lichtgestalt.mp3" in _txt_audio
+          and "#AUDIO:Lacrimosa - Lichtgestalt.mp3" in _txt_audio)
+    orch.extract_audio_mp3 = lambda video_path, mp3_path: False
+    check("prepare_usdb_job falls back to normal generation when no audio can be extracted",
+          orch.prepare_usdb_job(job_usdb) is None)
+finally:
+    orch.usdb_lookup.find_usdb_song, orch.download_media = _saved_find, _saved_dl
+    orch.extract_audio_mp3 = fake_extract_audio_mp3
+
+# extract_audio_mp3(): the real ffmpeg call on a tiny generated video
+import subprocess as _sp  # noqa: E402
+_vid = os.path.join(TMP_DATA, "tiny.mp4")
+_made = _sp.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=1",
+                 "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-shortest",
+                 "-c:v", "libx264", "-c:a", "libopus", _vid], capture_output=True).returncode == 0
+if _made:
+    _real = _real_extract
+    _mp3 = os.path.join(TMP_DATA, "tiny.mp3")
+    check("extract_audio_mp3 turns a video's (Opus) sound into an mp3",
+          _real is not None and _real(_vid, _mp3) is True and os.path.getsize(_mp3) > 0)
+    check("extract_audio_mp3 reports failure for a file without audio",
+          _real is not None and _real(os.path.join(TMP_DATA, "missing.mp4"), _mp3 + "x") is False)
+else:
+    print("[SKIP] extract_audio_mp3 real ffmpeg check (could not generate a test video)")
+
+# a damaged state.json is kept as a backup before starting fresh (the next
+# save would otherwise overwrite the whole song history)
+_bk = os.path.join(orch.STATE_DIR, "backups")
+_before_bk = set(os.listdir(_bk)) if os.path.isdir(_bk) else set()
+os.makedirs(orch.STATE_DIR, exist_ok=True)
+with open(orch.STATE_FILE, "w", encoding="utf-8") as f:
+    f.write('{"version": 1, "jobs": {"new|x": {"status": "done"')  # truncated
+_st_bad = orch.State()
+_st_bad.load()
+_new_bk = sorted(set(os.listdir(_bk)) - _before_bk) if os.path.isdir(_bk) else []
+check(f"State.load: a damaged state.json is copied to state/backups/ first (got {_new_bk})",
+      len(_new_bk) == 1 and "corrupt" in _new_bk[0]
+      and open(os.path.join(_bk, _new_bk[0]), encoding="utf-8").read().startswith('{"version": 1'))
+check("State.load: after a damaged file the state starts empty",
+      _st_bad.data == {"version": 1, "jobs": {}})
+
+# download_media(): yt-dlp's command-line option for a cookie file is
+# --cookies (cookiefile is only its Python API name) - found live
+# 2026-09-28: every USDB media download failed with "no such option:
+# --cookiefile" once stack/cookies/cookies.txt existed
+_cookie = os.path.join(TMP_DATA, "cookies.txt")
+open(_cookie, "w").write("# Netscape HTTP Cookie File\n")
+_seen_cmds = []
+
+
+class _FakeProc:
+    returncode = 0
+
+
+def _fake_run(cmd, **kw):
+    _seen_cmds.append(cmd)
+    open(cmd[cmd.index("-o") + 1], "wb").write(b"x")
+    return _FakeProc()
+
+
+_saved_run, _saved_cookie = orch.subprocess.run, orch.COOKIES_FILE
+orch.subprocess.run = _fake_run
+orch.COOKIES_FILE = _cookie
+try:
+    _dl_ok = orch.download_media("https://www.youtube.com/watch?v=x", os.path.join(TMP_DATA, "dl.mp4"),
+                                 want_video=True, log_path=os.path.join(TMP_DATA, "dl.log"))
+    check(f"download_media passes the cookie file with yt-dlp's --cookies option (got {_seen_cmds[-1]})",
+          _dl_ok and "--cookies" in _seen_cmds[-1] and "--cookiefile" not in _seen_cmds[-1]
+          and _seen_cmds[-1][_seen_cmds[-1].index("--cookies") + 1] == _cookie)
+finally:
+    orch.subprocess.run, orch.COOKIES_FILE = _saved_run, _saved_cookie
+
+# built-in defaults match docker-compose.yml and stack/docs/configuration.md
+import importlib as _importlib  # noqa: E402
+_saved_env = {k: os.environ.pop(k) for k in ("MAX_ATTEMPTS", "JOB_TIMEOUT_MIN") if k in os.environ}
+try:
+    _fresh = _importlib.reload(orch)
+    check(f"built-in defaults: MAX_ATTEMPTS 3, JOB_TIMEOUT_MIN 90 (got "
+          f"{_fresh.MAX_ATTEMPTS}, {_fresh.JOB_TIMEOUT_MIN})",
+          _fresh.MAX_ATTEMPTS == 3 and _fresh.JOB_TIMEOUT_MIN == 90)
+finally:
+    os.environ.update(_saved_env)
 
 # --------------------------------------------------------------------------
 

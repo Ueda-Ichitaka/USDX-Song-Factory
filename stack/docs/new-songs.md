@@ -1,14 +1,26 @@
 # New songs: the song list
 
 The stack creates new songs from a want-list: `stack/input/song-requests.csv`
-(or a plain `input/songs.txt`). Every row becomes one job; finished jobs are
+(or a plain `input/songs.txt`). The CSV is normally the song-request export of
+the companion web app
+[karaoke-dashboard](https://github.com/Ueda-Ichitaka/karaoke-dashboard)
+(`GET /admin/requests.csv`), but it can also be written by hand. Every row becomes one job; finished jobs are
 remembered in `state/state.json` and never redone unless you reset them.
 
 All commands on this page are run from inside `stack/`.
 
 ## `song-requests.csv`
 
-Comma or semicolon separated, header line required:
+Comma or semicolon separated, header line required. The dashboard export
+looks like this:
+
+```csv
+band name,song name,youtube link,language,musicbrainz_id,lyrics_url,cover_url,duet
+ASP,Zaubererbruder,https://www.youtube.com/watch?v=sifM_9DIVbI,de,,,,no
+```
+
+A hand-written file only needs the first three columns, with either header
+spelling (`band name,song name,youtube link` or `band,title,url`):
 
 ```csv
 band,title,url
@@ -40,12 +52,13 @@ Local Band,A Song I Already Have,media/local-band-a-song.mp3
 Append them after `url`; omit them for rows or files that don't need them:
 
 ```csv
-band,title,url,language,musicbrainz_id,lyrics_url
-Lacrimosa,Lichtgestalt,https://www.youtube.com/watch?v=XYZ,de,,
+band,title,url,language,musicbrainz_id,lyrics_url,cover_url,duet
+Lacrimosa,Lichtgestalt,https://www.youtube.com/watch?v=XYZ,de,,,,
 ```
 
 * **`language`** - an ISO 639-1 code (`de`, `en`, ...). Pins whisper's
-  language detection instead of letting it guess - fixes mis-detections on
+  language detection instead of letting it guess (anything else, like the
+  dashboard's `mixed` for songs that switch language, means "detect it") - fixes mis-detections on
   short or ambiguous audio (a purely German song was once detected as English
   at 0.41 confidence).
 * **`musicbrainz_id`** - a MusicBrainz recording or release ID. Looked up
@@ -56,6 +69,18 @@ Lacrimosa,Lichtgestalt,https://www.youtube.com/watch?v=XYZ,de,,
   directly if it yields anything. `genius.com` URLs are scraped; anything else
   must point straight at plain text or an `.lrc` file (arbitrary lyrics-site
   HTML pages are not supported). See [song-sources.md](song-sources.md).
+* **`cover_url`** - a link to a cover image. After the song is created, the
+  image replaces the cover (`<Artist - Title> [CO].jpg`/`.png`; WebP, GIF and
+  BMP are converted to JPEG) and `#COVERURL` records the link. A link that
+  does not work or is not an image is logged and ignored - it never fails a
+  song.
+* **`duet`** - `yes`, `no` or empty. Only `yes` asks for a duet version; empty
+  means the same as `no`. A song may appear twice, once with `yes` and once
+  without - these are two separate jobs (the duet one is labelled
+  `Artist - Title (Duet)`). **Duet generation does not exist yet:** a duet
+  row is listed as skipped with the reason "duet generation is not available
+  yet" (progress view: `2 skipped (1 duet)`), and the plain row is created
+  as usual.
 
 ### `songs.txt` (plain list)
 

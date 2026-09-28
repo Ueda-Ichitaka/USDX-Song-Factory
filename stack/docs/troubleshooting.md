@@ -15,9 +15,9 @@ Commands are run from inside `stack/`; `orchestrator.py` stands for
   `sudo chown -R 1000:1000 input output state logs models work cookies`.
   Creating them yourself before the first run avoids this (see the quickstart
   in the main README).
-* **A setting in `.env` has no effect** - only the variables listed in
-  `docker-compose.yml` are passed into the container; see
-  [configuration.md](configuration.md).
+* **A setting in `.env` has no effect** - check the spelling of the variable
+  name, and restart the stack (`docker compose up -d` or a new
+  `docker compose run`); a running container keeps the values it started with.
 * **Models are downloaded on every run** - `models/` must be writable by the
   container (uid 1000, see above).
 * **`local input file not found: ...`** - a `song-requests.csv` url that is not
@@ -31,6 +31,13 @@ Commands are run from inside `stack/`; `orchestrator.py` stands for
 * **Lyrics contain a line like "Chorus"** - a section marker the lyrics
   source wrote in an unusual form slipped through; fix the text via a
   `lyrics.txt` and repair the song.
+* **Log: "N syllable(s) did not fit before the end of the audio and were
+  left out"** - the lyrics source has more text than the recording (often a
+  repeated chorus or an extra verse of the album version). The notes that
+  would lie after the end of the song are dropped. If words are missing that
+  are actually sung, the alignment went wrong earlier in the song - fix the
+  text in the song's `lyrics.txt` and repair it
+  ([repairs.md](repairs.md#trusted-lyrics-lyrics-mode)).
 * **A song ends with a stray spoken line** - the end-card filter
   (`ENDCARD_MIN_GAP_S`/`ENDCARD_MAX_DUR_S`) is a heuristic: a long spoken outro
   or a very short one right after the last sung line is kept. Tune the

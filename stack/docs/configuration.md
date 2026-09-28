@@ -4,11 +4,9 @@ All settings are environment variables. Nothing is required: without any
 settings the stack runs on the CPU, generates every song from scratch (no
 USDB) and uses only the free lyrics source.
 
-**Where to set them:** `stack/.env` (copy `stack/.env.example`; docker compose
-loads it automatically) works only for the variables that `docker-compose.yml`
-passes into the container. Variables marked **(compose)** below are not passed
-through - add them yourself under `environment:` of the service in
-`docker-compose.yml`, for example `ENDCARD_MIN_GAP_S: "10"`.
+**Where to set them:** in `stack/.env` (copy `stack/.env.example`). Every
+variable in that file is handed to the containers as-is; a missing `.env` is
+fine. Changes take effect at the next `docker compose up`/`run`.
 
 ## Accounts and API keys
 
@@ -25,7 +23,7 @@ through - add them yourself under `environment:` of the service in
 | `SONGS_FILE` | `/data/input/song-requests.csv` | the want-list inside the container |
 | `BROKEN_CSV` | `/data/input/broken.csv` | broken-song reports ([repairs.md](repairs.md)) |
 | `NEW_SONGS_DIR` | `/data/output/new` | where new songs are written |
-| `FAILED_DIR` **(compose)** | `/data/output/failed` | where a failed job's partial output goes |
+| `FAILED_DIR` | `/data/output/failed` | where a failed job's partial output goes |
 | `MAX_ATTEMPTS` | `3` | attempts per song before it stays failed |
 | `JOB_TIMEOUT_MIN` | `90` | hard timeout per song in minutes |
 | `REPAIR_MODE` | `sync` | default repair mode, `gap` or `sync` ([repairs.md](repairs.md)) |
@@ -34,8 +32,8 @@ through - add them yourself under `environment:` of the service in
 | `USDB_MIN_MATCH_SCORE` | `0.90` | minimum artist+title similarity (0-1) to accept a USDB match |
 | `USDB_CATALOG_TTL_HOURS` | `24` | how long the local animux.de catalog cache is reused |
 | `BROKEN_MATCH_MIN_SCORE` | `0.85` | minimum #ARTIST/#TITLE similarity (0-1) to attach a `broken.csv` row to a repair folder |
-| `ENDCARD_MIN_GAP_S` **(compose)** | `8.0` | silence gap (s) before a trailing blurb counts as a video end-card; `<= 0` disables the filter |
-| `ENDCARD_MAX_DUR_S` **(compose)** | `20.0` | a trailing blurb longer than this is kept as real lyrics |
+| `ENDCARD_MIN_GAP_S` | `8.0` | silence gap (s) before a trailing blurb counts as a video end-card; `<= 0` disables the filter |
+| `ENDCARD_MAX_DUR_S` | `20.0` | a trailing blurb longer than this is kept as real lyrics |
 | `ULTRASINGER_ARGS` | - | extra arguments for every UltraSinger run, e.g. `"--disable_hyphenation --format_version 1.1.0"` |
 | `WHISPER_MODEL` | auto | force a whisper model (`tiny` ... `large-v2`) instead of the resource-based choice |
 | `DEMUCS_MODEL` | auto | force a demucs separation model (`htdemucs`, `htdemucs_ft`, `mdx_extra_q`, ...) |
@@ -46,7 +44,7 @@ Repair tuning variables: [repairs.md](repairs.md#tuning-rarely-needed).
 ## Timing and pitch tuning (lyrics mode)
 
 Values measured on 110 hand-synced songs; change only for experiments. All of
-them are **(compose)** variables.
+them are variables.
 
 | variable | default | meaning |
 |----------|---------|---------|
@@ -74,8 +72,8 @@ model and batch size and demucs' separation model from a declared budget:
 | `STACK_SWAP_GB` | `250` | available swap (zram etc.) - only a small cushion for spikes, never counted as real capacity |
 | `STACK_CPU_CORES` | `16` | CPU threads available to the stack |
 | `STACK_VRAM_GB` | `16` (ROCm service only) | GPU memory - only demucs uses the GPU; whisper always runs on the CPU (CTranslate2 has no ROCm support) |
-| `STACK_RAM_SAFETY_MARGIN_GB` **(compose)** | `1.5` | subtracted from `STACK_RAM_GB` first |
-| `STACK_VRAM_SAFETY_MARGIN_GB` **(compose)** | `2` | subtracted from `STACK_VRAM_GB` first |
+| `STACK_RAM_SAFETY_MARGIN_GB` | `1.5` | subtracted from `STACK_RAM_GB` first |
+| `STACK_VRAM_SAFETY_MARGIN_GB` | `2` | subtracted from `STACK_VRAM_GB` first |
 
 The defaults match the machine the stack was developed on - **set them in
 `.env` for your hardware**. State your real totals and let the margins cover

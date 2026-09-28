@@ -106,8 +106,8 @@ DEVICE = os.environ.get("DEVICE", "cpu")
 WHISPER_ON_CPU = os.environ.get("WHISPER_ON_CPU", "") not in ("", "0", "false")
 REPAIR_MODE = os.environ.get("REPAIR_MODE", "sync")
 EXTRA_ARGS = os.environ.get("ULTRASINGER_ARGS", "")
-MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS", "2"))
-JOB_TIMEOUT_MIN = float(os.environ.get("JOB_TIMEOUT_MIN", "240"))
+MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS", "3"))
+JOB_TIMEOUT_MIN = float(os.environ.get("JOB_TIMEOUT_MIN", "90"))
 
 
 def _env_float(name):
@@ -403,7 +403,15 @@ class State:
                             job["status"] = "failed"
                             job["error"] = "interrupted (container stopped)"
             except (json.JSONDecodeError, KeyError):
-                print("WARNING: state file is corrupt, starting fresh")
+                # keep the damaged file - the next save would overwrite the
+                # whole song history
+                backups = os.path.join(STATE_DIR, "backups")
+                os.makedirs(backups, exist_ok=True)
+                backup = unused_path(os.path.join(
+                    backups, datetime.now().strftime("state-corrupt-%Y%m%d-%H%M%S.json")))
+                shutil.copy2(STATE_FILE, backup)
+                print(f"WARNING: state file is corrupt, starting fresh "
+                      f"(damaged file kept as {backup})")
                 self.data = {"version": 1, "jobs": {}}
 
     def save(self):
@@ -474,17 +482,36 @@ def looks_like_ultrastar_txt(path: str) -> bool:
     return has_header and has_notes
 
 
+def csv_row_fields(row: dict) -> dict:
+    """A csv.DictReader row as {lowercased header: stripped value}. Cells
+    beyond the header (DictReader collects them under the key None) are
+    dropped, so one over-long row never breaks the whole file."""
+    return {k.lower().strip(): (v or "").strip()
+            for k, v in row.items() if isinstance(k, str) and isinstance(v, (str, type(None)))}
+
+
+def wants_duet(value) -> bool:
+    """The karaoke-dashboard's duet rule (app/duet.py wants_duet()): only
+    an explicit "yes" asks for a duet version; blank, "no" and anything
+    else mean the plain version."""
+    return (value or "").strip().lower() == "yes"
+
+
 def parse_songs_file(path: str) -> list:
     """Parse songs.csv (band,title,url) or a plain songs.txt.
 
     Returns a list of dicts: {"band", "title", "url", "language",
-    "musicbrainz_id", "lyrics_url"} - url may be "skip". The last three are
-    optional CSV columns (default "") requested by the karaoke-dashboard
-    project's CSV export - language pins whisper's language detection
-    (see the Lichtgestalt mis-detection bug in 05-LESSONS.md);
-    musicbrainz_id/lyrics_url feed MusicBrainz metadata lookup and the
-    trusted-lyrics-url fetch respectively (see ultrasinger_command() /
-    run_lyrics_step()).
+    "musicbrainz_id", "lyrics_url", "cover_url", "duet"} - url may be
+    "skip". Everything after url is an optional column of the
+    karaoke-dashboard export (default "" / False): language (an ISO 639-1
+    code; anything else, like the dashboard's "mixed", means "detect it")
+    pins whisper's language detection (see the Lichtgestalt mis-detection
+    bug in 05-LESSONS.md); musicbrainz_id/lyrics_url feed the MusicBrainz lookup
+    and the trusted-lyrics-url fetch (see ultrasinger_command() /
+    run_lyrics_step()); cover_url becomes the song's cover
+    (apply_cover_url()); duet is True only for "yes" - blank and "no" both
+    mean a plain version (the dashboard's wants_duet() rule), and a song may
+    appear twice, once per duet value.
     """
     entries = []
     if not path or not os.path.isfile(path):
@@ -508,7 +535,7 @@ def parse_songs_file(path: str) -> list:
         # header and silently swallow every row
         rows = list(csv.DictReader(non_empty, delimiter=delimiter))
         for row in rows:
-            lower = {k.lower().strip(): (v or "").strip() for k, v in row.items()}
+            lower = csv_row_fields(row)
             url = lower.get("url") or lower.get("link") or lower.get("youtube") or \
                 lower.get("youtube link") or ""
             band = lower.get("band") or lower.get("band name") or lower.get("artist") or ""
@@ -516,13 +543,15 @@ def parse_songs_file(path: str) -> list:
                 lower.get("name") or lower.get("song") or ""
             if not url and not title:
                 continue
-            language = lower.get("language") or ""
+            language = broken_report.normalize_language_code(lower.get("language"))
             musicbrainz_id = lower.get("musicbrainz_id") or lower.get("mbid") or ""
             lyrics_url = lower.get("lyrics_url") or ""
             entries.append({
                 "band": band, "title": title, "url": url,
                 "language": language, "musicbrainz_id": musicbrainz_id,
                 "lyrics_url": lyrics_url,
+                "cover_url": lower.get("cover_url") or "",
+                "duet": wants_duet(lower.get("duet")),
             })
     else:
         # plain text: "url" per line or "band - title - url"
@@ -538,12 +567,14 @@ def parse_songs_file(path: str) -> list:
                 entries.append({
                     "band": band.strip(), "title": title.strip(), "url": url,
                     "language": "", "musicbrainz_id": "", "lyrics_url": "",
+                    "cover_url": "", "duet": False,
                 })
             else:
                 # no link -> cannot create, treated as skipped
                 entries.append({
                     "band": "", "title": line, "url": "skip",
                     "language": "", "musicbrainz_id": "", "lyrics_url": "",
+                    "cover_url": "", "duet": False,
                 })
 
     # normalize: empty / '-' / 'skip' links are skips
@@ -818,14 +849,20 @@ def split_by_usdb_availability(queue: list, mode: str):
 
 
 def song_label(song: dict) -> str:
-    return " - ".join(x for x in (song["band"], song["title"]) if x) or song["url"]
+    label = " - ".join(x for x in (song["band"], song["title"]) if x) or song["url"]
+    return f"{label} (Duet)" if song.get("duet") else label
 
 
 def new_job_id(song: dict) -> str:
-    """State key of a song-list row: its url, or (skipped rows) its label."""
+    """State key of a song-list row: its url, or (skipped rows) its label.
+    The duet version of a song is a job of its own ("|duet" suffix; the
+    label of a skipped row already says "(Duet)"), so a plain and a duet
+    row with the same link never collide - and plain songs keep the ids
+    existing state files already use."""
     if song["url"] == "skip":
         return f"new|skip|{song_label(song)}"
-    return f"new|{song['url']}"
+    suffix = "|duet" if song.get("duet") else ""
+    return f"new|{song['url']}{suffix}"
 
 
 def repair_job_id(folder: str) -> str:
@@ -853,8 +890,14 @@ def build_job_plan(state: State) -> list:
             job_id, kind="new", label=label, url=url,
             band=song["band"], title=song["title"],
             language=song["language"], musicbrainz_id=song["musicbrainz_id"],
-            lyrics_url=song["lyrics_url"])
+            lyrics_url=song["lyrics_url"], cover_url=song["cover_url"],
+            duet=song["duet"])
         if url == "skip":
+            job["status"] = "skipped"
+        elif song["duet"] and job["status"] != "done":
+            # duet generation (two singers, P1/P2) does not exist yet - a
+            # duet request is listed with its reason instead of being
+            # generated as a plain song (see skip_reason())
             job["status"] = "skipped"
         jobs.append(job)
 
@@ -869,6 +912,7 @@ def build_job_plan(state: State) -> list:
         description = report["description"] if report else ""
         report_lyrics_url = report.get("lyrics_url", "") if report else ""
         report_language = report.get("language", "") if report else ""
+        report_cover_url = report.get("cover_url", "") if report else ""
 
         # a manually-supplied lyrics.txt always wins (existing mechanism,
         # unconditional); otherwise the broken.csv category picks a
@@ -896,7 +940,8 @@ def build_job_plan(state: State) -> list:
         job = state.get_or_create(
             job_id, kind="repair", label=name, song_dir=folder, mode=mode,
             lyrics_file=lyrics_file, category=category, description=description,
-            lyrics_url=report_lyrics_url, language=report_language)
+            lyrics_url=report_lyrics_url, language=report_language,
+            cover_url=report_cover_url)
 
         # "other"/blank/unrecognized category: the defect is unknown or
         # free-text only - don't guess an action, flag it for a human
@@ -925,6 +970,9 @@ def count_statuses(jobs, kind):
         "pending": sum(1 for j in of_kind if j["status"] == "pending"),
         "skipped": sum(1 for j in of_kind if j["status"] == "skipped"),
         "needs_review": sum(1 for j in of_kind if j["status"] == "needs_review"),
+        "duet_waiting": sum(1 for j in of_kind
+                            if j["status"] == "skipped" and j.get("duet")
+                            and j.get("url") != "skip"),
     }
 
 
@@ -1010,7 +1058,8 @@ def render_progress(state_data, cpu_percent=None, ram_usage=None,
     def row(name, s):
         counts = (f"{s['done']:>3} done | {s['failed']:>2} failed | "
                   f"{s['running']:>2} running | {s['pending']:>3} pending")
-        skip = f" | {s['skipped']} skipped" if s["skipped"] else ""
+        duets = f" ({s['duet_waiting']} duet)" if s.get("duet_waiting") else ""
+        skip = f" | {s['skipped']} skipped{duets}" if s["skipped"] else ""
         review = f" | {s['needs_review']} needs review" if s["needs_review"] else ""
         return f"  {name:<9}: {counts}{skip}{review}   ({s['total']} total)"
 
@@ -1078,11 +1127,14 @@ def _folder_of(output_path) -> str:
 
 def skip_reason(job: dict, active_ids=None) -> str:
     """Why a job is skipped: a song-list row without a link can't be created;
-    a skipped record that no longer belongs to the song list is just stale
-    (typically the row got a link later and was created as a new job)."""
+    a duet version waits for duet generation; a skipped record that no
+    longer belongs to the song list is just stale (typically the row got a
+    link later and was created as a new job)."""
     if active_ids is not None and job["id"] not in active_ids:
         return ("no longer in the song list (stale record - the song may "
                 "have been created under a new entry; `reset --prune` removes it)")
+    if job.get("duet") and job.get("url") != "skip":
+        return "duet version requested - duet generation is not available yet"
     return "no link in the song list (empty, `-` or `skip`)"
 
 
@@ -1109,16 +1161,21 @@ def render_report(state_data, active_ids=None) -> str:
     if new_done:
         lines.append("| Song | Lyrics | Duration | Output folder |")
         lines.append("|---|---|---|---|")
+        flagged = 0
         for j in sorted(new_done, key=by_label):
             lyrics = j.get("lyrics_source") or "transcribed"
-            marker = "" if lyrics.startswith("online:") else " ⚠"
+            # online:<source> and usdb:<site>:<id> lyrics are trusted texts
+            trusted = lyrics.startswith(("online:", "usdb:"))
+            marker = "" if trusted else " ⚠"
+            flagged += 0 if trusted else 1
             lines.append(f"| {j['label']} | {lyrics}{marker} | "
                          f"{fmt_duration(j.get('duration_s'))} | "
                          f"`{_folder_of(j.get('output_path'))}` |")
-        lines.append("")
-        lines.append("_Lyrics marked ⚠ came from audio transcription "
-                     "(whisper), not a verified online source - more "
-                     "likely to contain mis-heard words._")
+        if flagged:
+            lines.append("")
+            lines.append("_Lyrics marked ⚠ came from audio transcription "
+                         "(whisper), not a verified online source - more "
+                         "likely to contain mis-heard words._")
     else:
         lines.append("_none_")
 
@@ -1348,6 +1405,83 @@ def append_comment_tag(txt_content: str, extra: str) -> str:
     return "\n".join(out_lines) + "\n"
 
 
+COVER_MAX_BYTES = 20 * 1024 * 1024
+
+
+def _fetch_url_bytes(url: str) -> bytes:
+    import requests
+    resp = requests.get(url, timeout=20, stream=True)
+    resp.raise_for_status()
+    data = b""
+    for chunk in resp.iter_content(64 * 1024):
+        data += chunk
+        if len(data) > COVER_MAX_BYTES:
+            raise ValueError("cover image larger than 20 MB")
+    return data
+
+
+def _image_kind(data: bytes):
+    """File extension for image bytes UltraStar Deluxe shows directly
+    ("jpg"/"png"), "convert" for other common image formats, None for
+    anything that is not an image."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if (data[:4] == b"RIFF" and data[8:12] == b"WEBP") or data[:6] in (b"GIF87a", b"GIF89a") \
+            or data[:2] == b"BM":
+        return "convert"
+    return None
+
+
+def _convert_to_jpeg(data: bytes):
+    """WebP/GIF/BMP bytes as JPEG via ffmpeg, or None."""
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-frames:v", "1",
+             "-f", "image2", "-c:v", "mjpeg", "pipe:1"],
+            input=data, capture_output=True, timeout=60)
+    except Exception:  # noqa: BLE001
+        return None
+    return proc.stdout if proc.returncode == 0 and _image_kind(proc.stdout) == "jpg" else None
+
+
+def apply_cover_url(txt_path: str, url: str, fetch=None) -> bool:
+    """Make the image at `url` the song's cover: saved next to the txt as
+    "<txt name> [CO].jpg|png" (other image formats converted to JPEG),
+    #COVER pointing at it and #COVERURL set to `url`. Anything that fails -
+    download, not an image, conversion - leaves the song untouched and
+    returns False; a cover link is never a reason to fail a song."""
+    url = (url or "").strip()
+    if not url or not txt_path or not os.path.isfile(txt_path):
+        return False
+    try:
+        data = (fetch or _fetch_url_bytes)(url)
+    except Exception:  # noqa: BLE001
+        return False
+    kind = _image_kind(data or b"")
+    if kind == "convert":
+        data = _convert_to_jpeg(data)
+        kind = "jpg" if data else None
+    if kind is None:
+        return False
+    song_dir = os.path.dirname(txt_path)
+    base = os.path.splitext(os.path.basename(txt_path))[0]
+    cover_name = f"{base} [CO].{kind}"
+    with open(os.path.join(song_dir, cover_name), "wb") as f:
+        f.write(data)
+    other = f"{base} [CO].{'png' if kind == 'jpg' else 'jpg'}"
+    if os.path.isfile(os.path.join(song_dir, other)):
+        os.remove(os.path.join(song_dir, other))
+    with open(txt_path, encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    content = patch_tag(content, "COVER", cover_name)
+    content = patch_tag(content, "COVERURL", url)
+    with open(txt_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+    return True
+
+
 def download_media(url: str, dest_path: str, want_video: bool, log_path: str) -> bool:
     """Fetch `url` with yt-dlp straight to `dest_path`. Video: a combined
     mp4 (bestvideo[ext=mp4]+bestaudio/best, merged to mp4) - the same
@@ -1362,7 +1496,8 @@ def download_media(url: str, dest_path: str, want_video: bool, log_path: str) ->
     else:
         cmd = ["yt-dlp", "-x", "--audio-format", "mp3", "-o", dest_path, url]
     if os.path.isfile(COOKIES_FILE):
-        cmd += ["--cookiefile", COOKIES_FILE]
+        # yt-dlp's command-line option ("cookiefile" is only its Python API name)
+        cmd += ["--cookies", COOKIES_FILE]
     try:
         with open(log_path, "wb") as logfile:
             proc = subprocess.run(cmd, stdout=logfile, stderr=subprocess.STDOUT,
@@ -1373,6 +1508,21 @@ def download_media(url: str, dest_path: str, want_video: bool, log_path: str) ->
     return proc.returncode == 0 and os.path.isfile(dest_path)
 
 
+def extract_audio_mp3(video_path: str, mp3_path: str) -> bool:
+    """The sound of a downloaded video as an mp3 of its own (a USDB song's
+    #MP3 must name a real audio file). A transcode, since YouTube videos
+    often carry Opus audio that cannot be stream-copied into an audio-only
+    container."""
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-y", "-i", video_path, "-vn",
+             "-c:a", "libmp3lame", "-q:a", "2", mp3_path],
+            capture_output=True, timeout=600)
+    except Exception:  # noqa: BLE001
+        return False
+    return proc.returncode == 0 and os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0
+
+
 def prepare_usdb_job(job: dict) -> dict:
     """Best-effort: try to source a NEW job from an existing USDB upload
     (usdb.animux.de, then usdb.eu - see find_usdb_match()) instead of
@@ -1381,10 +1531,11 @@ def prepare_usdb_job(job: dict) -> dict:
     so the matched song's media is always fetched via yt-dlp: the
     source's own comment-linked video first ("only fill gaps") where that
     is supported, falling back to the job's own songs.csv url otherwise.
-    Returns {"staging_dir", "song_id"} on success (the caller runs
-    repair.py --mode gap against staging_dir to re-detect #GAP for
-    whatever media actually got downloaded) or None to fall back to
-    normal generation - must never raise or fail the job."""
+    The video's sound is extracted to "<song name>.mp3" and #MP3 (and
+    #AUDIO, if present) point at it. Returns {"staging_dir", "song_id"} on
+    success (the caller runs repair.py --mode gap against staging_dir to
+    re-detect #GAP for whatever media actually got downloaded) or None to
+    fall back to normal generation - must never raise or fail the job."""
     if USDB_MODE == "off":
         return None
     band = (job.get("band") or "").strip()
@@ -1406,8 +1557,12 @@ def prepare_usdb_job(job: dict) -> dict:
     # the staging dir's OWN basename becomes the final output folder name
     # (repair.py's write_repaired() derives it from song_dir's basename) -
     # must be the human-readable song name, not a url/id-based slug (see
-    # job_display_name()/safe_dirname())
-    staging_dir = os.path.join(WORK_DIR, safe_dirname(job_display_name(job)))
+    # job_display_name()/safe_dirname()). It lives under WORK_DIR/usdb/, not
+    # WORK_DIR/ itself: repair.py's own work dir for this song is
+    # WORK_DIR/<song name>, and its intermediate audio files must not end
+    # up in the staging dir (everything there is copied into the output)
+    song_name = safe_dirname(job_display_name(job))
+    staging_dir = os.path.join(WORK_DIR, "usdb", song_name)
     if os.path.isdir(staging_dir):
         shutil.rmtree(staging_dir)
     os.makedirs(staging_dir, exist_ok=True)
@@ -1420,7 +1575,17 @@ def prepare_usdb_job(job: dict) -> dict:
             "falling back to normal generation")
         return None
 
+    audio_name = f"{song_name}.mp3"
+    if not extract_audio_mp3(video_path, os.path.join(staging_dir, audio_name)):
+        out(f"  !! usdb: could not extract the audio from the download for "
+            f"{match_label}, falling back to normal generation")
+        return None
+
     txt_content = patch_tag(match["txt"], "VIDEO", "video.mp4")
+    # the upload's #MP3/#AUDIO name the uploader's own file, which is not here
+    txt_content = patch_tag(txt_content, "MP3", audio_name)
+    if re.search(r"^#AUDIO:", txt_content, re.MULTILINE | re.IGNORECASE):
+        txt_content = patch_tag(txt_content, "AUDIO", audio_name)
 
     gap_hints = usdb_lookup.extract_gap_hints(match.get("details"))
     if gap_hints:
@@ -1497,7 +1662,7 @@ def parse_sync_meta_source(path: str, category: str):
 def find_sync_meta_source(song_dir: str, category: str):
     """The first usable download URL for `category` across every *.usdb
     sync-meta file in `song_dir` (there is usually at most one)."""
-    for path in sorted(glob.glob(os.path.join(song_dir, "*.usdb"))):
+    for path in sorted(glob.glob(os.path.join(glob.escape(song_dir), "*.usdb"))):
         url = parse_sync_meta_source(path, category)
         if url:
             return url
@@ -1546,8 +1711,10 @@ def prepare_media_repair(job: dict):
 
     slug = slugify(job["id"])
     # same reasoning as prepare_usdb_job() - the staging dir's basename
-    # becomes the final output folder name
-    staging_dir = os.path.join(WORK_DIR, safe_dirname(job_display_name(job)))
+    # becomes the final output folder name, and it lives under
+    # WORK_DIR/media/ so repair.py's own work dir (WORK_DIR/<song name>)
+    # never is the staging dir
+    staging_dir = os.path.join(WORK_DIR, "media", safe_dirname(job_display_name(job)))
     if os.path.isdir(staging_dir):
         shutil.rmtree(staging_dir)
 
@@ -2036,6 +2203,25 @@ def stdin_listener(cmd_queue, control, state_data_fn):
 # main command handlers
 # --------------------------------------------------------------------------
 
+def finish_done_job(job: dict, result: dict) -> None:
+    """Post-processing of a successfully finished job, in this order: a
+    new song's lyrics are replaced by a trusted online source when one is
+    found (usdb songs keep theirs, see finalize_new_job_lyrics()) BEFORE
+    romanization runs on whatever text ends up final; then a cover_url from
+    the song list / broken.csv replaces the cover."""
+    output_path = result["output_path"]
+    if job["kind"] == "new":
+        job["lyrics_source"] = finalize_new_job_lyrics(
+            job, output_path, result.get("usdb_song_id"))
+    run_romanize_step(job, output_path)
+    cover_url = (job.get("cover_url") or "").strip()
+    if cover_url:
+        if apply_cover_url(output_path, cover_url):
+            out(f"  .. cover replaced from {cover_url}")
+        else:
+            out(f"  !! cover_url not used (not reachable or not an image): {cover_url}")
+
+
 def cmd_run(state, selection=None, control=None):
     global USDB_MODE
     control = control or CONTROL or Control()
@@ -2119,15 +2305,8 @@ def cmd_run(state, selection=None, control=None):
             out(f"    output: {result['output_path']}")
 
         if result["status"] == "done" and result["output_path"]:
-            if job["kind"] == "new":
-                # replace whisper's own (possibly mis-heard) lyrics with a
-                # trusted online source when one can be found, BEFORE
-                # romanization runs on whatever text ends up final - a
-                # usdb-sourced song skips this (see finalize_new_job_lyrics)
-                job["lyrics_source"] = finalize_new_job_lyrics(
-                    job, result["output_path"], result.get("usdb_song_id"))
-                state.save()
-            run_romanize_step(job, result["output_path"])
+            finish_done_job(job, result)
+            state.save()
 
     if control.is_terminating():
         state.save()

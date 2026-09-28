@@ -16,19 +16,28 @@ model made the field nullable for reports created before it existed
 same way. Either case falls back to orchestrator.py's "needs_review"
 handling (see 02-DESIGN.md) rather than guessing an action.
 
-The `lyrics_url` and `language` columns are optional and not yet exported
-by karaoke-dashboard (both requested - see that project's
-UPSTREAM_REQUESTS.md); reading them here now means no further change is
-needed here once they are. `language` (an ISO 639-1 code) is threaded
-through to repair.py's `--language`, the same "forced" input
-language.txt already respects (see src/modules/language_file.py) - a
-saved language.txt still wins over it if one already exists.
+The `lyrics_url`, `language` and `cover_url` columns are optional (older
+exports and hand-written files lack them). `lyrics_url` is tried first for
+a "lyrics" report; `language` (an ISO 639-1 code) is threaded through to
+repair.py's `--language`, the same "forced" input language.txt already
+respects (see src/modules/language_file.py) - a saved language.txt still
+wins over it; `cover_url` becomes the repaired song's cover (see
+orchestrator.py's apply_cover_url()).
 """
 
 import csv
 import os
 
 CATEGORY_CODES = frozenset({"gap", "async", "lyrics", "video", "audio", "other"})
+
+
+def normalize_language_code(raw: str) -> str:
+    """A two-letter ISO 639-1 code, lower-cased - or "" (let whisper detect
+    the language) for anything else: blank, a language name, or the
+    karaoke-dashboard's "mixed" pseudo-code for songs that switch language,
+    which neither whisper nor the aligner can process as a language."""
+    code = (raw or "").strip().lower()
+    return code if len(code) == 2 and code.isascii() and code.isalpha() else ""
 
 
 def normalize_category(raw: str) -> str:
@@ -40,10 +49,10 @@ def normalize_category(raw: str) -> str:
 
 def parse_broken_csv(path: str) -> list:
     """Parse broken.csv into a list of dicts: {"band", "title", "category",
-    "description", "lyrics_url", "language"}. Column names are matched
+    "description", "lyrics_url", "language", "cover_url"}. Column names are matched
     case-insensitively against a few accepted spellings (the dashboard's
-    own header is "band,song name,category,description[,lyrics_url]
-    [,language]") so a hand-edited file isn't overly fragile."""
+    own header is "band,song name,category,description,lyrics_url,
+    language,cover_url") so a hand-edited file isn't overly fragile."""
     entries = []
     if not path or not os.path.isfile(path):
         return entries
@@ -59,7 +68,10 @@ def parse_broken_csv(path: str) -> list:
     delimiter = "," if first.count(",") >= first.count(";") else ";"
 
     for row in csv.DictReader(non_empty, delimiter=delimiter):
-        lower = {k.lower().strip(): (v or "").strip() for k, v in row.items()}
+        # cells beyond the header land under the key None - drop them, so
+        # one over-long row never breaks the whole file
+        lower = {k.lower().strip(): (v or "").strip()
+                 for k, v in row.items() if isinstance(k, str) and not isinstance(v, list)}
         band = lower.get("band") or lower.get("band name") or lower.get("artist") or ""
         title = lower.get("title") or lower.get("song name") or lower.get("song") or \
             lower.get("name") or ""
@@ -71,6 +83,7 @@ def parse_broken_csv(path: str) -> list:
             "category": normalize_category(lower.get("category", "")),
             "description": lower.get("description", ""),
             "lyrics_url": lower.get("lyrics_url") or lower.get("lyrics link") or "",
-            "language": lower.get("language") or "",
+            "language": normalize_language_code(lower.get("language")),
+            "cover_url": lower.get("cover_url") or "",
         })
     return entries

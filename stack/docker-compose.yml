@@ -6,6 +6,13 @@
 # Documentation: README.md (quickstart) and stack/docs/.
 name: ultrastar-stack
 
+# Every variable set in .env reaches the containers as-is (not only the ones
+# listed under x-common-env below), so all settings documented in
+# stack/docs/configuration.md can be set there. A missing .env is fine.
+x-common-env-file: &common-env-file
+  - path: .env
+    required: false
+
 x-common-env: &common-env
   SONGS_FILE: /data/input/song-requests.csv
   INPUT_DIR: /data/input
@@ -75,6 +82,7 @@ services:
     container_name: ultrasinger
     stdin_open: true   # allows `docker compose attach ultrasinger` for
     tty: true          # interactive commands (status/skip/stop)
+    env_file: *common-env-file
     environment:
       <<: *common-env
       DEVICE: cpu
@@ -106,6 +114,7 @@ services:
     container_name: ultrasinger-rocm
     stdin_open: true
     tty: true
+    env_file: *common-env-file
     environment:
       <<: *common-env
       DEVICE: cuda

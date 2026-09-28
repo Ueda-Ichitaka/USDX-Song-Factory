@@ -50,7 +50,8 @@ a tiny whisper model. Force it by setting `#LANGUAGE` in the txt, or with
 Without `broken.csv`, every folder in `input/` gets the same blind
 `REPAIR_MODE` - correct, but wasteful when you know a song's `#GAP` is just
 off by a few seconds. Put `input/broken.csv` next to the song folders (it is
-the export of the karaoke-dashboard's "report a broken song" admin view,
+the export of the "report a broken song" admin view of
+[karaoke-dashboard](https://github.com/Ueda-Ichitaka/karaoke-dashboard),
 `GET /admin/reports.csv`). Each folder is matched to its report by
 **#ARTIST/#TITLE** (not the folder name) and gets only the fix its category
 calls for:
@@ -63,8 +64,16 @@ Metric,Black Sheep,lyrics,second verse is wrong
 Boney M.,Daddy Cool,video,
 ```
 
-An optional `language` column (ISO 639-1) pins the aligner language, like the
-column of the same name in the song list.
+The dashboard export also carries `lyrics_url`, `language` and `cover_url`
+(all optional): `lyrics_url` is tried first for a `lyrics` report,
+`language` (ISO 639-1) pins the aligner language, and `cover_url` replaces
+the repaired song's cover (same rules as in the song list, see
+[new-songs.md](new-songs.md#optional-columns)):
+
+```csv
+band,song name,category,description,lyrics_url,language,cover_url
+Metric,Black Sheep,lyrics,second verse is wrong,https://genius.com/Metric-black-sheep-lyrics,en,
+```
 
 | category | what happens |
 |----------|--------------|
@@ -114,9 +123,7 @@ audio with UltraSinger. The log marks this with
 
 ## Tuning (rarely needed)
 
-`REPAIR_MODE` can be set in `stack/.env`; the others are not passed through
-from `.env` - add them under `environment:` in `docker-compose.yml` (see
-[configuration.md](configuration.md)).
+Set them in `stack/.env` (see [configuration.md](configuration.md)).
 
 | variable | default | meaning |
 |----------|---------|---------|

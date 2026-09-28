@@ -94,6 +94,20 @@ units = repair.parse_lyrics_lines([
 check("parse_lyrics_lines drops blank lines", len(units) == 2)
 check("parse_lyrics_lines splits words", units[0]["words"] == ["Hello", "world"])
 check("parse_lyrics_lines keeps start time", units[0]["start"] == 1.5)
+# a standalone dash or quote is punctuation, not a sung word - left as a word
+# it became a note of its own (found 2026-09-28: 43 such notes in 15
+# generated songs, e.g. "-" and "–" in Black Messiah - Wildsau)
+_punct = repair.parse_lyrics_lines([
+    {"text": "Hello - world \u2013 again", "start": None},
+    {"text": '" \u2013 -', "start": None},
+    {"text": "Rock'n'Roll 1-2-3 ~", "start": None},
+])
+check(f"parse_lyrics_lines drops words without a letter or digit (got {[u['words'] for u in _punct]})",
+      _punct[0]["words"] == ["Hello", "world", "again"])
+check("parse_lyrics_lines drops a line that is punctuation only",
+      len(_punct) == 2)
+check("parse_lyrics_lines keeps words that contain a letter or digit",
+      _punct[1]["words"] == ["Rock'n'Roll", "1-2-3"])
 check("parse_lyrics_lines keeps None start", units[1]["start"] is None)
 
 # --------------------------------------------------------------------------
@@ -423,10 +437,12 @@ class _PlannedModel:
         return self.logits.unsqueeze(0), None
 
 
-_g_units = repair.parse_lyrics_lines([
-    {"text": "ab c", "start": None},
-    {"text": "... a", "start": None},
-])
+# built directly (parse_lyrics_lines() drops punctuation-only words): the
+# aligner itself must still cope with a word it cannot align
+_g_units = [
+    {"text": "ab c", "words": ["ab", "c"], "start": None},
+    {"text": "... a", "words": ["...", "a"], "start": None},
+]
 # flat tokens: a b | c | a   (the "..." word has nothing alignable)
 _g_plan = [(10, 2), (14, 3), (17, 1), (20, 4), (30, 1), (40, 2)]
 _g_audio = [0.0] * (320 * 60)
@@ -664,6 +680,28 @@ check("write_lyrics_result: an unsure note takes the local melody level",
 check("write_lyrics_result: correct notes keep their pitch",
       [_written[i] for i in (0, 1, 2, 3, 5, 6, 7, 9, 10, 11)] ==
       [4, 5, 7, 5, 2, 4, 5, 9, 7, 5])
+
+# write_lyrics_result(): lyrics that run past the end of the audio - the
+# notes that do not fit are dropped, the rest stays strictly in order
+_saved_pitch = repair.get_pitch_with_file
+try:
+    repair.get_pitch_with_file = lambda path: _FakePitched([5] * 12, set())
+    _end_path = repair.write_lyrics_result(
+        _PitchTxt(), tempfile.mkdtemp(), tempfile.mkdtemp(),
+        [[(f"w{i} ", float(i), i + 0.8) for i in range(0, 6)],
+         [(f"x{i} ", float(i), i + 0.8) for i in range(6, 12)]], "/p.wav",
+        audio_dur=8.0)
+finally:
+    repair.get_pitch_with_file = _saved_pitch
+_end_lines = [l.rstrip("\n") for l in open(_end_path, encoding="utf-8")
+              if l[:1] in ":-"]
+_end_notes = [tuple(int(x) for x in l.split()[1:3]) for l in _end_lines if l.startswith(": ")]
+check(f"write_lyrics_result: notes past the end of the audio are dropped (got {_end_lines})",
+      len(_end_notes) == 8 and all(b + d <= 8 for b, d in _end_notes))
+check("write_lyrics_result: the kept notes never overlap",
+      all(a[0] + a[1] <= b[0] for a, b in zip(_end_notes, _end_notes[1:])))
+check("write_lyrics_result: no line break after the last kept note",
+      not _end_lines[-1].startswith("-"))
 
 # pitch_window(): a short note is judged over at least PITCH_MIN_WINDOW_S
 # (0.4 s, centred) - measured on 110 hand-made songs, short notes are where

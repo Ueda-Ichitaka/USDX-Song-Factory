@@ -1530,14 +1530,17 @@ def load_lyrics_file(path: str):
 
 def parse_lyrics_lines(lines_data: list) -> list:
     """[{"text":, "start":}, ...] -> [{"text":, "words":[...], "start":}, ...],
-    dropping empty lines / lines with no words."""
+    dropping empty lines / lines with no words. A token without any letter
+    or digit (a standalone "-", "\u2013", quote mark, "~") is punctuation,
+    not a sung word - it is dropped, and "text" is rebuilt from the kept
+    words."""
     units = []
     for entry in lines_data:
-        text = (entry.get("text") or "").strip()
-        words = text.split()
+        words = [w for w in (entry.get("text") or "").split()
+                 if any(ch.isalnum() for ch in w)]
         if not words:
             continue
-        units.append({"text": text, "words": words, "start": entry.get("start")})
+        units.append({"text": " ".join(words), "words": words, "start": entry.get("start")})
     return units
 
 
@@ -1939,24 +1942,26 @@ def sure_pitch_fraction(start: float, end: float, pitched,
 
 
 def clamp_beat_to_max(beat: int, dur: int, prev_end_beat, max_beat: int = None):
-    """Apply write_lyrics_result()'s existing monotonic-forward clamp (a
-    note can never start before the previous note's own end, so notes
-    render in chronological order), then - if `max_beat` is given - cap
-    the result so no note is ever placed past the real end of the audio.
+    """Apply write_lyrics_result()'s monotonic-forward clamp (a note can
+    never start before the previous note's own end, so notes render in
+    chronological order), then - if `max_beat` is given - keep the note
+    inside the audio: a note running over max_beat is shortened to end at
+    it, and a note with no room left (it would start at or after max_beat)
+    is dropped - returns None. Notes after the end of the audio are not
+    sung; squeezing them onto the last beat made them overlap.
 
-    Without the second cap, a single real but slightly out-of-order
-    timestamp anywhere in the song forces every LATER note forward by
-    that same offset via the forward clamp alone, with nothing to stop
-    it compounding indefinitely. Found live 2026-09-17 on real audio:
-    Lord of the Lost - Beyond Beautiful's last note ended at 259.5s on
-    audio only 239.45s long - purely from this uncapped cascade.
+    Without the ceiling, a single real but slightly out-of-order timestamp
+    anywhere in the song forces every LATER note forward by that same
+    offset via the forward clamp alone, with nothing to stop it compounding
+    indefinitely. Found live 2026-09-17 on real audio: Lord of the Lost -
+    Beyond Beautiful's last note ended at 259.5s on audio only 239.45s long.
 
-    Returns (beat, dur, new_prev_end_beat)."""
+    Returns (beat, dur, new_prev_end_beat), or None for a dropped note."""
     if prev_end_beat is not None:
         beat = max(beat, prev_end_beat)
     if max_beat is not None:
         if beat >= max_beat:
-            beat = max(0, max_beat - 1)
+            return None
         dur = max(1, min(dur, max_beat - beat))
     return beat, dur, beat + dur
 
@@ -2039,16 +2044,24 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
 
     prev_end_beat = None
     current_unit = None
+    dropped = 0
     for (ui, word_field, start, end), pitch in zip(notes, pitches):
+        beat = max(0, round(sec_to_beat(start - gap_s)))
+        dur = max(1, round(sec_to_beat(end - start)))
+        placed = clamp_beat_to_max(beat, dur, prev_end_beat, max_beat)
+        if placed is None:
+            dropped += 1
+            continue
         if current_unit is not None and ui != current_unit:
             out_lines.append(f"- {_fmt_num(prev_end_beat)}")
         current_unit = ui
-        beat = max(0, round(sec_to_beat(start - gap_s)))
-        dur = max(1, round(sec_to_beat(end - start)))
-        beat, dur, prev_end_beat = clamp_beat_to_max(
-            beat, dur, prev_end_beat, max_beat)
+        beat, dur, prev_end_beat = placed
         out_lines.append(f": {_fmt_num(beat)} {_fmt_num(dur)} "
                          f"{_fmt_num(pitch)} {word_field}")
+    if dropped:
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('warning:')} {dropped} "
+              "syllable(s) did not fit before the end of the audio and were "
+              "left out (the lyrics are longer than what is sung)")
 
     out_lines.append("E")
 

@@ -51,8 +51,8 @@ your songs), about 60 GB for the AMD GPU setup (image ~24 GB).
 
 ```bash
 # 1. Get the code, including the USDB submodule
-git clone --recurse-submodules https://github.com/Ueda-Ichitaka/USDX-Batch-Stack.git
-cd USDX-Batch-Stack/stack          # every command below runs from here
+git clone --recurse-submodules https://github.com/Ueda-Ichitaka/USDX-Song-Factory.git
+cd USDX-Song-Factory/stack         # every command below runs from here
 
 # 2. Create the data folders yourself (the container runs as uid 1000;
 #    folders created by Docker would belong to root)
@@ -61,7 +61,7 @@ mkdir -p input output state logs models work cookies
 # 3. Optional: accounts and keys (USDB, Genius) - works without them
 cp .env.example .env               # then edit .env
 
-# 4. Write your song list
+# 4. Write your song list (or save the export of the karaoke-dashboard, see below)
 cat > input/song-requests.csv <<'EOF'
 band,title,url
 ASP,Zaubererbruder,https://www.youtube.com/watch?v=sifM_9DIVbI
@@ -79,15 +79,43 @@ docker compose logs -f                                 # full output
 # 7. Collect your songs
 ls output/new                      # finished songs, one folder each
 cat output/report.md               # what was created, from which source, what failed
+
+# 8. Redo songs (the next `docker compose up -d` processes them again)
+docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset                                  # retry the failed songs
+docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --done --match "Zaubererbruder"  # redo one finished song
+docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --done --only generated          # redo all songs generated from scratch
+docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --all                            # redo everything
+docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --prune                          # forget songs removed from the list
+docker compose up -d
 ```
 
 Copy the folders from `output/new/` into your UltraStar Deluxe song folder.
+`reset` never deletes song folders - it only marks songs as to-do again. A
+redone song is written as a new folder next to the old one
+(`Artist - Title (1)`); delete or move the old folder first if you want the
+new version under the original name.
 For the GPU service, use `ultrasinger-rocm` instead of `ultrasinger` in the
 commands above and below.
 
 If your user id is not 1000 (`id -u`), run
 `sudo chown -R 1000:1000 input output state logs models work cookies` after
 step 2.
+
+## Input lists from the karaoke-dashboard
+
+The two input files are designed to come from the companion project
+[karaoke-dashboard](https://github.com/Ueda-Ichitaka/karaoke-dashboard), a web
+app where people request songs and report broken ones. Its admin exports go
+straight into `stack/input/`:
+
+| Dashboard export | Save as | Used for |
+|---|---|---|
+| `GET /admin/requests.csv` | `stack/input/song-requests.csv` | new songs ([stack/docs/new-songs.md](stack/docs/new-songs.md)) |
+| `GET /admin/reports.csv` | `stack/input/broken.csv` | repairs ([stack/docs/repairs.md](stack/docs/repairs.md)) |
+
+Overwriting the files with a fresh export is fine - finished songs are
+remembered and skipped. Both files can also be written by hand; only the first
+three columns are required.
 
 ## Everyday commands
 

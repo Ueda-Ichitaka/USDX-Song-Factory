@@ -485,16 +485,21 @@ check("clamp_beat_to_max: the existing forward clamp still applies "
       "(an out-of-order note is pushed to start right after the "
       "previous note's end)",
       repair.clamp_beat_to_max(3, 5, 20, None) == (20, 5, 25))
-check(f"clamp_beat_to_max: a note that would start past max_beat is "
-      f"capped to end AT max_beat, not past it (got "
-      f"{repair.clamp_beat_to_max(50, 10, None, 30)!r})",
-      repair.clamp_beat_to_max(50, 10, None, 30)[0] +
-      repair.clamp_beat_to_max(50, 10, None, 30)[1] <= 30)
-check(f"clamp_beat_to_max: a cascading prev_end_beat already past "
-      f"max_beat still gets capped, not left to overshoot further "
+# a note with no room left before the end of the audio is dropped (None):
+# squeezing it onto the last beat made notes overlap (found 2026-09-28 in
+# Die Krupps - Nazis auf Speed: three notes stacked on beat 7670, a line
+# break between them) - notes after the audio's end are not sung anyway
+check(f"clamp_beat_to_max: a note that would start at/after max_beat is "
+      f"dropped (got {repair.clamp_beat_to_max(50, 10, None, 30)!r})",
+      repair.clamp_beat_to_max(50, 10, None, 30) is None)
+check(f"clamp_beat_to_max: a cascading prev_end_beat already at/after "
+      f"max_beat drops the note instead of overlapping "
       f"(got {repair.clamp_beat_to_max(5, 5, 200, 30)!r})",
-      repair.clamp_beat_to_max(5, 5, 200, 30)[0] +
-      repair.clamp_beat_to_max(5, 5, 200, 30)[1] <= 30)
+      repair.clamp_beat_to_max(5, 5, 200, 30) is None)
+check("clamp_beat_to_max: a note running over max_beat is shortened to end at it",
+      repair.clamp_beat_to_max(25, 10, None, 30) == (25, 5, 30))
+check("clamp_beat_to_max: a pushed note that still fits keeps its order",
+      repair.clamp_beat_to_max(20, 5, 27, 30) == (27, 3, 30))
 check("clamp_beat_to_max: a note well within max_beat is untouched",
       repair.clamp_beat_to_max(10, 5, None, 100) == (10, 5, 15))
 
