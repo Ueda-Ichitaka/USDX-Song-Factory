@@ -47,7 +47,8 @@ after a successful job (set ROMANIZE=0 to disable) - see romanize.py.
 Every new song also tries a real online lyrics lookup (syncedlyrics, then
 Genius if GENIUS_API_KEY is set) before trusting whisper's own
 transcription - see run_lyrics_step()/lyrics_fetch.py (set LYRICS_ENABLED=0
-to disable). Before any of that, a new song first checks whether a
+to disable); a lyrics_url in the song list (a link, or a lyrics file under
+input/) is used instead of the search. Before any of that, a new song first checks whether a
 matching upload already exists on USDB - usdb.animux.de (when
 USDB_USERNAME/USDB_PASSWORD are set), then usdb.eu (when USDB_EU_EMAIL/
 USDB_EU_PASSWORD are set) - and, if a confident match is found on either,
@@ -55,7 +56,8 @@ reuses its notes/timing instead of generating from scratch - see
 prepare_usdb_job()/find_usdb_match()/usdb_lookup.py/usdb_eu_lookup.py.
 A repair job whose input folder has a lyrics.txt runs in "lyrics" mode
 instead (see repair.py): force-aligns that trusted text, replacing the
-existing lyrics rather than just re-timing them.
+existing lyrics rather than just re-timing them. Every repaired song gets
+the format version of new songs (song_header.py).
 
 While a run is active you can attach to the container
 (`docker compose attach ultrasinger`) and use these interactive commands:
@@ -80,8 +82,13 @@ import time
 from datetime import datetime
 
 import broken_report
+import compare_reference
+import lyrics_divergence
+import recording_length
 import resource_monitor
 import resource_profile
+import song_header
+import song_style
 import usdb_eu_lookup
 import usdb_lookup
 
@@ -108,6 +115,9 @@ REPAIR_MODE = os.environ.get("REPAIR_MODE", "sync")
 EXTRA_ARGS = os.environ.get("ULTRASINGER_ARGS", "")
 MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS", "3"))
 JOB_TIMEOUT_MIN = float(os.environ.get("JOB_TIMEOUT_MIN", "90"))
+# the gap check's agreement threshold - read by repair.py from the same
+# variable, here only for the report text
+GAP_MAX_SPREAD_S = float(os.environ.get("GAP_MAX_SPREAD_S", "0.3"))
 
 
 def _env_float(name):
@@ -460,6 +470,42 @@ REPAIR_DONE_RE = re.compile(r"REPAIR_DONE\s+(.*)")
 KV_RE = re.compile(r"(\w+)=(.*?)(?=\s+\w+=|$)")
 
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+ERROR_LINE_RE = re.compile(
+    r"error:|exception:|\bfailed\b|\baborting\b|could not|cannot |unreachable"
+    r"|does not match the song file", re.IGNORECASE)
+ERROR_SUMMARY_MAX = 200
+
+
+def error_summary(log_text: str):
+    """The reason a job failed, from its log: the last line that reports an
+    error (traceback frames and warnings are skipped), without colour codes,
+    the "[UltraSinger]" prefix and a leading exception class / "ERROR:".
+    Longer than ERROR_SUMMARY_MAX characters: the middle is cut out, the
+    end - where the cause usually is - stays. None when the log names no
+    error."""
+    for raw in reversed(log_text.split("\n")):
+        if raw[:1] in (" ", "\t"):
+            continue  # traceback frame / continuation
+        # a carriage return inside a line (yt-dlp's progress display) is
+        # not a line end
+        line = " ".join(ANSI_RE.sub("", raw).replace("\r", " ").split())
+        if not line or "Warning" in line or "warning" in line:
+            continue
+        if not ERROR_LINE_RE.search(line):
+            continue
+        line = re.sub(r"^\[UltraSinger\]\s*", "", line)
+        line = re.sub(r"^.*?\b(?:ERROR|Error):\s*", "", line, count=1)
+        line = line.strip()
+        if not line:
+            continue
+        if len(line) > ERROR_SUMMARY_MAX:
+            tail = ERROR_SUMMARY_MAX - 85
+            line = line[:80] + " ... " + line[-tail:]
+        return line
+    return None
+
+
 def parse_repair_done_line(line: str) -> dict:
     """Parse one 'REPAIR_DONE key=value key=value ...' log line into a
     dict, keeping multi-word values (paths) intact."""
@@ -467,6 +513,23 @@ def parse_repair_done_line(line: str) -> dict:
     if not m:
         return {}
     return dict(KV_RE.findall(m.group(1)))
+
+
+def gap_check_from_log(log_text: str):
+    """The gap check's verdict from repair.py's REPAIR_DONE line:
+    {"kept", "spread_s", "gap_old_ms", "gap_new_ms"} - kept means the
+    per-word start values disagreed and the original #GAP stayed. The #GAP
+    values are whole ms (the song file may write them as floats,
+    "12720.0"). None when the job ran no gap check."""
+    for line in reversed(log_text.splitlines()):
+        kv = parse_repair_done_line(line)
+        if "gap_check" in kv:
+            spread = kv.get("gap_spread_s")
+            return {"kept": kv["gap_check"] == "kept",
+                    "spread_s": float(spread) if spread not in (None, "none") else None,
+                    "gap_old_ms": round(float(kv["gap_old_ms"])),
+                    "gap_new_ms": round(float(kv["gap_new_ms"]))}
+    return None
 
 
 def looks_like_ultrastar_txt(path: str) -> bool:
@@ -501,7 +564,8 @@ def parse_songs_file(path: str) -> list:
     """Parse songs.csv (band,title,url) or a plain songs.txt.
 
     Returns a list of dicts: {"band", "title", "url", "language",
-    "musicbrainz_id", "lyrics_url", "cover_url", "duet"} - url may be
+    "musicbrainz_id", "lyrics_url", "cover_url", "duet", "genres", "traits",
+    "style_unknown"} - url may be
     "skip". Everything after url is an optional column of the
     karaoke-dashboard export (default "" / False): language (an ISO 639-1
     code; anything else, like the dashboard's "mixed", means "detect it")
@@ -511,7 +575,8 @@ def parse_songs_file(path: str) -> list:
     run_lyrics_step()); cover_url becomes the song's cover
     (apply_cover_url()); duet is True only for "yes" - blank and "no" both
     mean a plain version (the dashboard's wants_duet() rule), and a song may
-    appear twice, once per duet value.
+    appear twice, once per duet value; genre/trait give the song's genres
+    and traits (song_style.style_fields()).
     """
     entries = []
     if not path or not os.path.isfile(path):
@@ -549,9 +614,11 @@ def parse_songs_file(path: str) -> list:
             entries.append({
                 "band": band, "title": title, "url": url,
                 "language": language, "musicbrainz_id": musicbrainz_id,
+                "language_raw": (lower.get("language") or "").strip(),
                 "lyrics_url": lyrics_url,
                 "cover_url": lower.get("cover_url") or "",
                 "duet": wants_duet(lower.get("duet")),
+                **song_style.style_fields(lower),
             })
     else:
         # plain text: "url" per line or "band - title - url"
@@ -566,15 +633,15 @@ def parse_songs_file(path: str) -> list:
                     band, title = rest.split(" - ", 1)
                 entries.append({
                     "band": band.strip(), "title": title.strip(), "url": url,
-                    "language": "", "musicbrainz_id": "", "lyrics_url": "",
-                    "cover_url": "", "duet": False,
+                    "language": "", "language_raw": "", "musicbrainz_id": "", "lyrics_url": "",
+                    "cover_url": "", "duet": False, **song_style.style_fields({}),
                 })
             else:
                 # no link -> cannot create, treated as skipped
                 entries.append({
                     "band": "", "title": line, "url": "skip",
-                    "language": "", "musicbrainz_id": "", "lyrics_url": "",
-                    "cover_url": "", "duet": False,
+                    "language": "", "language_raw": "", "musicbrainz_id": "", "lyrics_url": "",
+                    "cover_url": "", "duet": False, **song_style.style_fields({}),
                 })
 
     # normalize: empty / '-' / 'skip' links are skips
@@ -878,6 +945,28 @@ def current_job_ids() -> set:
     return ids
 
 
+def repair_mode_for(category: str, lyrics_file) -> str:
+    """The mode of a repair job: a lyrics.txt in the song folder always
+    means "lyrics"; otherwise the broken.csv category picks it. "lyrics"
+    without a local file is fetched online by
+    JobRunner._prepare_repair_source(). "media" and "cover" are markers that
+    JobRunner resolves itself (prepare_media_repair(),
+    prepare_cover_repair()) - repair.py has no such modes."""
+    if lyrics_file:
+        return "lyrics"
+    if category == "gap":
+        return "gap"
+    if category == "async":
+        return "sync"
+    if category == "lyrics":
+        return "lyrics"
+    if category in ("video", "audio"):
+        return "media"
+    if category == "cover":
+        return "cover"
+    return REPAIR_MODE
+
+
 def build_job_plan(state: State) -> list:
     """Collect all jobs (new songs + repairs) and register them in state."""
     jobs = []
@@ -889,9 +978,11 @@ def build_job_plan(state: State) -> list:
         job = state.get_or_create(
             job_id, kind="new", label=label, url=url,
             band=song["band"], title=song["title"],
-            language=song["language"], musicbrainz_id=song["musicbrainz_id"],
+            language=song["language"], language_raw=song.get("language_raw", ""),
+            musicbrainz_id=song["musicbrainz_id"],
             lyrics_url=song["lyrics_url"], cover_url=song["cover_url"],
-            duet=song["duet"])
+            duet=song["duet"], genres=song["genres"], traits=song["traits"],
+            style_unknown=song["style_unknown"])
         if url == "skip":
             job["status"] = "skipped"
         elif song["duet"] and job["status"] != "done":
@@ -913,35 +1004,20 @@ def build_job_plan(state: State) -> list:
         report_lyrics_url = report.get("lyrics_url", "") if report else ""
         report_language = report.get("language", "") if report else ""
         report_cover_url = report.get("cover_url", "") if report else ""
+        style = {key: report.get(key, []) if report else []
+                 for key in ("genres", "traits", "style_unknown")}
 
         # a manually-supplied lyrics.txt always wins (existing mechanism,
         # unconditional); otherwise the broken.csv category picks a
         # specific, cheap fix instead of always running the same blind
         # full repair - see 02-DESIGN.md "broken.csv-driven repair"
-        if lyrics_file:
-            mode = "lyrics"
-        elif category == "gap":
-            mode = "gap"
-        elif category == "async":
-            mode = "sync"
-        elif category == "lyrics":
-            # no local file: JobRunner._prepare_repair_source() fetches
-            # trusted lyrics online (lyrics_url if given, else a normal
-            # search) before repair.py ever runs - see that method.
-            mode = "lyrics"
-        elif category in ("video", "audio"):
-            # resolved lazily by JobRunner._prepare_repair_source() /
-            # prepare_media_repair() - repair.py has no "media" mode of
-            # its own, this is a synthetic marker only.
-            mode = "media"
-        else:
-            mode = REPAIR_MODE
+        mode = repair_mode_for(category, lyrics_file)
 
         job = state.get_or_create(
             job_id, kind="repair", label=name, song_dir=folder, mode=mode,
             lyrics_file=lyrics_file, category=category, description=description,
             lyrics_url=report_lyrics_url, language=report_language,
-            cover_url=report_cover_url)
+            cover_url=report_cover_url, **style)
 
         # "other"/blank/unrecognized category: the defect is unknown or
         # free-text only - don't guess an action, flag it for a human
@@ -1201,7 +1277,7 @@ def render_report(state_data, active_ids=None) -> str:
         for j in sorted(failed, key=by_label):
             q = j.get("quarantined_output")
             q_cell = f"`{q}`" if q else "-"
-            err = (j.get("error") or "")[:120].replace("|", "\\|")
+            err = (j.get("error") or "")[:ERROR_SUMMARY_MAX + 20].replace("|", "\\|")
             lines.append(f"| {j['label']} | {j['kind']} | {j.get('attempts', '-')} | "
                          f"{err} | {q_cell} |")
     else:
@@ -1222,6 +1298,67 @@ def render_report(state_data, active_ids=None) -> str:
             category = j.get("category") or "-"
             desc = (j.get("description") or j.get("error") or "-").replace("|", "\\|")
             lines.append(f"| {j['label']} | {category} | {desc} |")
+
+    to_review = [j for j in new_done if (j.get("lyrics_review") or {}).get("kind") == "review"]
+    not_checkable = [j for j in new_done
+                     if (j.get("lyrics_review") or {}).get("kind") == "not_checkable"]
+    if to_review:
+        lines.append("")
+        lines.append(f"## Lyrics to review ({len(to_review)})")
+        lines.append("")
+        lines.append("_The lyrics text and what whisper heard in the vocals differ: "
+                     "too little of the lyrics was heard, or several lines in a row "
+                     "were not. Often the lyrics source is a different version "
+                     "(longer album version, extra verse) - check the named lines "
+                     "and trim `lyrics.txt`, or set an end with `song_end.txt` / "
+                     "`anchors.txt`. Singing whisper cannot transcribe well "
+                     "(growls, opera) can also land here._")
+        lines.append("")
+        lines.append("| Song | Note |")
+        lines.append("|---|---|")
+        for j in sorted(to_review, key=by_label):
+            lines.append(f"| {j['label']} | {j['lyrics_review']['note'].replace('|', '/')} |")
+    if not_checkable:
+        lines.append("")
+        lines.append(f"## Lyrics not checkable ({len(not_checkable)})")
+        lines.append("")
+        lines.append("| Song | Reason |")
+        lines.append("|---|---|")
+        for j in sorted(not_checkable, key=by_label):
+            lines.append(f"| {j['label']} | {j['lyrics_review']['note'].replace('|', '/')} |")
+
+    gap_kept = [j for j in state_data["jobs"].values()
+                if j.get("status") == "done" and (j.get("gap_check") or {}).get("kept")]
+    if gap_kept:
+        lines.append("")
+        lines.append(f"## Start kept by the gap check ({len(gap_kept)})")
+        lines.append("")
+        lines.append("_The gap check could not confirm a new start: the start "
+                     "values of the first words disagree (spread above "
+                     f"{GAP_MAX_SPREAD_S:g} s), so the original `#GAP` was kept. "
+                     "If the start is wrong, check it in USDX and set `#GAP` "
+                     "by hand._")
+        lines.append("")
+        lines.append("| Song | #GAP kept (ms) | Spread |")
+        lines.append("|---|---|---|")
+        for j in sorted(gap_kept, key=by_label):
+            spread = j["gap_check"].get("spread_s")
+            spread_text = f"{spread:.2f} s" if spread is not None else "too few words"
+            lines.append(f"| {j['label']} | {j['gap_check']['gap_old_ms']} | {spread_text} |")
+
+    style_unknown = [j for j in state_data["jobs"].values() if j.get("style_unknown")]
+    if style_unknown:
+        lines.append("")
+        lines.append(f"## Unknown genre or trait values ({len(style_unknown)})")
+        lines.append("")
+        lines.append("_These values from the song list or broken.csv are not "
+                     "known to the factory and were ignored "
+                     "(`orchestrator/song_style.py`)._")
+        lines.append("")
+        lines.append("| Song | Ignored values |")
+        lines.append("|---|---|")
+        for j in sorted(style_unknown, key=by_label):
+            lines.append(f"| {j['label']} | {', '.join(j['style_unknown'])} |")
 
     if skipped:
         lines.append("")
@@ -1313,7 +1450,14 @@ def run_lyrics_step(job: dict, output_path: str) -> str:
     align_cmd = [sys.executable, REPAIR_PY,
                 "--song-dir", song_dir, "--out", NEW_SONGS_DIR,
                 "--mode", "lyrics", "--lyrics-file", lyrics_json,
-                "--device", DEVICE]
+                "--device", DEVICE] + traits_args(job.get("traits"))
+    # the official recording length lets repair.py cut off a video outro
+    # (only from the list's own musicbrainz_id - see recording_length.py)
+    mbid = (job.get("musicbrainz_id") or "").strip()
+    seconds = recording_length.recording_seconds(mbid, title) if mbid else None
+    if seconds:
+        out(f"  .. official recording length {seconds:.1f}s (MusicBrainz)")
+        align_cmd += ["--recording-seconds", str(seconds)]
     try:
         with open(align_log_path, "wb") as logfile:
             proc2 = subprocess.run(align_cmd, stdout=logfile, stderr=subprocess.STDOUT,
@@ -1480,6 +1624,42 @@ def apply_cover_url(txt_path: str, url: str, fetch=None) -> bool:
     with open(txt_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(content)
     return True
+
+
+def prepare_cover_repair(job: dict) -> dict:
+    """Repair category "cover": copy the song folder to REPAIRED_DIR and
+    replace only the cover with the image at the report's cover_url (see
+    apply_cover_url()); the copy gets the format version of new songs
+    (song_header.py), as every repaired song. Returns {"status": "done", "output_path": <the
+    copied song file>}, or {"status", "error"}: "needs_review" without a
+    cover_url (mandatory for this category), "failed" when the link is not
+    reachable or not an image - no output folder is left behind then."""
+    url = (job.get("cover_url") or "").strip()
+    if not url:
+        return {"status": "needs_review",
+                "error": "cover category: the report has no cover_url"}
+    song_dir = job["song_dir"].rstrip("/")
+    src_txt = primary_ultrastar_txt(song_dir)
+    if not src_txt:
+        return {"status": "failed", "error": "cover category: no song file in the folder"}
+    out_song_dir = os.path.join(REPAIRED_DIR, os.path.basename(song_dir))
+    existed = os.path.exists(out_song_dir)
+    shutil.copytree(song_dir, out_song_dir, dirs_exist_ok=True)
+    out_txt = os.path.join(out_song_dir, os.path.basename(src_txt))
+    if not apply_cover_url(out_txt, url):
+        if not existed:
+            shutil.rmtree(out_song_dir, ignore_errors=True)
+        return {"status": "failed",
+                "error": f"cover category: cover_url not reachable or not an image: {url}"}
+    with open(out_txt, encoding="utf-8", errors="replace", newline="") as f:
+        content, reason = song_header.versioned_text(f.read())
+    if reason:
+        out(f"  .. written without #VERSION: the song uses {reason}, which format "
+            f"version {song_header.FORMAT_VERSION} does not have")
+    else:
+        with open(out_txt, "w", encoding="utf-8", newline="") as f:
+            f.write(content)
+    return {"status": "done", "output_path": out_txt}
 
 
 def download_media(url: str, dest_path: str, want_video: bool, log_path: str) -> bool:
@@ -1817,6 +1997,37 @@ def quarantine_partial_output(kind: str, before_names: set, output_dir: str) -> 
     return moved
 
 
+def track_quarantined(job: dict, result: dict) -> None:
+    """Remember the folders an attempt left in FAILED_DIR in the job's
+    "quarantined_outputs" list (all failed attempts, oldest first). A job
+    that only has the single "quarantined_output" path gets that path into
+    the list as well."""
+    paths = job.setdefault("quarantined_outputs", [])
+    for path in [job.get("quarantined_output")] + list(result.get("quarantined_outputs") or []):
+        if path and path not in paths:
+            paths.append(path)
+
+
+def remove_quarantined_outputs(job: dict) -> list:
+    """Delete the folders the job's failed attempts left in FAILED_DIR (for
+    a job that has succeeded) and forget them; returns the deleted paths.
+    Only folders inside FAILED_DIR are ever deleted."""
+    root = os.path.realpath(FAILED_DIR)
+    removed = []
+    for path in job.get("quarantined_outputs") or []:
+        real = os.path.realpath(path)
+        if os.path.commonpath([root, real]) != root or real == root or not os.path.isdir(real):
+            continue
+        try:
+            shutil.rmtree(real)
+            removed.append(path)
+        except OSError as exc:
+            out(f"  !! could not remove {path}: {exc}")
+    job["quarantined_outputs"] = []
+    job["quarantined_output"] = None
+    return removed
+
+
 def ultrasinger_command(url: str, band: str = None, title: str = None,
                         language: str = None, musicbrainz_id: str = None) -> list:
     cmd = [sys.executable, ULTRASINGER_PY, "-i", resolve_song_input(url), "-o", NEW_SONGS_DIR]
@@ -1854,8 +2065,14 @@ def ultrasinger_command(url: str, band: str = None, title: str = None,
     return cmd
 
 
+def traits_args(traits) -> list:
+    """repair.py's `--traits a,b` for a song's traits (song_style.py), or
+    nothing when the song has none."""
+    return ["--traits", ",".join(traits)] if traits else []
+
+
 def repair_command(song_dir: str, mode: str = None, lyrics_file: str = None,
-                   out_dir: str = None, language: str = None) -> list:
+                   out_dir: str = None, language: str = None, traits=None) -> list:
     cmd = [sys.executable, REPAIR_PY,
            "--song-dir", song_dir,
            "--out", out_dir or REPAIRED_DIR,
@@ -1868,7 +2085,7 @@ def repair_command(song_dir: str, mode: str = None, lyrics_file: str = None,
     # see src/modules/language_file.py
     if language and language.strip():
         cmd += ["--language", language.strip()]
-    return cmd
+    return cmd + traits_args(traits)
 
 
 class JobRunner:
@@ -1947,7 +2164,7 @@ class JobRunner:
 
     def _prepare_media_repair_job(self):
         """category "video"/"audio": restore the missing media (see
-        prepare_media_repair()) before running the cheap "gap" pass on it
+        prepare_media_repair()) before running the "gap" pass on it
         as a safety net (a relinked/re-downloaded file may not be exactly
         byte-identical to the original, e.g. different silence padding)."""
         job = self.job
@@ -1982,7 +2199,8 @@ class JobRunner:
         when the job can proceed as-is (nothing to override, or an
         override was set on self._repair_prep) - or a
         {"status": "failed"|"needs_review", "error": ...} dict for run()
-        to short-circuit on, without ever running a subprocess."""
+        to short-circuit on, without ever running a subprocess. A "cover"
+        job is complete here: {"status": "done", "output_path": ...}."""
         if self.job["kind"] != "repair":
             return None
         mode = self.job.get("mode")
@@ -1990,6 +2208,12 @@ class JobRunner:
             return self._prepare_lyrics_repair()
         if mode == "media":
             return self._prepare_media_repair_job()
+        if mode == "cover":
+            try:
+                return prepare_cover_repair(self.job)
+            except OSError as exc:
+                return {"status": "failed",
+                        "error": f"cover category: could not copy the song: {exc}"}
         return None
 
     def command(self) -> list:
@@ -1997,17 +2221,18 @@ class JobRunner:
             if self._usdb_match:
                 return repair_command(
                     self._usdb_match["staging_dir"], mode="gap", out_dir=NEW_SONGS_DIR,
-                    language=self.job.get("language"))
+                    language=self.job.get("language"), traits=self.job.get("traits"))
             return ultrasinger_command(
                 self.job["url"], self.job.get("band"), self.job.get("title"),
                 self.job.get("language"), self.job.get("musicbrainz_id"))
         if self._repair_prep:
             return repair_command(
                 self._repair_prep["song_dir"], self._repair_prep["mode"],
-                self._repair_prep["lyrics_file"], language=self.job.get("language"))
+                self._repair_prep["lyrics_file"], language=self.job.get("language"),
+                traits=self.job.get("traits"))
         return repair_command(
             self.job["song_dir"], self.job.get("mode"), self.job.get("lyrics_file"),
-            language=self.job.get("language"))
+            language=self.job.get("language"), traits=self.job.get("traits"))
 
     def _stream(self, pipe, logfile):
         for raw in iter(pipe.readline, b""):
@@ -2041,10 +2266,14 @@ class JobRunner:
 
         prep_result = self._prepare_repair_source()
         if prep_result is not None:
-            out(f"  !! {prep_result['status']}: {prep_result['error']}")
-            return {"status": prep_result["status"], "error": prep_result["error"],
-                    "output_path": None, "duration_s": 0.0,
-                    "quarantined_output": None, "repair_mode_result": None,
+            if prep_result["status"] == "done":
+                out(f"  .. cover replaced from {self.job.get('cover_url')}")
+            else:
+                out(f"  !! {prep_result['status']}: {prep_result['error']}")
+            return {"status": prep_result["status"], "error": prep_result.get("error"),
+                    "output_path": prep_result.get("output_path"), "duration_s": 0.0,
+                    "quarantined_output": None,
+                    "repair_mode_result": self.job.get("mode") if prep_result["status"] == "done" else None,
                     "lyrics_source_result": None, "usdb_song_id": None}
 
         out_dir = NEW_SONGS_DIR if self.job["kind"] == "new" else REPAIRED_DIR
@@ -2114,9 +2343,14 @@ class JobRunner:
             # find produced ultrastar file / repair summary in the log
             repair_mode_result = None
             lyrics_source_result = None
+            gap_check_result = None
             try:
                 with open(self.log_path, encoding="utf-8", errors="replace") as f:
                     log_text = f.read()
+                if status == "failed" and error and error.startswith("exit code"):
+                    reason = error_summary(log_text)
+                    if reason:
+                        error = f"{error}: {reason}"
                 for line in log_text.splitlines():
                     if output_path is None and "Creating UltraStar file" in line:
                         m = re.search(r"Creating UltraStar file (.+)$", line.strip())
@@ -2129,16 +2363,19 @@ class JobRunner:
                         repair_mode_result = kv["mode"]
                     if "lyrics_source" in kv:
                         lyrics_source_result = kv["lyrics_source"]
+                gap_check_result = gap_check_from_log(log_text)
             except OSError:
                 pass
 
         # a failed job must never leave partial/broken output in the live
         # tree - quarantine anything the job created before it died
         quarantined_output = None
+        quarantined_outputs = []
         if status == "failed":
             for name, dst in quarantine_partial_output(
                     self.job["kind"], before_names, out_dir):
                 out(f"  .. moved partial output to {dst}")
+                quarantined_outputs.append(dst)
                 quarantined_output = quarantined_output or dst
                 if output_path and os.path.basename(os.path.dirname(output_path)) == name:
                     output_path = os.path.join(dst, os.path.basename(output_path))
@@ -2148,8 +2385,10 @@ class JobRunner:
         return {"status": status, "error": error,
                 "output_path": output_path, "duration_s": duration,
                 "quarantined_output": quarantined_output,
+                "quarantined_outputs": quarantined_outputs,
                 "repair_mode_result": repair_mode_result,
                 "lyrics_source_result": lyrics_source_result,
+                "gap_check_result": gap_check_result,
                 "usdb_song_id": self._usdb_match["song_id"] if self._usdb_match else None}
 
     def _terminate(self, reason):
@@ -2203,16 +2442,57 @@ def stdin_listener(cmd_queue, control, state_data_fn):
 # main command handlers
 # --------------------------------------------------------------------------
 
+def transcript_words_from_text(txt_text: str) -> list:
+    """[(start_s, end_s, word), ...] of an UltraStar txt - for a song fresh
+    out of UltraSinger this is whisper's transcript with its timing."""
+    return [(start, end, word) for word, start, end in
+            compare_reference.word_timings(txt_text)]
+
+
+def lyrics_review(job: dict, transcript: list, song_dir: str):
+    """{"kind": "review" | "not_checkable", "note": str} for the finishing
+    report, or None: compares the song's final lyrics.txt with UltraSinger's
+    own transcript (see lyrics_divergence.py). A language whisper cannot
+    transcribe (the song list's own value) is not judged but marked."""
+    ok, why = lyrics_divergence.language_checkable(job.get("language_raw"))
+    if not ok:
+        return {"kind": "not_checkable", "note": why}
+    lyrics_path = os.path.join(song_dir, "lyrics.txt")
+    if not transcript or not os.path.isfile(lyrics_path):
+        return None
+    with open(lyrics_path, encoding="utf-8") as f:
+        lines = [line.strip() for line in f if line.strip()]
+    note = lyrics_divergence.review_note(
+        lyrics_divergence.compare_lyrics(lines, transcript))
+    return {"kind": "review", "note": note} if note else None
+
+
 def finish_done_job(job: dict, result: dict) -> None:
     """Post-processing of a successfully finished job, in this order: a
     new song's lyrics are replaced by a trusted online source when one is
     found (usdb songs keep theirs, see finalize_new_job_lyrics()) BEFORE
     romanization runs on whatever text ends up final; then a cover_url from
-    the song list / broken.csv replaces the cover."""
+    the song list / broken.csv replaces the cover. A new song with online
+    lyrics also gets its lyrics review (lyrics_review()). A "cover" repair
+    is complete as it is (prepare_cover_repair()) and gets none of this."""
     output_path = result["output_path"]
+    if result.get("repair_mode_result") == "cover":
+        return
     if job["kind"] == "new":
+        # UltraSinger's transcript, read before the lyrics step replaces it
+        transcript = []
+        if output_path and os.path.isfile(output_path):
+            with open(output_path, encoding="utf-8", errors="replace") as f:
+                transcript = transcript_words_from_text(f.read())
         job["lyrics_source"] = finalize_new_job_lyrics(
             job, output_path, result.get("usdb_song_id"))
+        job["lyrics_review"] = None
+        if (job["lyrics_source"] or "").startswith("online:"):
+            job["lyrics_review"] = lyrics_review(
+                job, transcript, os.path.dirname(output_path))
+            if job["lyrics_review"]:
+                out(f"  .. lyrics {job['lyrics_review']['kind'].replace('_', ' ')}: "
+                    f"{job['lyrics_review']['note']}")
     run_romanize_step(job, output_path)
     cover_url = (job.get("cover_url") or "").strip()
     if cover_url:
@@ -2289,11 +2569,16 @@ def cmd_run(state, selection=None, control=None):
         job["status"] = result["status"]
         job["error"] = result["error"]
         job["output_path"] = result["output_path"]
+        track_quarantined(job, result)
         job["quarantined_output"] = result.get("quarantined_output")
+        if result["status"] == "done":
+            for path in remove_quarantined_outputs(job):
+                out(f"  .. removed the failed attempt's folder {path}")
         if result.get("repair_mode_result"):
             job["repair_mode_result"] = result["repair_mode_result"]
         if result.get("lyrics_source_result"):
             job["lyrics_source"] = result["lyrics_source_result"]
+        job["gap_check"] = result.get("gap_check_result")
         job["finished_at"] = now_iso()
         job["duration_s"] = result["duration_s"]
         state.save()

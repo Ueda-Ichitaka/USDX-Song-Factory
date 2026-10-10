@@ -129,10 +129,24 @@ UltraStar Deluxe song folder.
 Every run writes `output/report.md` (and prints it at the end): every new song
 created, with where its lyrics came from (`online:<source>`,
 `usdb:<site>:<id>` or `transcribed`); every song repaired, with its repair
-mode; every failed job, with its error and where its partial output went; and
+mode; every failed job, with its error (the exit code plus the last error line
+of its log, for example `exit code 1: [download] Got error: ... Network is
+unreachable`) and where its partial output went; and
 every skipped song with the reason ("no link in the song list", or "no longer
-in the song list" for a stale record that `reset --prune` removes). Regenerate
-it without running anything:
+in the song list" for a stale record that `reset --prune` removes).
+
+Two more sections appear when needed:
+
+* **Lyrics to review** - new songs whose online lyrics differ from what is
+  actually sung (see [new-songs.md](new-songs.md#lyrics-review)). Each row
+  says how much of the lyrics was heard, which lines were and were not heard,
+  the longest run of unheard lines and when the singing ends - for example
+  "lines 36-55 in a row not heard; singing ends at 2:50.9" for a video that
+  is a shorter edit of the album version the lyrics belong to.
+* **Lyrics not checkable** - new songs in a language whisper cannot
+  transcribe, so their lyrics could not be compared.
+
+Regenerate the report without running anything:
 
 ```bash
 docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py report
@@ -141,10 +155,12 @@ docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py rep
 ### Failed jobs
 
 A failed job never leaves partial output among your real songs: whatever it
-created is moved to `output/failed/new/` or `output/failed/repaired/`
+created is moved to `output/failed/new/` or `output/failed/repair/`
 (colliding names get a ` (1)` suffix, nothing is overwritten). The job shows
 up in `progress`, `list` and `report` with its error, and `reset` retries it
 on the next run. Each song is tried up to `MAX_ATTEMPTS` times (default 3).
+When a later attempt succeeds, the folders its failed attempts left in
+`output/failed/` are deleted.
 
 ### Logs
 
@@ -158,6 +174,7 @@ stack/
 ├── input/
 │   ├── song-requests.csv   want-list for new songs (band,title,url,...)
 │   ├── broken.csv          optional: broken-song reports (band,song name,category,description)
+│   ├── lyrics/             optional: lyrics files that a lyrics_url column points at
 │   └── <song folder>/      broken songs to repair (one folder per song)
 │       └── lyrics.txt      optional: trusted lyrics -> repair "lyrics" mode
 ├── .env                    optional: accounts, API keys, tuning (copy from .env.example)

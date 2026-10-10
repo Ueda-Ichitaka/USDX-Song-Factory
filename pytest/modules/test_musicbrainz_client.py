@@ -1,5 +1,6 @@
 """Test the musicbrainz_client module."""
 
+import socket
 import unittest
 from unittest.mock import patch
 import musicbrainzngs
@@ -431,6 +432,47 @@ class TestGetYearRobustness(unittest.TestCase):
         recording = {'release-list': [{'id': 'rel-1', 'release-group': {'id': 'rg-1'}}]}
         self.assertEqual(_get_year(recording), '2019')
 
+
+
+_musicbrainz_request = getattr(_mb_client_module, "__musicbrainz_request")
+
+
+class TestNetworkTimeout(unittest.TestCase):
+    """A dead connection must fail after a bounded time, not hang the job:
+    every request runs with a socket timeout (MUSICBRAINZ_TIMEOUT_S)."""
+
+    def test_request_runs_with_the_timeout(self):
+        seen = []
+        _musicbrainz_request(lambda: seen.append(socket.getdefaulttimeout()))
+        self.assertEqual(seen, [_mb_client_module.MUSICBRAINZ_TIMEOUT_S])
+
+    def test_default_timeout_is_60_seconds(self):
+        self.assertEqual(_mb_client_module.MUSICBRAINZ_TIMEOUT_S, 60.0)
+
+    def test_previous_timeout_is_restored(self):
+        socket.setdefaulttimeout(5.0)
+        try:
+            _musicbrainz_request(lambda: None)
+            self.assertEqual(socket.getdefaulttimeout(), 5.0)
+        finally:
+            socket.setdefaulttimeout(None)
+
+    def test_previous_timeout_is_restored_after_an_error(self):
+        def fail():
+            raise musicbrainzngs.ResponseError()
+        with self.assertRaises(musicbrainzngs.ResponseError):
+            _musicbrainz_request(fail)
+        self.assertIsNone(socket.getdefaulttimeout())
+
+    @patch('time.sleep')
+    def test_a_timed_out_request_gives_none_after_the_retries(self, _sleep):
+        calls = []
+
+        def timed_out():
+            calls.append(1)
+            raise musicbrainzngs.musicbrainz.NetworkError("timed out")
+        self.assertIsNone(_musicbrainz_request(timed_out))
+        self.assertEqual(len(calls), _mb_client_module.MAX_RETRIES)
 
 if __name__ == '__main__':
     unittest.main()

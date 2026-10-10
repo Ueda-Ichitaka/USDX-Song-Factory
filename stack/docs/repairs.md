@@ -18,6 +18,13 @@ All commands on this page are run from inside `stack/`.
 2. Start the stack (`docker compose up -d`). Every folder in `input/` that
    contains an UltraStar txt is repaired into `output/repaired/<song folder>/`.
 3. Your originals in `input/` are never modified.
+4. Every repaired song file gets the format version new songs have
+   (`#VERSION:1.2.0`, first line) unless it already has one. `#AUDIO` repeats
+   `#MP3` (as in new songs), and `#RELATIVE` and a UTF-8 `#ENCODING` are
+   removed: USDX refuses to load a versioned file with `#RELATIVE`, even
+   `#RELATIVE:No`, which USDB downloads contain. A song using what version 1
+   no longer has (`#RELATIVE:yes`, another `#ENCODING`, `#DUETSINGERP1/P2`,
+   `#NOTESGAP`) is written without `#VERSION`, and the log says why.
 
 ## Repair modes
 
@@ -26,7 +33,7 @@ chosen automatically, see below.
 
 | mode | what it does | cost |
 |------|--------------|------|
-| `gap`  | Aligns only the first lyric lines to the audio and shifts `#GAP` accordingly. Beats, durations and pitches stay as they are. | fast (no separation) |
+| `gap`  | Separates the vocals, aligns only the first lyric lines and shifts `#GAP` - but only when the start values of those words agree (spread at most `GAP_MAX_SPREAD_S`); otherwise the original `#GAP` is kept and the report lists the song under "Start kept by the gap check". When no word of the first lines is sung near `#GAP` at all, the song file usually belongs to another recording: the job fails with "audio does not match the song file", and the reason names the other audio or video file in the song folder that seems to fit (alignment score at least 0.6 and at least 40% of the first words agreeing), or says that none does. `#MP3`/`#VIDEO` are never changed automatically - set them by hand and run the repair again. A song file without a `#GAP` line gets one. Beats, durations and pitches stay as they are. | ~1-2 min/song (one vocal separation) |
 | `sync` | Full repair: separates the vocals, force-aligns **every** lyric line (fixes `#GAP` **and** mid-song drift), rebuilds beats/durations and re-detects every note's pitch. The original lyrics are kept. | ~2-6 min/song (CPU) |
 | `lyrics` | Like `sync`, but REPLACES the lyrics text too, force-aligning a trusted lyrics file instead of the (assumed wrong) existing text. | ~2-6 min/song (CPU) |
 
@@ -65,7 +72,8 @@ Boney M.,Daddy Cool,video,
 ```
 
 The dashboard export also carries `lyrics_url`, `language` and `cover_url`
-(all optional): `lyrics_url` is tried first for a `lyrics` report,
+(all optional): `lyrics_url` (a link or a lyrics file under `stack/input/`,
+as in the song list) is tried first for a `lyrics` report,
 `language` (ISO 639-1) pins the aligner language, and `cover_url` replaces
 the repaired song's cover (same rules as in the song list, see
 [new-songs.md](new-songs.md#optional-columns)):
@@ -75,12 +83,16 @@ band,song name,category,description,lyrics_url,language,cover_url
 Metric,Black Sheep,lyrics,second verse is wrong,https://genius.com/Metric-black-sheep-lyrics,en,
 ```
 
+The optional `genre` and `trait` columns work as in the song list (see
+[new-songs.md](new-songs.md#optional-columns)).
+
 | category | what happens |
 |----------|--------------|
-| `gap` | `gap` mode only - cheap, no separation. |
+| `gap` | `gap` mode only - no re-timing of the notes. |
 | `async` | `sync` mode - full re-alignment, original lyrics kept. |
-| `lyrics` | Force-aligns trusted lyrics, same as a manual `lyrics.txt` (below). A `lyrics_url` column (genius.com, or a direct `.txt`/`.lrc` link) is tried first if given, otherwise an online lookup runs, as for new songs. Nothing found -> the job fails (it never falls back to a blind `sync`, which would only re-time the known-wrong lyrics). |
-| `video` / `audio` | Restores the missing file: an unambiguous matching file already in the folder is linked as-is; otherwise, if the folder has a `*.usdb` sync-meta file (written by `usdb_syncer` for songs pulled from USDB), the original YouTube source is re-downloaded. Either way a cheap `gap` re-check runs afterwards. No source found, or two or more ambiguous candidates -> the job fails with a message naming what it found. |
+| `lyrics` | Force-aligns trusted lyrics, same as a manual `lyrics.txt` (below). A `lyrics_url` column (genius.com, an lrclib.net track page, a direct `.txt`/`.lrc` link or a lyrics file under `stack/input/`) is tried first if given, otherwise an online lookup runs, as for new songs. Nothing found -> the job fails (it never falls back to a blind `sync`, which would only re-time the known-wrong lyrics). |
+| `video` / `audio` | Restores the missing file: an unambiguous matching file already in the folder is linked as-is; otherwise, if the folder has a `*.usdb` sync-meta file (written by `usdb_syncer` for songs pulled from USDB), the original YouTube source is re-downloaded. Either way a `gap` re-check runs afterwards. No source found, or two or more ambiguous candidates -> the job fails with a message naming what it found. |
+| `cover` | Replaces only the cover image with the one at `cover_url`; the song is copied to `output/repaired/` otherwise unchanged (no alignment, no romanisation). `cover_url` is mandatory here: without it the job is marked `needs_review`; a link that is not reachable or not an image fails the job. |
 | `other`, blank, or unknown | **Not run automatically.** Marked `needs_review` in the progress view and report instead - fix the category (or the folder) and `reset` to pick it up. |
 
 A folder with **no matching row** keeps the default behaviour (`REPAIR_MODE`,
@@ -120,6 +132,116 @@ detected via alignment quality), `sync` mode re-creates the song from its
 audio with UltraSinger. The log marks this with
 `Re-creating song from audio with UltraSinger`. Disable with
 `REPAIR_FALLBACK=0` (the job then fails instead).
+
+## Song end (`song_end.txt`)
+
+A music video may run on after the song - a closing scene, talking, credits
+music, applause. In `lyrics` mode the aligner would otherwise place the last
+lyric lines in there. A `song_end.txt` tells it where the song ends; nothing
+after that time is used for the lyrics (the audio and video themselves are
+not shortened).
+
+Put it next to the song's txt, in the same folder as `lyrics.txt`:
+
+```
+stack/input/Lord of the Lost - Six Feet Underground/Lord of the Lost - Six Feet Underground.txt
+stack/input/Lord of the Lost - Six Feet Underground/lyrics.txt
+stack/input/Lord of the Lost - Six Feet Underground/song_end.txt   <- 4:34.5
+```
+
+Format (UTF-8 plain text):
+
+* The first line that is neither empty nor starts with `#` is the end time.
+  Empty lines and `#` comment lines are ignored; anything after the time line
+  is ignored too.
+* The time is measured from the start of the song's audio file, the same
+  clock as the time display in USDX's editor or any audio player. Three forms
+  are accepted: seconds (`274.5`), minutes:seconds (`4:34.5`) and
+  hours:minutes:seconds (`0:04:34.5`). Seconds and minutes after a colon must
+  be below 60; a fraction uses a dot, not a comma.
+* Pick a time just after the last sung word, inside the pause before the
+  outro.
+
+```
+# the band keeps talking after the song
+4:34.5
+```
+
+Rules:
+
+* It is used in `lyrics` mode only (a `lyrics.txt`, a `lyrics` row in
+  `broken.csv`, or the online-lyrics step of a new song); `gap` and `sync`
+  mode ignore it.
+* It wins over the automatic outro detection of new songs (see
+  [new-songs.md](new-songs.md#what-happens-to-a-new-song)).
+* A time at or after the end of the audio means "no outro" - nothing is cut.
+* A line that is not a valid time is reported in the log
+  (`warning: song_end.txt: not a time: ...`) and the file is ignored; the
+  song is then aligned as if there were none.
+* The file is copied into the output folder together with the song, so a
+  later repair of that output uses it again.
+
+To fix a finished new song this way, copy its folder from `output/new/` to
+`input/`, add `song_end.txt` (and `lyrics.txt` - the one written next to the
+song is fine) and run the repair.
+
+## Anchors (`anchors.txt`)
+
+When the aligner drifts in some part of a song (an outro, a choir, a line
+sung differently than written), you can pin lyric lines to the time they
+are sung - typically the last three lines - and set the song end. The song
+is then aligned piece by piece between the anchors, so an error before an
+anchor can no longer push the lines after it out of place.
+
+Put `anchors.txt` next to the song's txt and `lyrics.txt`:
+
+```
+stack/input/Lord of the Lost - Six Feet Underground/lyrics.txt
+stack/input/Lord of the Lost - Six Feet Underground/anchors.txt
+```
+
+Format (UTF-8 plain text, one entry per line):
+
+```
+# anchors for Six Feet Underground - the last three lines and the song end
+4:12.0 | Deep down in the dark
+4:18.3 | I'm loving you six feet underground
+4:25.0 | Six feet underground
+end 4:34.5
+```
+
+* **Anchor line:** `<time> | <lyric line>`. The time is when the **first
+  word** of that line starts to be sung. The text after `|` is the line as
+  it is written in `lyrics.txt`; upper/lower case, punctuation and extra
+  spaces do not matter, but the words must be the same.
+* **End line:** `end <time>` - where the song ends; nothing after it is used
+  for the lyrics (same meaning as [`song_end.txt`](#song-end-song_endtxt), and
+  it wins over that file and over the automatic outro detection). Optional;
+  at most one, and it must come after the last anchor line.
+* **Times:** as in `song_end.txt` - seconds (`265.5`), minutes:seconds
+  (`4:25.5`) or hours:minutes:seconds (`0:04:25.5`), measured from the start
+  of the song's audio file. Anchor times must increase from line to line.
+* Empty lines and lines starting with `#` are ignored.
+* **Which occurrence:** anchors are matched from the end of the lyrics - the
+  last anchor line means the last line in `lyrics.txt` with that text, each
+  earlier anchor the last matching line before it. So with a repeated
+  chorus, the anchors mean the latest occurrences - what you want for "the
+  last three lines". Any number of anchors is allowed, anywhere in the song.
+
+Rules:
+
+* Used in `lyrics` mode only, like `song_end.txt`.
+* If a line of the file breaks the format, or an anchor text is not found in
+  `lyrics.txt` (in this order), the log says why
+  (`warning: anchors.txt line 3: ...` or `... lyric line not found ...`) and
+  the anchors are ignored - the song is aligned as if there were none. A
+  broken format also ignores the `end` line; an anchor text that is not found
+  keeps it.
+* Anchors at or after the song end are ignored.
+* The file is copied into the output folder together with the song.
+
+Getting the times: play the song in USDX's editor or any audio player and
+note when each of the last three lines starts, and where the singing ends.
 
 ## Tuning (rarely needed)
 

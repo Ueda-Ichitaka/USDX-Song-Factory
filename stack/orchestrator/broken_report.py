@@ -8,7 +8,7 @@ build_job_plan()/prepare_media_repair()), instead of always running the
 same blind full repair - so the category codes here MUST stay in sync
 with that project's app/broken_categories.py (CATEGORY_CHOICES):
 
-    gap, async, lyrics, video, audio, other
+    gap, async, lyrics, video, audio, cover, other
 
 `category` may legitimately be blank - karaoke-dashboard's BrokenReport
 model made the field nullable for reports created before it existed
@@ -22,13 +22,19 @@ a "lyrics" report; `language` (an ISO 639-1 code) is threaded through to
 repair.py's `--language`, the same "forced" input language.txt already
 respects (see src/modules/language_file.py) - a saved language.txt still
 wins over it; `cover_url` becomes the repaired song's cover (see
-orchestrator.py's apply_cover_url()).
+orchestrator.py's apply_cover_url()) and is mandatory for a "cover" report,
+which replaces nothing but the cover (prepare_cover_repair()).
+
+The optional `genre` and `trait` columns give the song's genres and traits
+(song_style.style_fields()), the same way as in song-requests.csv.
 """
 
 import csv
 import os
 
-CATEGORY_CODES = frozenset({"gap", "async", "lyrics", "video", "audio", "other"})
+import song_style
+
+CATEGORY_CODES = frozenset({"gap", "async", "lyrics", "video", "audio", "cover", "other"})
 
 
 def normalize_language_code(raw: str) -> str:
@@ -49,7 +55,8 @@ def normalize_category(raw: str) -> str:
 
 def parse_broken_csv(path: str) -> list:
     """Parse broken.csv into a list of dicts: {"band", "title", "category",
-    "description", "lyrics_url", "language", "cover_url"}. Column names are matched
+    "description", "lyrics_url", "language", "cover_url", "genres", "traits",
+    "style_unknown"}. Column names are matched
     case-insensitively against a few accepted spellings (the dashboard's
     own header is "band,song name,category,description,lyrics_url,
     language,cover_url") so a hand-edited file isn't overly fragile."""
@@ -85,5 +92,6 @@ def parse_broken_csv(path: str) -> list:
             "lyrics_url": lower.get("lyrics_url") or lower.get("lyrics link") or "",
             "language": normalize_language_code(lower.get("language")),
             "cover_url": lower.get("cover_url") or "",
+            **song_style.style_fields(lower),
         })
     return entries

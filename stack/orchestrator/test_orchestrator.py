@@ -81,6 +81,19 @@ orch.ULTRASINGER_CWD = orig_cwd
 check("next job on the same control is NOT auto-skipped",
       result2["status"] == "done")
 
+# a failing job's error names the reason from its log, not only the exit code
+fake_job3 = {"id": "new|https://example.com/net-down", "kind": "new",
+             "label": "net-down", "url": "https://example.com/net-down", "attempts": 1}
+orch.ULTRASINGER_CWD = os.getcwd()
+runner3 = orch.JobRunner(fake_job3, orch.Control())
+runner3.command = lambda: [sys.executable, "-c",
+                           "import sys; print('ERROR: [download] Network is unreachable'); sys.exit(1)"]
+result3 = runner3.run()
+orch.ULTRASINGER_CWD = orig_cwd
+check(f"a failed job's error carries the log's last error line (got {result3['error']!r})",
+      result3["status"] == "failed" and
+      result3["error"] == "exit code 1: [download] Network is unreachable")
+
 # --------------------------------------------------------------------------
 # parse_songs_file must tolerate '#' comment lines anywhere in songs.csv
 # --------------------------------------------------------------------------
@@ -325,6 +338,43 @@ os.makedirs(partial)
 moved2 = orch.quarantine_partial_output("new", before, qdir)
 check("a repeat quarantine of the same name gets a (1) suffix, not overwritten",
       moved2[0][1] == os.path.join(orch.FAILED_DIR, "new", "Partial Song (1)"))
+
+# a job remembers every folder its failed attempts left in FAILED_DIR and
+# removes them all once an attempt succeeds
+qjob = {"label": "Partial Song", "kind": "new", "quarantined_output": None}
+orch.track_quarantined(qjob, {"quarantined_outputs": [moved[0][1]]})
+orch.track_quarantined(qjob, {"quarantined_outputs": [moved2[0][1]]})
+check("track_quarantined: the folders of all failed attempts are remembered",
+      qjob["quarantined_outputs"] == [moved[0][1], moved2[0][1]])
+orch.track_quarantined(qjob, {"quarantined_outputs": []})
+check("track_quarantined: an attempt that left nothing changes nothing",
+      qjob["quarantined_outputs"] == [moved[0][1], moved2[0][1]])
+removed = orch.remove_quarantined_outputs(qjob)
+check("remove_quarantined_outputs: all remembered folders are deleted",
+      removed == [moved[0][1], moved2[0][1]]
+      and not os.path.exists(moved[0][1]) and not os.path.exists(moved2[0][1]))
+check("remove_quarantined_outputs: the job no longer points at them",
+      qjob["quarantined_outputs"] == [] and qjob["quarantined_output"] is None)
+
+# a job stored before the list existed only has the single path
+old_q = os.path.join(orch.FAILED_DIR, "new", "Old Song")
+os.makedirs(old_q)
+old_job = {"label": "Old Song", "kind": "new", "quarantined_output": old_q}
+orch.track_quarantined(old_job, {"quarantined_outputs": []})
+check("track_quarantined: a single stored path is taken into the list",
+      old_job["quarantined_outputs"] == [old_q])
+orch.remove_quarantined_outputs(old_job)
+check("remove_quarantined_outputs: that folder is deleted too",
+      not os.path.exists(old_q))
+
+# never delete anything outside FAILED_DIR, whatever the state file says
+outside = tempfile.mkdtemp(prefix="ultrasinger-not-quarantine-")
+gone = os.path.join(orch.FAILED_DIR, "new", "Already Gone")
+stray_job = {"label": "x", "kind": "new", "quarantined_output": None,
+             "quarantined_outputs": [outside, orch.FAILED_DIR, gone]}
+removed = orch.remove_quarantined_outputs(stray_job)
+check("remove_quarantined_outputs: a path outside FAILED_DIR is left alone",
+      os.path.isdir(outside) and os.path.isdir(orch.FAILED_DIR) and removed == [])
 
 # --------------------------------------------------------------------------
 # count_usdb_sourced(): how many completed new songs came from USDB
@@ -585,6 +635,56 @@ try:
           "--lyrics-url" not in fetch_call_no_url)
 finally:
     orch.subprocess.run = orig_subprocess_run1b
+
+# the official recording length (from the list's musicbrainz_id) goes to repair.py
+rec_calls = []
+rec_lookups = []
+orig_subprocess_rec = orch.subprocess.run
+orig_rec_seconds = orch.recording_length.recording_seconds
+
+
+def fake_subprocess_rec(cmd, **kwargs):
+    rec_calls.append(cmd)
+    if cmd[1] == orch.LYRICS_FETCH_PY:
+        with open(cmd[cmd.index("--out") + 1], "w", encoding="utf-8") as f:
+            f.write('{"source": "genius", "lines": [{"text": "hi", "start": null}]}')
+    return _FakeCompleted(0)
+
+
+orch.subprocess.run = fake_subprocess_rec
+orch.recording_length.recording_seconds = lambda mbid, title: (
+    rec_lookups.append((mbid, title)) or (279.226 if mbid == "rec-1" else None))
+try:
+    orch.run_lyrics_step({"id": "new|r1", "band": "Band", "title": "Six Feet Underground",
+                          "musicbrainz_id": "rec-1"}, lyrics_txt)
+    align_call = next(c for c in rec_calls if c[1] == orch.REPAIR_PY)
+    check("run_lyrics_step passes --recording-seconds from the job's musicbrainz_id",
+          "--recording-seconds" in align_call and
+          align_call[align_call.index("--recording-seconds") + 1] == "279.226" and
+          rec_lookups == [("rec-1", "Six Feet Underground")])
+    rec_calls.clear(); rec_lookups.clear()
+    orch.run_lyrics_step({"id": "new|r2", "band": "Band", "title": "Song",
+                          "musicbrainz_id": "unknown"}, lyrics_txt)
+    align_call = next(c for c in rec_calls if c[1] == orch.REPAIR_PY)
+    check("run_lyrics_step omits --recording-seconds when no length is found",
+          "--recording-seconds" not in align_call)
+    rec_calls.clear(); rec_lookups.clear()
+    orch.run_lyrics_step({"id": "new|r3", "band": "Band", "title": "Song"}, lyrics_txt)
+    check("run_lyrics_step does not look anything up without a musicbrainz_id",
+          rec_lookups == [])
+    align_call = next(c for c in rec_calls if c[1] == orch.REPAIR_PY)
+    check("run_lyrics_step omits --traits for a song without traits",
+          "--traits" not in align_call)
+    rec_calls.clear()
+    orch.run_lyrics_step({"id": "new|r4", "band": "Band", "title": "Song",
+                          "traits": ["choir", "operatic_vocals"]}, lyrics_txt)
+    align_call = next(c for c in rec_calls if c[1] == orch.REPAIR_PY)
+    check("run_lyrics_step passes the song's traits to repair.py",
+          "--traits" in align_call
+          and align_call[align_call.index("--traits") + 1] == "choir,operatic_vocals")
+finally:
+    orch.subprocess.run = orig_subprocess_rec
+    orch.recording_length.recording_seconds = orig_rec_seconds
 
 orig_subprocess_run2 = orch.subprocess.run
 lyrics_calls = []
@@ -1145,6 +1245,27 @@ runner_gen = orch.JobRunner({"id": "new|j2", "kind": "new", "url": "https://x",
                              "band": "B", "title": "T"})
 check("JobRunner.command falls back to ultrasinger when there's no usdb match",
       "repair.py" not in " ".join(runner_gen.command()))
+
+# the song's traits go to every repair.py call (song_style.py)
+_cmd_traits = orch.repair_command("/data/input/S", mode="gap",
+                                  traits=["choir", "harsh_vocals"])
+check("repair_command passes --traits comma-joined",
+      "--traits" in _cmd_traits
+      and _cmd_traits[_cmd_traits.index("--traits") + 1] == "choir,harsh_vocals")
+check("repair_command omits --traits without traits",
+      "--traits" not in orch.repair_command("/data/input/S", traits=[]))
+_runner_tr = orch.JobRunner({"id": "repair|S", "kind": "repair", "song_dir": "/data/input/S",
+                             "mode": "sync", "traits": ["operatic_vocals"]})
+_tr_cmd = _runner_tr.command()
+check("JobRunner.command passes a repair job's traits",
+      "--traits" in _tr_cmd and _tr_cmd[_tr_cmd.index("--traits") + 1] == "operatic_vocals")
+_runner_tr_usdb = orch.JobRunner({"id": "new|t", "kind": "new", "url": "https://x",
+                                  "band": "B", "title": "T", "traits": ["harsh_vocals"]})
+_runner_tr_usdb._usdb_match = {"staging_dir": "/data/work/t-usdb", "song_id": "1"}
+_tr_usdb_cmd = _runner_tr_usdb.command()
+check("JobRunner.command passes the traits to the gap pass of a USDB song",
+      "--traits" in _tr_usdb_cmd
+      and _tr_usdb_cmd[_tr_usdb_cmd.index("--traits") + 1] == "harsh_vocals")
 
 # --------------------------------------------------------------------------
 # read_ultrastar_tags() / primary_ultrastar_txt(): lightweight header-tag
@@ -2195,6 +2316,81 @@ try:
 except Exception as exc:  # noqa: BLE001
     check(f"parse_broken_csv: cover_url and extra cells (raised {exc!r})", False)
 
+# --------------------------------------------------------------------------
+# genre and trait columns (karaoke-dashboard, both files): several values
+# per cell, CSV-quoted; blank/default/none = no style; unknown values are
+# kept aside and listed in the report, never used
+# --------------------------------------------------------------------------
+
+_style_csv = os.path.join(TMP_DATA, "style-requests.csv")
+with open(_style_csv, "w", encoding="utf-8") as f:
+    f.write("band name,song name,youtube link,language,musicbrainz_id,lyrics_url,cover_url,duet,genre,trait\n"
+            'Arkona,"Goi, Rode, Goi!",https://yt/arkona,ru,,,,no,"metal,folk",'
+            '"harsh_vocals,loud_high_instruments"\n'
+            "Heart,Barracuda,https://yt/heart,en,,,,no,default,none\n"
+            "Eisenfunk,Majak,https://yt/eisen,de,,,,no,\"industrial,polka\",yodel\n")
+_style_rows = orch.parse_songs_file(_style_csv)
+check("parse_songs_file: genre and trait cells with several values",
+      _style_rows[0]["genres"] == ["folk", "metal"]
+      and _style_rows[0]["traits"] == ["harsh_vocals", "loud_high_instruments"]
+      and _style_rows[0]["style_unknown"] == [])
+check("parse_songs_file: default/none mean no style",
+      _style_rows[1]["genres"] == [] and _style_rows[1]["traits"] == [])
+check("parse_songs_file: unknown values are set aside",
+      _style_rows[2]["genres"] == ["industrial"] and _style_rows[2]["traits"] == []
+      and _style_rows[2]["style_unknown"] == ["genre:polka", "trait:yodel"])
+check("parse_songs_file: a file without the columns gives no style",
+      all(e["genres"] == [] and e["traits"] == [] for e in _dash))
+_plain_txt = os.path.join(TMP_DATA, "plain-style.txt")
+with open(_plain_txt, "w", encoding="utf-8") as f:
+    f.write("Band - Title - https://yt/plain\njust a title\n")
+check("parse_songs_file: plain-text lines give no style",
+      all(e["genres"] == [] and e["traits"] == [] and e["style_unknown"] == []
+          for e in orch.parse_songs_file(_plain_txt)))
+
+_style_broken = os.path.join(TMP_DATA, "style-broken.csv")
+with open(_style_broken, "w", encoding="utf-8") as f:
+    f.write("band,song name,category,description,lyrics_url,language,cover_url,genre,trait\n"
+            'Xandria,Nightfall,async,,,,,"symphonic,metal","operatic_vocals,choir"\n'
+            "Queen,I Want To Break Free,gap,,,,,,\n")
+_sb = _br.parse_broken_csv(_style_broken)
+check("parse_broken_csv: genre and trait cells",
+      _sb[0]["genres"] == ["metal", "symphonic"]
+      and _sb[0]["traits"] == ["choir", "operatic_vocals"])
+check("parse_broken_csv: blank cells give no style",
+      _sb[1]["genres"] == [] and _sb[1]["traits"] == [])
+
+_style_input = os.path.join(TMP_DATA, "style-input")
+_xandria_dir = os.path.join(_style_input, "Xandria - Nightfall")
+os.makedirs(_xandria_dir, exist_ok=True)
+with open(os.path.join(_xandria_dir, "Xandria - Nightfall.txt"), "w", encoding="utf-8") as f:
+    f.write("#ARTIST:Xandria\n#TITLE:Nightfall\n#BPM:300\n#GAP:1000\n: 0 4 5 Night\nE\n")
+_orig_songs, _orig_input, _orig_broken = orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV
+orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV = _style_csv, _style_input, _style_broken
+try:
+    _style_state = orch.State()
+    _sj = {j["id"]: j for j in orch.build_job_plan(_style_state)}
+    check("build_job_plan: a new job carries the row's genres and traits",
+          _sj["new|https://yt/arkona"]["genres"] == ["folk", "metal"]
+          and _sj["new|https://yt/arkona"]["traits"] == ["harsh_vocals", "loud_high_instruments"])
+    _xj = _sj.get("repair|Xandria - Nightfall", {})
+    check(f"build_job_plan: a repair job carries its report's genres and traits (got {_xj})",
+          _xj.get("genres") == ["metal", "symphonic"]
+          and _xj.get("traits") == ["choir", "operatic_vocals"])
+    check("build_job_plan: unknown values are kept on the job",
+          _sj["new|https://yt/eisen"]["style_unknown"] == ["genre:polka", "trait:yodel"])
+    _report = orch.render_report(_style_state.data)
+    check("render_report: unknown genre/trait values are listed with their song",
+          "Unknown genre or trait values" in _report
+          and "| Eisenfunk - Majak | genre:polka, trait:yodel |" in _report)
+finally:
+    orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV = _orig_songs, _orig_input, _orig_broken
+
+_no_style_state = orch.State()
+_no_style_state.data["jobs"]["x"] = {"id": "x", "kind": "new", "status": "pending", "label": "X"}
+check("render_report: no unknown values, no section",
+      "Unknown genre or trait values" not in orch.render_report(_no_style_state.data))
+
 # apply_cover_url(): the linked image becomes the song's cover
 _JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
@@ -2261,6 +2457,212 @@ try:
           not any(isinstance(c, tuple) for c in _calls))
 finally:
     orch.finalize_new_job_lyrics, orch.run_romanize_step, orch.apply_cover_url = _saved_fns
+
+# --------------------------------------------------------------------------
+# lyrics review: UltraSinger's own transcript (the txt before the lyrics step
+# replaces it) is compared with the final lyrics.txt
+# --------------------------------------------------------------------------
+
+check("parse_songs_file: the list's own language value is kept as language_raw",
+      [e["language_raw"] for e in orch.parse_songs_file(_lang_csv)] ==
+      ["mixed", "DE", "en", "German"])
+
+_rv_dir = os.path.join(TMP_DATA, "review", "Band - Song")
+os.makedirs(_rv_dir, exist_ok=True)
+_rv_txt = os.path.join(_rv_dir, "Band - Song.txt")
+_TRANSCRIBED = ("#TITLE:Song\n#ARTIST:Band\n#BPM:60\n#GAP:0\n"
+                ": 0 4 5 hear\x20\n: 4 4 5 our\x20\n: 8 4 5 prayer\x20\n- 12\n"
+                ": 12 4 5 odin\x20\n: 16 4 5 our\x20\n: 20 4 5 lord\x20\nE\n")
+check("transcript_words: words with start/end seconds from a song txt",
+      orch.transcript_words_from_text(_TRANSCRIBED)[:2] == [(0.0, 1.0, "hear"), (1.0, 2.0, "our")])
+
+_rv_calls = {}
+
+
+def _fake_lyrics_step(job, path, usdb_id=None):
+    # the lyrics step rewrites the txt and writes lyrics.txt
+    _rv_calls["txt_at_lyrics_step"] = open(path, encoding="utf-8").read()
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("#TITLE:Song\n#BPM:60\n#GAP:0\n: 0 4 5 replaced\x20\nE\n")
+    with open(os.path.join(os.path.dirname(path), "lyrics.txt"), "w", encoding="utf-8") as fh:
+        fh.write(_rv_calls.get("lyrics", "hear our prayer\nodin our lord\n"))
+    return _rv_calls.get("source", "online:genius")
+
+
+_saved_fns = (orch.finalize_new_job_lyrics, orch.run_romanize_step, orch.apply_cover_url)
+orch.finalize_new_job_lyrics = _fake_lyrics_step
+orch.run_romanize_step = lambda job, path: None
+orch.apply_cover_url = lambda path, url, fetch=None: True
+try:
+    with open(_rv_txt, "w", encoding="utf-8") as f:
+        f.write(_TRANSCRIBED)
+    _rv_job = {"kind": "new", "cover_url": "", "language_raw": "en"}
+    orch.finish_done_job(_rv_job, {"output_path": _rv_txt, "usdb_song_id": None})
+    check("finish_done_job: matching lyrics -> no review entry",
+          _rv_job.get("lyrics_review") is None)
+
+    with open(_rv_txt, "w", encoding="utf-8") as f:
+        f.write(_TRANSCRIBED)
+    _rv_calls["lyrics"] = ("hear our prayer\nodin our lord\n" +
+                           "".join(f"extra verse {w} never sung\n" for w in
+                                   ("alpha", "bravo", "candle", "dragon", "ember", "falcon")))
+    _rv_job2 = {"kind": "new", "cover_url": "", "language_raw": ""}
+    orch.finish_done_job(_rv_job2, {"output_path": _rv_txt, "usdb_song_id": None})
+    check(f"finish_done_job: lyrics with unsung lines -> review note (got {_rv_job2.get('lyrics_review')})",
+          (_rv_job2.get("lyrics_review") or {}).get("kind") == "review" and
+          "lines 3-8" in _rv_job2["lyrics_review"]["note"])
+
+    with open(_rv_txt, "w", encoding="utf-8") as f:
+        f.write(_TRANSCRIBED)
+    _rv_job3 = {"kind": "new", "cover_url": "", "language_raw": "Gaulish"}
+    orch.finish_done_job(_rv_job3, {"output_path": _rv_txt, "usdb_song_id": None})
+    check("finish_done_job: a language whisper cannot transcribe -> 'not checkable'",
+          (_rv_job3.get("lyrics_review") or {}).get("kind") == "not_checkable" and
+          "Gaulish" in _rv_job3["lyrics_review"]["note"])
+
+    with open(_rv_txt, "w", encoding="utf-8") as f:
+        f.write(_TRANSCRIBED)
+    _rv_calls["source"] = "transcribed"
+    _rv_job4 = {"kind": "new", "cover_url": "", "language_raw": "en"}
+    orch.finish_done_job(_rv_job4, {"output_path": _rv_txt, "usdb_song_id": None})
+    check("finish_done_job: no online lyrics (the lyrics ARE the transcript) -> no review",
+          _rv_job4.get("lyrics_review") is None)
+    check("finish_done_job: the transcript is read before the lyrics step replaces it",
+          "hear" in _rv_calls["txt_at_lyrics_step"])
+    _rv_calls["source"] = "usdb:1"
+    _rv_job5 = {"kind": "new", "cover_url": "", "language_raw": "Gaulish"}
+    orch.finish_done_job(_rv_job5, {"output_path": _rv_txt, "usdb_song_id": "1"})
+    check("finish_done_job: USDB songs are not reviewed",
+          _rv_job5.get("lyrics_review") is None)
+finally:
+    orch.finalize_new_job_lyrics, orch.run_romanize_step, orch.apply_cover_url = _saved_fns
+
+_rv_state = {"jobs": {
+    "new|a": {"kind": "new", "status": "done", "label": "Arkona - Goi, Rode, Goi!",
+              "output_path": "/o/a/x.txt", "duration_s": 1, "lyrics_source": "online:genius",
+              "lyrics_review": {"kind": "review", "note": "lyrics may not match the audio: 39%"}},
+    "new|b": {"kind": "new", "status": "done", "label": "Eluveitie - Omnos",
+              "output_path": "/o/b/x.txt", "duration_s": 1, "lyrics_source": "online:genius",
+              "lyrics_review": {"kind": "not_checkable", "note": "whisper cannot transcribe the language 'Gaulish'"}},
+    "new|c": {"kind": "new", "status": "done", "label": "Hannes Wader - Bella ciao",
+              "output_path": "/o/c/x.txt", "duration_s": 1, "lyrics_source": "online:genius"},
+}}
+_rv_report = orch.render_report(_rv_state)
+check("render_report: a 'Lyrics to review' section lists flagged songs with their note",
+      "## Lyrics to review (1)" in _rv_report and
+      "| Arkona - Goi, Rode, Goi! | lyrics may not match the audio: 39% |" in _rv_report)
+check("render_report: songs whose lyrics cannot be checked are listed separately",
+      "Lyrics not checkable (1)" in _rv_report and
+      "| Eluveitie - Omnos | whisper cannot transcribe the language 'Gaulish' |" in _rv_report)
+check("render_report: unflagged songs do not appear in the review sections",
+      _rv_report.count("Bella ciao") == 1)
+
+# --------------------------------------------------------------------------
+# gap check verdict: read from repair.py's REPAIR_DONE line, listed in the
+# report when the original #GAP was kept
+# --------------------------------------------------------------------------
+
+_gc_log = ("[UltraSinger] Summary ...\n"
+           "REPAIR_DONE output=/data/output/new/Cypecore - Identity/song.txt "
+           "gap_old_ms=31920 gap_new_ms=31920 gap_check=kept gap_spread_s=6.50 "
+           "aligned=12/14 repitched=0 mode=gap\n")
+check(f"gap_check_from_log: a kept start with its spread (got {orch.gap_check_from_log(_gc_log)})",
+      orch.gap_check_from_log(_gc_log) ==
+      {"kept": True, "spread_s": 6.5, "gap_old_ms": 31920, "gap_new_ms": 31920})
+_gc_moved = ("REPAIR_DONE output=/data/x.txt gap_old_ms=36042 gap_new_ms=32020 "
+             "gap_check=moved gap_spread_s=0.10 aligned=5/5 repitched=0 mode=gap\n")
+check("gap_check_from_log: a moved start",
+      orch.gap_check_from_log(_gc_moved) ==
+      {"kept": False, "spread_s": 0.1, "gap_old_ms": 36042, "gap_new_ms": 32020})
+_gc_few = ("REPAIR_DONE output=/data/x.txt gap_old_ms=1000 gap_new_ms=1000 "
+           "gap_check=kept gap_spread_s=none aligned=1/5 repitched=0 mode=gap\n")
+check("gap_check_from_log: too few words -> spread None",
+      orch.gap_check_from_log(_gc_few)["spread_s"] is None)
+check("gap_check_from_log: a log without a gap check gives None",
+      orch.gap_check_from_log("REPAIR_DONE output=/data/x.txt mode=lyrics aligned=5/5 "
+                              "lyrics_source=genius\n") is None)
+# repair.py writes the song file's #GAP as read: a float ("20834.0")
+_gc_float = ("REPAIR_DONE output=/data/x.txt gap_old_ms=20834.0 gap_new_ms=20706 "
+             "gap_check=moved gap_spread_s=0.22 aligned=255/255 repitched=0 mode=gap\n")
+try:
+    _gcf = orch.gap_check_from_log(_gc_float)
+except ValueError as exc:
+    _gcf = exc
+check(f"gap_check_from_log: a #GAP written as float is read (got {_gcf!r})",
+      isinstance(_gcf, dict) and _gcf["gap_old_ms"] == 20834 and _gcf["gap_new_ms"] == 20706)
+check("error_summary: a song file that does not fit its audio gives the reason",
+      "does not match the song file" in (orch.error_summary(
+          "[UltraSinger] audio does not match the song file: no word of the first lines "
+          "found near #GAP in a.mp3; b.mp4 seems to fit (alignment score 0.73, 70% of "
+          "the first words agree) - set #MP3/#VIDEO to it by hand\n") or ""))
+
+_gc_state = {"jobs": {
+    "new|a": {"kind": "new", "status": "done", "label": "Cypecore - Identity",
+              "output_path": "/o/a/x.txt", "duration_s": 1,
+              "gap_check": {"kept": True, "spread_s": 6.5, "gap_old_ms": 31920,
+                            "gap_new_ms": 31920}},
+    "repair|b": {"kind": "repair", "status": "done", "label": "Heart - Barracuda",
+                 "output_path": "/o/b/x.txt", "duration_s": 1,
+                 "gap_check": {"kept": False, "spread_s": 0.1, "gap_old_ms": 28000,
+                               "gap_new_ms": 28100}},
+}}
+_gc_report = orch.render_report(_gc_state)
+check("render_report: songs whose original start was kept are listed with the spread",
+      "## Start kept by the gap check (1)" in _gc_report and
+      "| Cypecore - Identity | 31920 | 6.50 s |" in _gc_report)
+check("render_report: a moved start is not listed there",
+      "| Heart - Barracuda | 28000" not in _gc_report)
+
+# --------------------------------------------------------------------------
+# error_summary(): the reason behind "exit code 1", taken from the job's log
+# --------------------------------------------------------------------------
+
+_YTDLP_LOG = """[youtube] wt8x7TB56ec: Downloading webpage
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.12/site-packages/yt_dlp/YoutubeDL.py", line 1103, in trouble
+    raise DownloadError(message, exc_info)
+yt_dlp.utils.DownloadError: ERROR: [download] Got error: HTTPSConnection(host='rr1---sn-4g5ednd7.googlevideo.com', port=443): Failed to establish a new connection: [Errno 101] Network is unreachable
+"""
+_summary = orch.error_summary(_YTDLP_LOG)
+check(f"error_summary: the last error line of a traceback, without the exception prefix (got {_summary!r})",
+      _summary is not None and _summary.endswith("Network is unreachable")
+      and _summary.startswith("[download] Got error"))
+_REPAIR_LOG = ("/usr/lib/x.py:300: SyntaxWarning: invalid escape sequence\n"
+               "\x1b[92m[UltraSinger]\x1b[0m using language: \x1b[94men\x1b[0m\n"
+               "\x1b[92m[UltraSinger]\x1b[0m \x1b[91mcould not align the first lines - aborting\x1b[0m\n")
+check(f"error_summary: colour codes and the [UltraSinger] prefix are removed (got {orch.error_summary(_REPAIR_LOG)!r})",
+      orch.error_summary(_REPAIR_LOG) == "could not align the first lines - aborting")
+check("error_summary: warnings are not errors",
+      orch.error_summary("x.py:1: SyntaxWarning: invalid escape\nall fine\n") is None)
+check("error_summary: an empty log gives None", orch.error_summary("") is None)
+_long = "ERROR: " + "a" * 300 + " the real cause"
+_long_summary = orch.error_summary(_long)
+check(f"error_summary: a long line is shortened but keeps its end (len {len(_long_summary)})",
+      len(_long_summary) <= 200 and _long_summary.endswith("the real cause") and " ... " in _long_summary)
+# yt-dlp puts a carriage return inside its error line (progress display)
+_cr = orch.error_summary("    raise DownloadError(message, exc_info)\n"
+                         "yt_dlp.utils.DownloadError: ERROR: \r[download] Got error: "
+                         "Failed to establish a new connection: [Errno 101] Network is unreachable\n")
+check(f"error_summary: a carriage return inside the error line does not split it (got {_cr!r})",
+      _cr == "[download] Got error: Failed to establish a new connection: "
+             "[Errno 101] Network is unreachable")
+# ... and a log read as text arrives with that carriage return as a line break
+_split = orch.error_summary("    raise DownloadError(message, exc_info)\n"
+                            "yt_dlp.utils.DownloadError: ERROR: \n[download] Got error: "
+                            "Failed to establish a new connection: [Errno 101] Network is unreachable\n")
+check(f"error_summary: the error text on its own line is still found (got {_split!r})",
+      _split == "[download] Got error: Failed to establish a new connection: "
+                "[Errno 101] Network is unreachable")
+check("error_summary: the LAST error line wins",
+      orch.error_summary("ERROR: first\nmore output\nError: second\n") == "second")
+
+_err_state = {"jobs": {"new|e": {
+    "kind": "new", "status": "failed", "label": "Band - Song", "attempts": 1,
+    "error": "exit code 1: [download] Got error: HTTPSConnection(host='rr1---sn-4g5ednd7.googlevideo.com', "
+             "port=443): Failed to establish a new connection: [Errno 101] Network is unreachable",
+    "quarantined_output": None}}}
+check("render_report: the failed-jobs table shows the whole reason, not a cut-off one",
+      "Network is unreachable" in orch.render_report(_err_state))
 
 # prepare_usdb_job(): an existing #AUDIO tag is pointed at the audio too, and
 # a failed audio extraction falls back to normal generation
@@ -2360,6 +2762,104 @@ finally:
     os.environ.update(_saved_env)
 
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# repair category "cover": only the cover image is replaced, from the
+# report's cover_url (mandatory for this category); no audio processing
+# --------------------------------------------------------------------------
+
+_cv_input = os.path.join(TMP_DATA, "cover-repair-input", "Band - Cover Song")
+os.makedirs(_cv_input, exist_ok=True)
+_cv_txt = "#TITLE:Cover Song\n#ARTIST:Band\n#COVER:old.jpg\n#MP3:a.mp3\n#BPM:100\n: 0 1 0 Hi\nE\n"
+with open(os.path.join(_cv_input, "Band - Cover Song.txt"), "w", encoding="utf-8") as f:
+    f.write(_cv_txt)
+with open(os.path.join(_cv_input, "a.mp3"), "w", encoding="utf-8") as f:
+    f.write("audio")
+_saved_repaired, _saved_fetch = orch.REPAIRED_DIR, orch._fetch_url_bytes
+orch.REPAIRED_DIR = os.path.join(TMP_DATA, "cover-repair-out")
+_cv_out = os.path.join(orch.REPAIRED_DIR, "Band - Cover Song")
+_cv_fetches = []
+try:
+    orch._fetch_url_bytes = lambda url: _cv_fetches.append(url) or _JPEG
+    _cv_job = {"kind": "repair", "label": "Band - Cover Song", "song_dir": _cv_input,
+               "mode": "cover", "category": "cover", "cover_url": "https://img/right.jpg"}
+    _cv = orch.prepare_cover_repair(_cv_job)
+    _cv_new_txt = os.path.join(_cv_out, "Band - Cover Song.txt")
+    check(f"prepare_cover_repair: done, output is the copied song file (got {_cv})",
+          _cv["status"] == "done" and _cv["output_path"] == _cv_new_txt)
+    _cv_content = open(_cv_new_txt, encoding="utf-8").read()
+    check("prepare_cover_repair: the copy has the new cover and #COVER/#COVERURL",
+          "#COVER:Band - Cover Song [CO].jpg" in _cv_content
+          and "#COVERURL:https://img/right.jpg" in _cv_content
+          and os.path.isfile(os.path.join(_cv_out, "Band - Cover Song [CO].jpg")))
+    check("prepare_cover_repair: the other files are copied, notes untouched",
+          os.path.isfile(os.path.join(_cv_out, "a.mp3")) and ": 0 1 0 Hi" in _cv_content)
+    check(f"prepare_cover_repair: the copy gets the format version of new songs "
+          f"(got {_cv_content[:40]!r})",
+          _cv_content.startswith(f"#VERSION:{orch.song_header.FORMAT_VERSION}\n"))
+    check("prepare_cover_repair: the input folder is not changed",
+          open(os.path.join(_cv_input, "Band - Cover Song.txt"), encoding="utf-8").read() == _cv_txt
+          and sorted(os.listdir(_cv_input)) == ["Band - Cover Song.txt", "a.mp3"])
+
+    shutil.rmtree(orch.REPAIRED_DIR)
+    _cv = orch.prepare_cover_repair(dict(_cv_job, cover_url=""))
+    check(f"prepare_cover_repair: no cover_url -> needs_review, nothing written (got {_cv})",
+          _cv["status"] == "needs_review" and "cover_url" in _cv["error"]
+          and not os.path.exists(_cv_out))
+
+    orch._fetch_url_bytes = lambda url: b"<html>not an image</html>"
+    _cv = orch.prepare_cover_repair(_cv_job)
+    check(f"prepare_cover_repair: a link that is not an image -> failed, no output left (got {_cv})",
+          _cv["status"] == "failed" and "https://img/right.jpg" in _cv["error"]
+          and not os.path.exists(_cv_out))
+
+    # the whole job: no subprocess, done, and the finishing step leaves it alone
+    _cv_fetches.clear()
+    orch._fetch_url_bytes = lambda url: _cv_fetches.append(url) or _JPEG
+    _cv_result = orch.JobRunner(dict(_cv_job, id="repair|Band - Cover Song", attempts=1)).run()
+    check(f"JobRunner: a cover job is done without running repair.py (got {_cv_result['status']})",
+          _cv_result["status"] == "done" and _cv_result["output_path"] == _cv_new_txt
+          and _cv_result["repair_mode_result"] == "cover")
+    _cv_calls = []
+    _saved_rom = orch.run_romanize_step
+    orch.run_romanize_step = lambda job, path: _cv_calls.append("romanize")
+    try:
+        orch.finish_done_job(_cv_job, _cv_result)
+    finally:
+        orch.run_romanize_step = _saved_rom
+    check(f"finish_done_job: a cover job gets no romanisation and no second download "
+          f"(got {_cv_calls}, {len(_cv_fetches)} download(s))",
+          _cv_calls == [] and len(_cv_fetches) == 1)
+finally:
+    orch.REPAIRED_DIR, orch._fetch_url_bytes = _saved_repaired, _saved_fetch
+
+# build_job_plan(): the "cover" category becomes mode "cover"
+check("broken_report: 'cover' is a known category",
+      orch.broken_report.normalize_category("Cover") == "cover")
+check("repair_mode_for: cover -> cover, lyrics.txt still wins",
+      orch.repair_mode_for("cover", None) == "cover"
+      and orch.repair_mode_for("cover", "/x/lyrics.txt") == "lyrics"
+      and orch.repair_mode_for("gap", None) == "gap"
+      and orch.repair_mode_for("async", None) == "sync"
+      and orch.repair_mode_for("video", None) == "media"
+      and orch.repair_mode_for("", None) == orch.REPAIR_MODE)
+
+# scan_repair_jobs(): a folder of lyrics files under input/ (pointed at by
+# lyrics_url) is not a song folder
+_scan_dir = tempfile.mkdtemp()
+try:
+    os.makedirs(os.path.join(_scan_dir, "lyrics"))
+    with open(os.path.join(_scan_dir, "lyrics", "Band - Song.txt"), "w",
+              encoding="utf-8") as f:
+        f.write("Mikroelektronik\nTechnik, Chemie, Atomkraft, Physik\n")
+    _song = os.path.join(_scan_dir, "Band - Other")
+    os.makedirs(_song)
+    with open(os.path.join(_song, "Band - Other.txt"), "w", encoding="utf-8") as f:
+        f.write("#TITLE:Other\n#ARTIST:Band\n#BPM:300\n: 0 4 5 La\nE\n")
+    check("scan_repair_jobs skips a folder of plain lyrics files",
+          orch.scan_repair_jobs(_scan_dir) == [_song])
+finally:
+    shutil.rmtree(_scan_dir)
 
 print()
 if failures:

@@ -1,8 +1,17 @@
-"""Hyphenation module"""
+"""Hyphenation module
 
+About me: splits the words of a song into syllables, so every syllable
+becomes its own note. Uses pyphen, whose dictionaries are installed with
+the package (no download while a song is made), plus the Finnish
+dictionary shipped in dictionaries/ (pyphen has none). Song-list and
+whisper language codes are mapped to a dictionary by language_check();
+a language without a dictionary gives no hyphenation, never an error.
+"""
+
+import os
 import string
 
-from hyphen import Hyphenator, dictools
+import pyphen
 from tqdm import tqdm
 
 from modules.Speech_Recognition.TranscribedData import TranscribedData
@@ -11,41 +20,33 @@ from modules.console_colors import (
     blue_highlighted, red_highlighted,
 )
 
+# dictionaries shipped next to this module, by language code
+SHIPPED_DICTIONARIES = {
+    "fi": os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "dictionaries", "hyph_fi.dic"),
+}
+# language codes whose pyphen dictionary has another name ("no" is
+# Norwegian in whisper and the song list, pyphen has Bokmaal "nb")
+LANGUAGE_ALIASES = {"no": "nb"}
+
+
 def language_check(language="en") -> str | None:
-    """Check if language is supported"""
-
-    lang_region = None
-    installed = dictools.list_installed()
-    installed_region_keys = [i for i in installed if i.startswith(language) and "_" in i]
-    try:
-        # Try to find installed language with region prediction
-        lang_region = next(i for i in installed_region_keys if i == f"{language}_{language.upper()}")
-    except StopIteration:
-        if installed_region_keys:
-            # Take first installed region language
-            lang_region = installed_region_keys[0]
-        else:
-            # Take downloadable language key
-            downloadable_key = [i for i in dictools.LANGUAGES if i.startswith(language)]
-            downloadable_folder_key = [i for i in downloadable_key if i == language]
-            if downloadable_folder_key:
-                lang_region = downloadable_key[0]
-            else:
-                try:
-                    # Try to find downloadable language with region prediction
-                    lang_region = next(i for i in downloadable_key if i == f"{language}_{language.upper()}")
-                except StopIteration:
-                    if downloadable_key:
-                        # Take first installed region language
-                        lang_region = downloadable_key[0]
-
-    if lang_region is None:
+    """The dictionary for a language code ("de", "fr_FR", "no", ...), or
+    None when there is none."""
+    if not language:
+        return None
+    language = LANGUAGE_ALIASES.get(language, language)
+    if language in SHIPPED_DICTIONARIES:
+        key = language
+    else:
+        key = pyphen.language_fallback(language)
+    if key is None:
         return None
 
     print(
-        f"{ULTRASINGER_HEAD} Hyphenate using language code: {blue_highlighted(lang_region)}"
+        f"{ULTRASINGER_HEAD} Hyphenate using language code: {blue_highlighted(key)}"
     )
-    return lang_region
+    return key
 
 
 def contains_punctuation(word: str) -> bool:
@@ -99,13 +100,14 @@ def __insert_removed_symbols(separated_array, removed_indices, symbols):
     return result
 
 
-def __create_hyphenator(lang_region: str) -> Hyphenator:
-    """Create hyphenator"""
-    hyphenator = Hyphenator(lang_region)
-    return hyphenator
+def __create_hyphenator(lang_region: str) -> pyphen.Pyphen:
+    """Create hyphenator for a key from language_check()"""
+    if lang_region in SHIPPED_DICTIONARIES:
+        return pyphen.Pyphen(filename=SHIPPED_DICTIONARIES[lang_region])
+    return pyphen.Pyphen(lang=lang_region)
 
 
-def hyphenation(word: str, hyphenator: Hyphenator) -> list[str] | None:
+def hyphenation(word: str, hyphenator: pyphen.Pyphen) -> list[str] | None:
     """Hyphenate word"""
 
     cleaned_string, removed_indices, removed_symbols = __clean_word(word)
@@ -114,7 +116,8 @@ def hyphenation(word: str, hyphenator: Hyphenator) -> list[str] | None:
     if len(cleaned_string) > 100:
         return None
 
-    syllabus = hyphenator.syllables(cleaned_string)
+    cuts = [0] + list(hyphenator.positions(cleaned_string)) + [len(cleaned_string)]
+    syllabus = [cleaned_string[a:b] for a, b in zip(cuts, cuts[1:])]
 
     length = len(syllabus)
     if length > 1:

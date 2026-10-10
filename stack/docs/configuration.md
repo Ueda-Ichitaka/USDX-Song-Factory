@@ -26,9 +26,15 @@ fine. Changes take effect at the next `docker compose up`/`run`.
 | `FAILED_DIR` | `/data/output/failed` | where a failed job's partial output goes |
 | `MAX_ATTEMPTS` | `3` | attempts per song before it stays failed |
 | `JOB_TIMEOUT_MIN` | `90` | hard timeout per song in minutes |
+| `MUSICBRAINZ_TIMEOUT_S` | `60` | seconds a MusicBrainz or Cover Art Archive connection may stay silent before the request fails and is retried |
 | `REPAIR_MODE` | `sync` | default repair mode, `gap` or `sync` ([repairs.md](repairs.md)) |
+| `GAP_MAX_SPREAD_S` | `0.3` | gap check (USDB songs, `gap` repairs, video/audio repairs): a new `#GAP` is used only when the start values of the first words agree within this many seconds (90th minus 10th percentile); otherwise the original stays |
 | `LYRICS_ENABLED` | `1` | `0` disables the online-lyrics step for new songs |
+| `LRCLIB_MAX_WAIT_S` | `10` | an lrclib.net `lyrics_url`: when lrclib.net is busy (429/503) and asks to wait at most this many seconds, the stack waits once and asks again; a longer wait means no lyrics from the link |
 | `ROMANIZE` | `1` | `0` disables lyrics romanization |
+| `LYRICS_REVIEW_MIN_HEARD` | `0.6` | lyrics review: flag a new song when less than this share of its lyric words is heard in the vocals (see [new-songs.md](new-songs.md#lyrics-review)) |
+| `LYRICS_REVIEW_MAX_UNHEARD_RUN` | `5` | lyrics review: flag a new song when this many lyric lines in a row are not heard |
+| `ROMANIZE_STYLE` | `scientific` | how Russian Cyrillic is written in Latin letters: `scientific` (exact, GOST 7.79 B: `Rusal'i`, `lesny'h`, `sedmiczu`, `shhuka`) or `readable` (karaoke style: `Rusali`, `lesnykh`, `sedmitsu`, `shchuka`). Ukrainian always uses `scientific`. Applies to songs romanized after the change. |
 | `USDB_MIN_MATCH_SCORE` | `0.90` | minimum artist+title similarity (0-1) to accept a USDB match |
 | `USDB_CATALOG_TTL_HOURS` | `24` | how long the local animux.de catalog cache is reused |
 | `BROKEN_MATCH_MIN_SCORE` | `0.85` | minimum #ARTIST/#TITLE similarity (0-1) to attach a `broken.csv` row to a repair folder |
@@ -51,14 +57,19 @@ them are variables.
 | `MAX_ALIGNED_WORD_SECONDS` | `4.0` | longest duration an aligned word may get |
 | `LYRICS_LINE_OUTLIER_GAP_S` | `3.0` | a word further than this from the rest of its line is placed back next to it |
 | `WORD_END_EXTEND_DROP_DB` | `6.0` | word ends follow a held note while the vocals stay within this many dB of the word's level |
+| `LYRICS_END_SKIP_PENALTY` | `4.0` | lyrics at the end that are never sung (a video that fades out before the lyrics end) are left out; higher = more is placed anyway, `0` = always place every word |
+| `LOUD_INSTRUMENTS_WORD_END_DROP_DB` | `9.0` | the same, for songs with the trait `loud_high_instruments` |
 | `WORD_END_EXTEND_MAX_S` | `3.0` | maximum extension of a word end |
 | `WORD_START_LEAD_S` | `0.04` | word starts are moved this much earlier |
 | `LYRICS_MAX_LINE_CHARS` | `60` | longer lines are split at a word boundary |
 | `LYRICS_LINE_BREAK_PAUSE_S` | `2.5` | a pause this long inside a line starts a new line |
-| `PITCH_MIN_WINDOW_S` | `0.4` | a note's pitch is picked from at least this much audio around it |
+| `PITCH_MIN_WINDOW_S` | `0.2` | a note's pitch is picked from at least this much audio around it |
+| `PITCH_READ_DELAY_S` | `0.1` | a note's pitch is read this much later than the note (generated notes sit before the singing, as in hand-made files) |
+| `TILDE_PENALTY` | `40` | how clearly a held syllable must change pitch before it gets a `~` note; higher = fewer `~` notes |
+| `HARSH_MAX_DISTANCE` | `3` | songs with the trait `harsh_vocals`: an unsure note ends at most this many semitones from the melody around it |
+| `HARSH_UNSURE_BELOW` | `0.3` | the same: a note counts as unsure below this share of confident pitch frames |
 | `PITCH_FOLD_TOLERANCE` | `7` | a note further (semitones) from its neighbours moves by octaves towards them |
 | `PITCH_SONG_TOLERANCE` | `12` | a note further (semitones) from the song's median moves by octaves towards it |
-| `PITCH_UNSURE_MIN_FRACTION` | `0.3` | notes with fewer confident pitch frames take the local melody level |
 
 ## Resource budget and model choice
 

@@ -175,6 +175,59 @@ try:
 finally:
     _sp.run = _orig_run
 
+# recreate_song(): the result is the re-created song file, wherever
+# UltraSinger put it - a folder left in the work dir by an earlier run makes
+# UltraSinger write to "<name> (1)", and the output folder already holds
+# language.txt (a .txt that is not a song)
+
+_SONG_TXT = "#ARTIST:moe\n#TITLE:x\n#BPM:300\n#GAP:0\n: 0 4 0 la \nE\n"
+
+
+def _fake_ultrasinger(make_song):
+    def run(cmd, **kwargs):
+        us_out = cmd[cmd.index("-o") + 1]
+        target = os.path.join(us_out, "moe - x")
+        if os.path.exists(target):
+            target += " (1)"
+        os.makedirs(target)
+        if make_song:
+            with open(os.path.join(target, "moe - x.txt"), "w", encoding="utf-8") as f:
+                f.write(_SONG_TXT)
+        return _FakeCompleted()
+    return run
+
+
+def _recreate_case(make_song, stale_folder):
+    song_dir = os.path.join(tempfile.mkdtemp(prefix="recreate-in-"), "moe - x")
+    os.makedirs(song_dir)
+    audio = os.path.join(song_dir, "moe - x.mp3")
+    with open(audio, "w", encoding="utf-8") as f:
+        f.write("x")
+    out_dir = tempfile.mkdtemp(prefix="recreate-out-")
+    os.makedirs(os.path.join(out_dir, "moe - x"))
+    with open(os.path.join(out_dir, "moe - x", "language.txt"), "w", encoding="utf-8") as f:
+        f.write("en\n")
+    work_dir = tempfile.mkdtemp(prefix="recreate-work-")
+    if stale_folder:
+        os.makedirs(os.path.join(work_dir, "recreate_output", "moe - x"))
+    _sp.run = _fake_ultrasinger(make_song)
+    try:
+        return repair.recreate_song(song_dir, out_dir, work_dir, audio, language="en"), out_dir
+    finally:
+        _sp.run = _orig_run
+
+
+_expected = lambda out_dir: os.path.join(out_dir, "moe - x", "moe - x.txt")
+_got, _out = _recreate_case(make_song=True, stale_folder=False)
+check(f"recreate_song returns the song file, not language.txt (got {_got!r})",
+      _got == _expected(_out) and os.path.isfile(_got))
+_got, _out = _recreate_case(make_song=True, stale_folder=True)
+check(f"recreate_song finds the song despite a folder left by an earlier run (got {_got!r})",
+      _got == _expected(_out) and os.path.isfile(_got))
+_got, _out = _recreate_case(make_song=False, stale_folder=False)
+check(f"recreate_song fails when no song file was created (got {_got!r})",
+      _got is None)
+
 # --------------------------------------------------------------------------
 # locate_audio(): extracting audio from a #VIDEO-only song whose audio
 # track is Opus (yt-dlp's bestaudio for many YouTube videos, remuxed as-is
@@ -504,6 +557,62 @@ check("clamp_beat_to_max: a note well within max_beat is untouched",
       repair.clamp_beat_to_max(10, 5, None, 100) == (10, 5, 15))
 
 # --------------------------------------------------------------------------
+# set_header_tags(): a header tag is replaced, or added when the song file
+# has none (Mein Herz erkennt dich immer has no #GAP line: the gap repair
+# reported -4332 ms, but the file kept no #GAP at all)
+# --------------------------------------------------------------------------
+
+check("set_header_tags: a missing tag is added at the end of the header",
+      repair.set_header_tags(["#TITLE:a", "#BPM:130"], {"GAP": "1000"})
+      == ["#TITLE:a", "#BPM:130", "#GAP:1000"])
+check("set_header_tags: an existing tag is replaced in place",
+      repair.set_header_tags(["#TITLE:a", "#GAP:5", "#BPM:130"], {"GAP": "1000"})
+      == ["#TITLE:a", "#GAP:1000", "#BPM:130"])
+check("set_header_tags: tag names match without regard to case",
+      repair.set_header_tags(["#gap:5"], {"GAP": "7"}) == ["#GAP:7"])
+check("set_header_tags: several tags, others untouched",
+      repair.set_header_tags(["#TITLE:a", "#MP3:old.mp3"], {"MP3": "new.mp3", "VIDEO": "new.mp4"})
+      == ["#TITLE:a", "#MP3:new.mp3", "#VIDEO:new.mp4"])
+check("set_header_tags: a tag that only starts like another is not touched",
+      repair.set_header_tags(["#GAPLESS:1"], {"GAP": "2"}) == ["#GAPLESS:1", "#GAP:2"])
+
+
+def _song_without_gap():
+    root = tempfile.mkdtemp(prefix="nogap-")
+    song_dir = os.path.join(root, "A - B")
+    os.makedirs(song_dir)
+    with open(os.path.join(song_dir, "A - B.txt"), "w", encoding="utf-8") as f:
+        f.write("#TITLE:B\n#ARTIST:A\n#MP3:a.mp3\n#BPM:300\n: 0 4 5 La\n- 6\n: 8 4 5 la\nE\n")
+    with open(os.path.join(song_dir, "a.mp3"), "wb") as f:
+        f.write(b"x")
+    return song_dir, tempfile.mkdtemp(prefix="nogap-out-")
+
+
+_ng_dir, _ng_out = _song_without_gap()
+_ng_path = repair.write_repaired(repair.Txt(os.path.join(_ng_dir, "A - B.txt")), _ng_dir, _ng_out,
+                                 gap_ms=1234, note_times=None, pitches=None)
+_ng_text = open(_ng_path, encoding="utf-8").read()
+check(f"write_repaired: a song without #GAP gets the new #GAP line (got {_ng_text!r})",
+      "#GAP:1234\n" in _ng_text and _ng_text.index("#GAP:1234") < _ng_text.index(": 0 4 5 La"))
+
+# --------------------------------------------------------------------------
+# a repaired song gets the same format version as a new song
+# (song_header.py; the header rules themselves are tested in
+# test_song_header.py)
+# --------------------------------------------------------------------------
+
+from Settings import Settings  # noqa: E402
+
+_v = repair.FORMAT_VERSION
+check(f"FORMAT_VERSION is the version UltraSinger writes into new songs "
+      f"(got {_v!r}, Settings has {Settings.format_version.value!r})",
+      _v == Settings.format_version.value)
+
+_ng_version = _ng_text.splitlines()
+check(f"write_repaired: the repaired song is versioned (got {_ng_version[:5]!r})",
+      _ng_version[0] == f"#VERSION:{_v}" and "#AUDIO:a.mp3" in _ng_version)
+
+# --------------------------------------------------------------------------
 # resolve_language(): must persist <out_dir>/<song_name>/language.txt (the
 # OUTPUT folder - repair.py never writes into the original input song_dir,
 # see write_repaired()/write_lyrics_result()'s identical out_song_dir
@@ -566,6 +675,315 @@ with tempfile.TemporaryDirectory() as _lang_root2:
           f"(got {saved!r})", saved == "fr")
 
 repair.detect_language = _orig_detect_language
+
+# --------------------------------------------------------------------------
+# decide_gap(): the gap check accepts a new start only when the per-word
+# values agree (spread between 10th and 90th percentile <= GAP_MAX_SPREAD_S)
+# --------------------------------------------------------------------------
+
+check("GAP_MAX_SPREAD_S defaults to 0.3 s", repair.GAP_MAX_SPREAD_S == 0.3)
+check("gap_spread: 90th minus 10th percentile, linear interpolation",
+      abs(repair.gap_spread([10.0, 10.1, 10.2, 10.3, 10.4]) - 0.32) < 1e-9)
+
+agreeing = [32.00, 32.05, 31.98, 32.10, 32.02, 31.95, 32.04]
+d = repair.decide_gap(agreeing, old_gap_ms=36042)
+check(f"decide_gap: agreeing values -> their median becomes the new #GAP (got {d})",
+      d["gap_ms"] == 32020 and d["kept"] is False and d["spread_s"] <= 0.3)
+
+spread = [31.9, 36.0, 38.5, 33.2, 39.0, 35.1, 32.4]
+d = repair.decide_gap(spread, old_gap_ms=31920)
+check(f"decide_gap: disagreeing values -> the original #GAP is kept (got {d})",
+      d["gap_ms"] == 31920 and d["kept"] is True and d["spread_s"] > 0.3)
+
+d = repair.decide_gap([12.0], old_gap_ms=11500)
+check(f"decide_gap: a single value cannot show agreement -> original kept (got {d})",
+      d["gap_ms"] == 11500 and d["kept"] is True)
+
+d = repair.decide_gap(agreeing, old_gap_ms=36042, max_spread=0.01)
+check("decide_gap: the threshold is a parameter", d["kept"] is True)
+
+# --------------------------------------------------------------------------
+# repair_txt(mode="gap"): aligns on the separated vocals, writes the original
+# #GAP when the values disagree and reports the decision
+# --------------------------------------------------------------------------
+
+
+class _GapTxt:
+    path = "/song/song.txt"
+    gap_ms = 31920
+    notes = []
+
+    def lyric_lines(self):
+        return []
+
+
+_gap_calls = {}
+_gap_saved = {name: getattr(repair, name) for name in (
+    "locate_audio", "build_alignment_units", "prepare_processing_audio",
+    "load_audio_16k", "resolve_language", "load_aligner",
+    "progressively_align", "implied_gap_samples", "write_repaired",
+    "group_words")}
+try:
+    repair.locate_audio = lambda song_dir, txt, work_dir: ("/song/mix.mp3", None)
+    repair.build_alignment_units = lambda txt, lines: [{"notes": []}, {"notes": []}]
+
+    def _fake_prepare(audio_path, work_dir, device):
+        _gap_calls["separated"] = audio_path
+        return "/work/vocals.wav", "/work/mute.wav"
+    repair.prepare_processing_audio = _fake_prepare
+
+    def _fake_load(path):
+        _gap_calls["aligned_on"] = path
+        return [0.0] * 16000 * 60
+    repair.load_audio_16k = _fake_load
+    repair.resolve_language = lambda *a, **k: "en"
+    repair.load_aligner = lambda lang, device: (None, None, lang)
+    repair.progressively_align = lambda *a, **k: [{"words": [1]}, {"words": [1]}]
+    repair.group_words = lambda notes: []
+
+    def _fake_write(txt, song_dir, out_dir, gap_ms, note_times, pitches):
+        _gap_calls["written_gap_ms"] = gap_ms
+        return "/out/song.txt"
+    repair.write_repaired = _fake_write
+
+    repair.implied_gap_samples = lambda txt, units, aligned: list(spread)
+    _gap_dir = tempfile.mkdtemp()
+    result = repair.repair_txt(_GapTxt(), "/song", "/out", "gap", "cpu", _gap_dir)
+    check(f"repair_txt gap: the vocals are separated from the song audio "
+          f"(got {_gap_calls.get('separated')})",
+          _gap_calls.get("separated") == "/song/mix.mp3")
+    check(f"repair_txt gap: alignment runs on the separated vocals "
+          f"(got {_gap_calls.get('aligned_on')})",
+          _gap_calls.get("aligned_on") == "/work/vocals.wav")
+    check(f"repair_txt gap: disagreeing values -> the original #GAP is written "
+          f"(got {_gap_calls.get('written_gap_ms')})",
+          _gap_calls.get("written_gap_ms") == 31920)
+    check(f"repair_txt gap: the result says the start was kept and why (got {result})",
+          result["gap_new_ms"] == 31920 and result["gap_kept"] is True
+          and result["gap_spread_s"] > 0.3)
+
+    repair.implied_gap_samples = lambda txt, units, aligned: list(agreeing)
+    result = repair.repair_txt(_GapTxt(), "/song", "/out", "gap", "cpu", _gap_dir)
+    check(f"repair_txt gap: agreeing values -> the new #GAP is written (got {result})",
+          _gap_calls.get("written_gap_ms") == 32020 and result["gap_kept"] is False)
+finally:
+    for name, func in _gap_saved.items():
+        setattr(repair, name, func)
+
+# --------------------------------------------------------------------------
+# other_media(): the other recordings in a song folder, one entry per file
+# name without extension (Sieben: the txt points to the live video, the
+# studio mp3/mp4 next to it fits the notes; Mein Herz: a second video only)
+# --------------------------------------------------------------------------
+
+
+class _MediaTxt:
+    def __init__(self, audio_ref, video_ref):
+        self.audio_ref, self.video_ref = audio_ref, video_ref
+
+
+_md = tempfile.mkdtemp(prefix="media-")
+for _f in ("live.mp3", "live.mp4", "studio [x].mp3", "studio [x].mp4", "cover [CO].jpg",
+           "song.txt", "x.usdb"):
+    open(os.path.join(_md, _f), "w").close()
+check("other_media: the other recording with its audio and video, the referenced one left out",
+      repair.other_media(_md, _MediaTxt("live.mp3", "live.mp4"), os.path.join(_md, "live.mp3"))
+      == [{"stem": "studio [x]", "audio": os.path.join(_md, "studio [x].mp3"),
+           "video": os.path.join(_md, "studio [x].mp4")}])
+_md2 = tempfile.mkdtemp(prefix="media2-")
+for _f in ("ASP - Mein Herz.mp3", "ASP - Mein Herz.mp4", "ASP Mein Herz.mp4"):
+    open(os.path.join(_md2, _f), "w").close()
+check("other_media: a recording with a video only",
+      repair.other_media(_md2, _MediaTxt("ASP - Mein Herz.mp3", "ASP - Mein Herz.mp4"),
+                         os.path.join(_md2, "ASP - Mein Herz.mp3"))
+      == [{"stem": "ASP Mein Herz", "audio": None, "video": os.path.join(_md2, "ASP Mein Herz.mp4")}])
+check("other_media: nothing else in the folder",
+      repair.other_media(_md2, _MediaTxt("ASP - Mein Herz.mp3", None),
+                         os.path.join(_md2, "ASP - Mein Herz.mp3"))[0]["stem"] == "ASP Mein Herz"
+      and len(repair.other_media(_md2, _MediaTxt("ASP - Mein Herz.mp3", "ASP Mein Herz.mp4"),
+                                 os.path.join(_md2, "ASP - Mein Herz.mp3"))) == 0)
+
+# --------------------------------------------------------------------------
+# recording_fit(): does a recording fit the song file? Mean alignment score
+# of the first lines and the largest share of first-word values inside one
+# RECORDING_FIT_WINDOW_S window (bench20_shift.py/an20.py: score >= 0.6 and
+# share >= 0.4 finds 70% of fitting recordings, 6% of wrong ones)
+# --------------------------------------------------------------------------
+
+_fit = repair.recording_fit([{"score": 0.7}, {"score": 0.5}, {"score": None}],
+                            [13.0, 13.1, 13.2, 10.0, 11.0])
+check(f"recording_fit: mean score of the aligned lines, share in one window (got {_fit})",
+      abs(_fit["score"] - 0.6) < 1e-9 and abs(_fit["share"] - 0.6) < 1e-9 and _fit["n"] == 5)
+check("recording_fit: nothing aligned",
+      repair.recording_fit([{"score": None}], []) == {"score": 0.0, "share": 0.0, "n": 0})
+check("recording_seems_to_fit: score and share above the limits",
+      repair.recording_seems_to_fit({"score": 0.66, "share": 0.5, "n": 20}))
+check("recording_seems_to_fit: a low score does not fit",
+      not repair.recording_seems_to_fit({"score": 0.55, "share": 0.9, "n": 20}))
+check("recording_seems_to_fit: scattered values do not fit",
+      not repair.recording_seems_to_fit({"score": 0.8, "share": 0.3, "n": 20}))
+check("recording_seems_to_fit: fewer than three values do not fit",
+      not repair.recording_seems_to_fit({"score": 0.8, "share": 1.0, "n": 2}))
+
+# --------------------------------------------------------------------------
+# repair_txt(mode="gap"): no word of the first lines aligns near #GAP -> the
+# repair fails with the reason; the other recordings of the folder are
+# checked and the one that seems to fit is named - #MP3/#VIDEO are never
+# changed automatically (user decision 2026-10-06)
+# --------------------------------------------------------------------------
+
+_mm = {}
+_mm_saved = {name: getattr(repair, name) for name in (
+    "locate_audio", "build_alignment_units", "prepare_processing_audio",
+    "load_audio_16k", "resolve_language", "load_aligner", "progressively_align",
+    "implied_gap_samples", "write_repaired", "group_words", "other_media",
+    "audio_from_video")}
+
+
+def _mm_run(recordings):
+    import contextlib
+    import io
+    repair.other_media = lambda song_dir, txt, current: recordings
+    _mm.pop("written", None)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        res = repair.repair_txt(_GapTxt(), "/song", "/out", "gap", "cpu", tempfile.mkdtemp())
+    return res, buf.getvalue()
+
+
+try:
+    repair.locate_audio = lambda song_dir, txt, work_dir: ("/song/live.mp3", None)
+    repair.build_alignment_units = lambda txt, lines: [{"notes": []}, {"notes": []}]
+    repair.prepare_processing_audio = lambda audio, work, device: (audio + ".vocals.wav", audio + ".mute.wav")
+
+    def _mm_load(path):
+        _mm["loaded"] = path
+        return [0.0] * 16000 * 60
+    repair.load_audio_16k = _mm_load
+    repair.resolve_language = lambda *a, **k: "de"
+    repair.load_aligner = lambda lang, device: (None, None, lang)
+    # the studio recording aligns well, everything else badly
+    repair.progressively_align = lambda *a, **k: [
+        {"words": [1], "score": 0.7 if "studio" in _mm["loaded"] else 0.3}] * 2
+    repair.group_words = lambda notes: []
+    repair.implied_gap_samples = lambda txt, units, aligned: (
+        [] if "live" in _mm["loaded"] else list(agreeing) if "studio" in _mm["loaded"] else list(spread))
+    repair.write_repaired = lambda *a, **k: _mm.update(written=True) or "/out/song.txt"
+    repair.audio_from_video = lambda video, work_dir: ("/work/" + os.path.basename(video) + ".m4a", None)
+
+    _res, _log = _mm_run([{"stem": "other", "audio": "/song/other.mp3", "video": None},
+                          {"stem": "studio", "audio": "/song/studio.mp3", "video": "/song/studio.mp4"}])
+    check(f"repair_txt gap: no word near #GAP -> the repair fails, nothing is written (got {_res})",
+          _res is None and "written" not in _mm)
+    check(f"repair_txt gap: the reason names the recording that seems to fit (got {_log!r})",
+          "audio does not match the song file" in _log and "live.mp3" in _log
+          and "studio.mp3" in _log and "seems to fit" in _log and "by hand" in _log)
+
+    _res, _log = _mm_run([{"stem": "studio", "audio": None, "video": "/song/studio.mp4"}])
+    check(f"repair_txt gap: a video-only recording is checked through its sound and named "
+          f"by the video file (got {_log!r})",
+          _res is None and "studio.mp4 seems to fit" in _log)
+
+    _res, _log = _mm_run([{"stem": "other", "audio": "/song/other.mp3", "video": None}])
+    check(f"repair_txt gap: no other recording fits -> said so (got {_log!r})",
+          _res is None and "none of the other recordings in the folder fits" in _log
+          and "other.mp3" in _log)
+
+    _res, _log = _mm_run([])
+    check(f"repair_txt gap: no other recording in the folder (got {_log!r})",
+          _res is None and "no other recording in the folder" in _log)
+finally:
+    for name, func in _mm_saved.items():
+        setattr(repair, name, func)
+
+
+def _gap_main_output(result, extra_argv=(), all_lines=False):
+    import contextlib
+    import io
+    saved = {n: getattr(repair, n) for n in ("find_ultrastar_txts", "repair_txt")}
+    saved_argv = sys.argv
+    buffer = io.StringIO()
+    try:
+        repair.find_ultrastar_txts = lambda song_dir: ["TXT"]
+        repair.repair_txt = lambda *a, **k: dict(result)
+        sys.argv = ["repair.py", "--song-dir", "/s", "--out", "/o", "--mode", "gap",
+                    *extra_argv]
+        with contextlib.redirect_stdout(buffer):
+            try:
+                repair.main()
+            except SystemExit:
+                pass
+    finally:
+        sys.argv = saved_argv
+        for n, f in saved.items():
+            setattr(repair, n, f)
+    lines = buffer.getvalue().splitlines()
+    return lines if all_lines else [l for l in lines if l.startswith("REPAIR_DONE")]
+
+
+_gap_base = {"output": "/o/x.txt", "gap_old_ms": 31920, "gap_new_ms": 31920,
+             "aligned_words": 12, "total_words": 14, "repitched": 0, "mode": "gap"}
+_done = _gap_main_output(dict(_gap_base, gap_kept=True, gap_spread_s=6.5))
+check(f"main gap: REPAIR_DONE says the start was kept, with the spread (got {_done})",
+      len(_done) == 1 and "gap_check=kept" in _done[0] and "gap_spread_s=6.50" in _done[0])
+_done = _gap_main_output(dict(_gap_base, gap_new_ms=32020, gap_kept=False, gap_spread_s=0.1))
+check(f"main gap: REPAIR_DONE says the start was moved (got {_done})",
+      len(_done) == 1 and "gap_check=moved" in _done[0] and "gap_new_ms=32020" in _done[0])
+_done = _gap_main_output(dict(_gap_base, gap_kept=True, gap_spread_s=None))
+check(f"main gap: too few words -> gap_spread_s=none (got {_done})",
+      len(_done) == 1 and "gap_spread_s=none" in _done[0])
+_done = _gap_main_output(dict(_gap_base, mode="sync"))
+check(f"main sync: no gap check fields (got {_done})",
+      len(_done) == 1 and "gap_check" not in _done[0])
+
+
+# --traits: the song's traits from the song list (orchestrator/song_style.py)
+check("parse_traits_arg: comma-joined, blank parts dropped",
+      repair.parse_traits_arg("choir, harsh_vocals,,") == ["choir", "harsh_vocals"])
+check("parse_traits_arg: nothing given", repair.parse_traits_arg(None) == [])
+_out = _gap_main_output(_gap_base, ("--traits", "choir,harsh_vocals"), all_lines=True)
+check(f"main: --traits is accepted and the traits are logged (got {_out})",
+      any("song traits: choir, harsh_vocals" in l for l in _out)
+      and any(l.startswith("REPAIR_DONE") for l in _out))
+_out = _gap_main_output(_gap_base, (), all_lines=True)
+check("main: no traits line without --traits",
+      not any("song traits" in l for l in _out))
+
+
+def _lyrics_main_kwargs(extra_argv=()):
+    """kwargs main() hands repair_txt_with_lyrics() in lyrics mode."""
+    import contextlib
+    import io
+    names = ("find_ultrastar_txts", "load_lyrics_file", "parse_lyrics_lines",
+             "repair_txt_with_lyrics")
+    saved = {n: getattr(repair, n) for n in names}
+    saved_argv = sys.argv
+    seen = {}
+    try:
+        repair.find_ultrastar_txts = lambda song_dir: ["TXT"]
+        repair.load_lyrics_file = lambda path: ("genius", [])
+        repair.parse_lyrics_lines = lambda data: ["UNIT"]
+        repair.repair_txt_with_lyrics = lambda *a, **k: seen.update(k) or {
+            "output": "/o/x.txt", "aligned_words": 1, "total_words": 1}
+        sys.argv = ["repair.py", "--song-dir", "/s", "--out", "/o", "--mode", "lyrics",
+                    "--lyrics-file", "/l.json", *extra_argv]
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                repair.main()
+            except SystemExit:
+                pass
+    finally:
+        sys.argv = saved_argv
+        for n, f in saved.items():
+            setattr(repair, n, f)
+    return seen
+
+
+check("main lyrics: --traits reach repair_txt_with_lyrics",
+      _lyrics_main_kwargs(("--traits", "loud_high_instruments")).get("traits")
+      == ["loud_high_instruments"])
+check("main lyrics: no traits -> empty list",
+      _lyrics_main_kwargs().get("traits") == [])
 
 # --------------------------------------------------------------------------
 

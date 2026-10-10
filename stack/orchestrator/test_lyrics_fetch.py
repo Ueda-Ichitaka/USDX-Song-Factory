@@ -68,6 +68,33 @@ check("parse_lrc drops English credit lines too",
       lf.parse_lrc(lrc_with_english_credits) ==
       [{"text": "Real lyric line", "start": 10.0}])
 
+# a real syncedlyrics result for "Arkona - Goi, Rode, Goi!": a colon before
+# the hundredths ([mm:ss:xx]) and a credit line without a colon
+lrc_colon_hundredths = """作曲 Arkona
+[00:54:50]Ой гой Роде! Ой гой Роде!
+[01:00:00]Ой гой Роде! Ой гой Роде!
+[01:21:50]Там в мире мертвых скал
+"""
+colon_lines = lf.parse_lrc(lrc_colon_hundredths)
+check(f"parse_lrc reads [mm:ss:xx] timestamps (got {colon_lines})",
+      [round(l["start"], 2) for l in colon_lines] == [54.5, 60.0, 81.5])
+check("parse_lrc keeps the text after a [mm:ss:xx] timestamp",
+      colon_lines[0]["text"] == "Ой гой Роде! Ой гой Роде!")
+check("parse_lrc reads timestamps without hundredths ([mm:ss])",
+      lf.parse_lrc("[01:02]A line\n") == [{"text": "A line", "start": 62.0}])
+check("parse_lrc drops a Chinese credit line without a colon",
+      lf.parse_lrc("[00:00.00]作曲 Arkona\n[00:10.00]Real line\n") ==
+      [{"text": "Real line", "start": 10.0}])
+check("parse_lrc keeps a real lyric that starts with a credit-like English word",
+      lf.parse_lrc("[00:10.00]Producer of my dreams\n") ==
+      [{"text": "Producer of my dreams", "start": 10.0}])
+
+plain_with_stamps = lf.parse_plain(lrc_colon_hundredths)
+check(f"parse_plain strips leftover timestamps and credit lines (got {plain_with_stamps})",
+      [l["text"] for l in plain_with_stamps] ==
+      ["Ой гой Роде! Ой гой Роде!", "Ой гой Роде! Ой гой Роде!",
+       "Там в мире мертвых скал"])
+
 plain_sample = "First line\n\nSecond line\n   \nThird line\n"
 plain_lines = lf.parse_plain(plain_sample)
 check("parse_plain skips blank lines, keeps 3", len(plain_lines) == 3)
@@ -422,6 +449,171 @@ check("fetch_from_url survives a network failure",
 del sys.modules["requests"]
 
 # --------------------------------------------------------------------------
+# fetch_from_url with an lrclib.net link: a track page (/tracks/<id>) or the
+# API record (/api/get/<id>) is read from lrclib.net's JSON API - synced
+# lyrics first, plain otherwise. lrclib.net requires a User-Agent naming
+# the client, and a 429/503 must wait for Retry-After.
+# --------------------------------------------------------------------------
+
+import re as _re  # noqa: E402
+
+# UltraSinger's Settings.py: in the repo checkout, or in the container
+_settings_py = next(p for p in (
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src", "Settings.py"),
+    "/app/UltraSinger/src/Settings.py") if os.path.isfile(p))
+_app_version = _re.search(r'APP_VERSION\s*=\s*"([^"]+)"',
+                          open(_settings_py, encoding="utf-8").read()).group(1)
+check(f"USER_AGENT names the stack, its version and the public repo (got {lf.USER_AGENT!r})",
+      lf.USER_AGENT == f"USDX-Song-Factory/{_app_version} "
+                       "(https://github.com/Ueda-Ichitaka/USDX-Song-Factory)")
+
+
+class FakeLrclibResponse:
+    def __init__(self, status, body=None, retry_after=None):
+        self.status_code = status
+        self.ok = 200 <= status < 300
+        self.headers = {"Retry-After": str(retry_after)} if retry_after is not None else {}
+        self._body = body
+
+    def json(self):
+        return self._body
+
+
+_LRCLIB_RECORD = {
+    "id": 15562042, "trackName": "Die Physiker", "artistName": "Die Funkhausgruppe",
+    "instrumental": False,
+    "plainLyrics": "Mikroelektronik\n\nTechnik, Chemie\n",
+    "syncedLyrics": "[00:24.30] Mikroelektronik\n[00:30.10] Technik, Chemie\n",
+}
+lrclib_calls = []
+
+
+def _lrclib_answer(*responses):
+    queue = list(responses)
+
+    def get(url, headers=None, timeout=None):
+        lrclib_calls.append((url, dict(headers or {})))
+        return queue.pop(0)
+    return get
+
+
+fake_requests_lrclib = types.ModuleType("requests")
+_install_fake_module("requests", fake_requests_lrclib)
+lrclib_sleeps = []
+_saved_sleep = lf.time.sleep
+lf.time.sleep = lrclib_sleeps.append
+try:
+    fake_requests_lrclib.get = _lrclib_answer(FakeLrclibResponse(200, _LRCLIB_RECORD))
+    _lr = lf.fetch_from_url("https://lrclib.net/tracks/15562042", None)
+    check(f"an lrclib.net track page is read from the API record (got {lrclib_calls})",
+          [c[0] for c in lrclib_calls] == ["https://lrclib.net/api/get/15562042"])
+    check("the lrclib.net request carries the User-Agent",
+          lrclib_calls[0][1].get("User-Agent") == lf.USER_AGENT)
+    check(f"lrclib.net: synced lyrics come first, with their line times (got {_lr})",
+          _lr is not None and _lr["source"] == "lyrics_url (lrclib synced)"
+          and _lr["lines"] == [{"text": "Mikroelektronik", "start": 24.3},
+                               {"text": "Technik, Chemie", "start": 30.1}]
+          and _lr["confidence"] == 1.0)
+
+    lrclib_calls.clear()
+    fake_requests_lrclib.get = _lrclib_answer(
+        FakeLrclibResponse(200, dict(_LRCLIB_RECORD, syncedLyrics=None)))
+    _lr = lf.fetch_from_url("https://lrclib.net/api/get/15562042", None)
+    check("an lrclib.net API link works too, plain lyrics when there are no synced ones",
+          [c[0] for c in lrclib_calls] == ["https://lrclib.net/api/get/15562042"]
+          and _lr is not None and _lr["source"] == "lyrics_url (lrclib plain)"
+          and [l["text"] for l in _lr["lines"]] == ["Mikroelektronik", "Technik, Chemie"])
+
+    fake_requests_lrclib.get = _lrclib_answer(FakeLrclibResponse(200, dict(
+        _LRCLIB_RECORD, instrumental=True, plainLyrics=None, syncedLyrics=None)))
+    check("an instrumental lrclib.net record gives no lyrics",
+          lf.fetch_from_url("https://lrclib.net/tracks/1", None) is None)
+
+    fake_requests_lrclib.get = _lrclib_answer(FakeLrclibResponse(404, {"name": "TrackNotFound"}))
+    check("an unknown lrclib.net track gives no lyrics",
+          lf.fetch_from_url("https://lrclib.net/tracks/999999999", None) is None)
+
+    lrclib_calls.clear()
+    check("an lrclib.net search link is not one song: no lyrics, nothing requested",
+          lf.fetch_from_url("https://lrclib.net/search/die%20physiker", None) is None
+          and lrclib_calls == [])
+
+    lrclib_calls.clear()
+    fake_requests_lrclib.get = _lrclib_answer(
+        FakeLrclibResponse(429, retry_after=2), FakeLrclibResponse(200, _LRCLIB_RECORD))
+    _lr = lf.fetch_from_url("https://lrclib.net/tracks/15562042", None)
+    check(f"lrclib.net 429: waits Retry-After, then asks once more (slept {lrclib_sleeps})",
+          lrclib_sleeps == [2] and len(lrclib_calls) == 2 and _lr is not None)
+
+    lrclib_calls.clear()
+    lrclib_sleeps.clear()
+    fake_requests_lrclib.get = _lrclib_answer(FakeLrclibResponse(503, retry_after=300))
+    check("lrclib.net: a Retry-After longer than LRCLIB_MAX_WAIT_S is not waited for",
+          lf.fetch_from_url("https://lrclib.net/tracks/15562042", None) is None
+          and lrclib_sleeps == [] and len(lrclib_calls) == 1)
+
+    fake_requests_lrclib.get = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("down"))
+    check("lrclib.net: a network failure gives no lyrics",
+          lf.fetch_from_url("https://lrclib.net/tracks/15562042", None) is None)
+finally:
+    lf.time.sleep = _saved_sleep
+
+del sys.modules["requests"]
+
+# --------------------------------------------------------------------------
+# fetch_from_url with a local file: anything that is not an http(s) link is
+# a lyrics file path, relative to INPUT_DIR unless absolute - read from
+# disk, never sent to the network
+# --------------------------------------------------------------------------
+
+import tempfile  # noqa: E402
+
+fake_requests_offline = types.ModuleType("requests")
+fake_requests_offline.get = lambda *a, **kw: (_ for _ in ()).throw(
+    AssertionError("a local lyrics file must not be fetched over the network"))
+_install_fake_module("requests", fake_requests_offline)
+
+with tempfile.TemporaryDirectory() as input_dir:
+    os.makedirs(os.path.join(input_dir, "lyrics"))
+    plain_path = os.path.join(input_dir, "lyrics", "Band - Song.txt")
+    with open(plain_path, "w", encoding="utf-8-sig") as f:
+        f.write("Erste Zeile\n\nZweite Zeile mit Ümlaut\n(backing voice)\n")
+    lrc_path = os.path.join(input_dir, "lyrics", "Band - Timed.lrc")
+    with open(lrc_path, "w", encoding="utf-8") as f:
+        f.write("[00:05.00]Timed line one\n[00:09.00]Timed line two\n")
+
+    saved_input_dir = lf.INPUT_DIR
+    lf.INPUT_DIR = input_dir
+    try:
+        result_file = lf.fetch_from_url("lyrics/Band - Song.txt", None)
+        check("fetch_from_url reads a path relative to INPUT_DIR as a lyrics file",
+              result_file is not None and
+              result_file["source"] == "lyrics_url (file)")
+        check("a lyrics file is parsed like plain lyrics (byte order mark, "
+              "blank and bracketed lines dropped)",
+              result_file is not None and result_file["lines"] == [
+                  {"text": "Erste Zeile", "start": None},
+                  {"text": "Zweite Zeile mit Ümlaut", "start": None}])
+        check("a lyrics file is fully trusted (confidence 1.0)",
+              result_file is not None and result_file["confidence"] == 1.0)
+
+        result_file_lrc = lf.fetch_from_url("lyrics/Band - Timed.lrc", None)
+        check("a lyrics file in LRC form keeps its line times",
+              result_file_lrc is not None and
+              result_file_lrc["source"] == "lyrics_url (file)" and
+              result_file_lrc["lines"][1]["start"] == 9.0)
+
+        check("fetch_from_url reads an absolute lyrics file path as is",
+              lf.fetch_from_url(plain_path, None) is not None)
+
+        check("fetch_from_url returns None for a lyrics file that does not exist",
+              lf.fetch_from_url("lyrics/missing.txt", None) is None)
+    finally:
+        lf.INPUT_DIR = saved_input_dir
+
+del sys.modules["requests"]
+
+# --------------------------------------------------------------------------
 # fetch_lyrics(lyrics_url=...): a supplied lyrics_url is trusted and used
 # directly, short-circuiting the multi-source query entirely; only falls
 # back to querying every source if the url itself doesn't yield anything
@@ -484,6 +676,19 @@ del sys.modules["syncedlyrics"]
 del sys.modules["lyricsgenius"]
 
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# a line entirely in round brackets is a backing voice sung at the same time
+# as the lead (Valhalleluja canon, the second voice of a duet) - left out
+# --------------------------------------------------------------------------
+
+backing = "Small sofa with a big heart\n(With a big heart for the living room)\n( Come on )\nOh (oh) my love (yeah)\n(Oh) my love (yeah)\nLast line"
+check("parse_plain: lines entirely in brackets are left out, others kept",
+      [l["text"] for l in lf.parse_plain(backing)] ==
+      ["Small sofa with a big heart", "Oh (oh) my love (yeah)", "(Oh) my love (yeah)", "Last line"])
+backing_lrc = "[00:01.00]Small sofa\n[00:02.00](Making furniture great again)\n[00:03.00]Last"
+check("parse_lrc: lines entirely in brackets are left out",
+      [l["text"] for l in lf.parse_lrc(backing_lrc)] == ["Small sofa", "Last"])
 
 print()
 if failures:

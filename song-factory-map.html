@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Song Factory Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* layout: one reading column, figures scroll sideways on their own when wider than the screen */
+:root {
+  --bg: #f3f4f1; --panel: #ffffff; --fg: #1c2226; --muted: #56626b; --line: #8f9aa2;
+  --new: #1d6c88; --repair: #8f5311; --store: #62508a; --net: #2c7449;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "Source Sans 3", "Segoe UI", Arial, sans-serif;
+  --mono: "JetBrains Mono", "DejaVu Sans Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #131719; --panel: #1b2125; --fg: #e5eaed; --muted: #9ba7af; --line: #5f6b73;
+  --new: #62b6d4; --repair: #e1a45c; --store: #b6a5e0; --net: #6fc592; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #131719; --panel: #1b2125; --fg: #e5eaed; --muted: #9ba7af; --line: #5f6b73;
+  --new: #62b6d4; --repair: #e1a45c; --store: #b6a5e0; --net: #6fc592; color-scheme: dark }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 var(--body); }
+main { max-width: 1140px; margin: 0 auto; padding-inline: 16px; padding-block: 28px 64px; display: grid; gap: 40px; }
+h1, h2 { font-family: var(--display); text-wrap: balance; margin: 0; }
+h1 { font-size: 2rem; letter-spacing: -0.01em; }
+h2 { font-size: 1.3rem; }
+p { margin: 0; max-width: 72ch; }
+.lede { color: var(--muted); }
+section { display: grid; gap: 14px; min-width: 0; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+.key { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 0.9rem; color: var(--muted); }
+.key span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.key .k-new::before { background: var(--new); } .key .k-repair::before { background: var(--repair); }
+.key .k-store::before { background: var(--store); } .key .k-net::before { background: var(--net); }
+figure { margin: 0; display: grid; gap: 10px; min-width: 0; }
+.scroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+.scroll svg { display: block; min-width: 900px; width: 100%; height: auto; }
+figcaption { font-size: 0.92rem; color: var(--muted); max-width: 80ch; }
+/* svg parts */
+svg { color: var(--line); }
+.box { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
+.box-new { fill: var(--panel); stroke: var(--new); stroke-width: 1.6; }
+.box-repair { fill: var(--panel); stroke: var(--repair); stroke-width: 1.6; }
+.box-store { fill: var(--panel); stroke: var(--store); stroke-width: 1.4; stroke-dasharray: 5 3; }
+.box-side { fill: var(--panel); stroke: var(--store); stroke-width: 1.3; }
+.tt { fill: var(--fg); font: 600 13px var(--mono); }
+.tx { fill: var(--fg); font: 12px var(--body); }
+.tm { fill: var(--muted); font: 12px var(--body); }
+.tnet { fill: var(--net); font: 12px var(--body); }
+.tl { fill: var(--muted); font: italic 11.5px var(--body); }
+.tg { fill: var(--muted); font: 600 11px var(--mono); letter-spacing: 0.06em; }
+.ln { stroke: var(--line); stroke-width: 1.3; fill: none; }
+.ln-new { stroke: var(--new); stroke-width: 1.6; fill: none; }
+.ln-store { stroke: var(--store); stroke-width: 1.3; fill: none; stroke-dasharray: 4 3; }
+.ah { fill: var(--line); } .ah-new { fill: var(--new); } .ah-store { fill: var(--store); }
+/* tables */
+.tablewrap { overflow-x: auto; min-width: 0; }
+table { border-collapse: collapse; width: 100%; font-size: 0.93rem; background: var(--panel); }
+th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+th { font-family: var(--display); font-weight: 500; font-size: 0.82rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+td:first-child { white-space: nowrap; }
+pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; font: 13px/1.5 var(--mono); }
+</style>
+
+</head>
+<body>
+<main>
+<header style="display:grid;gap:8px">
+  <h1>Song Factory Map</h1>
+  <p class="lede">Every component of the USDX Song Factory stack and the path a song takes through it, as of 30 September 2026. File and function names are the real ones in <code>stack/</code> and <code>src/</code>.</p>
+  <div class="key"><span class="k-new">new-song path</span><span class="k-repair">repair path</span><span class="k-store">folders and admin files</span><span class="k-net">network access</span></div>
+</header>
+
+<!-- ============================ FIGURE 1 ============================ -->
+<section>
+  <h2>1. Components and who writes where</h2>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1100 735" role="img" aria-label="System overview: the orchestrator reads the song list, broken.csv and input folders, starts UltraSinger, repair.py, lyrics_fetch.py and romanize.py as subprocesses, and those write the output folders; all folders are mounted volumes.">
+      <defs>
+        <marker id="m1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+        <marker id="m1n" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-new"/></marker>
+      </defs>
+      <!-- row A: inputs -->
+      <text class="tg" x="20" y="20">STACK/INPUT AND SETTINGS</text>
+      <rect class="box-store" x="20" y="30" width="250" height="80" rx="4"/>
+      <text class="tt" x="32" y="52">input/song-requests.csv</text>
+      <text class="tx" x="32" y="72">band, title, youtube link, language,</text>
+      <text class="tx" x="32" y="90">musicbrainz_id, lyrics_url, cover_url, duet</text>
+      <rect class="box-store" x="290" y="30" width="250" height="80" rx="4"/>
+      <text class="tt" x="302" y="52">input/broken.csv</text>
+      <text class="tx" x="302" y="72">song, category, description</text>
+      <text class="tx" x="302" y="90">(+ lyrics_url, language, cover_url)</text>
+      <rect class="box-store" x="560" y="30" width="250" height="80" rx="4"/>
+      <text class="tt" x="572" y="52">input/&lt;song folder&gt;/</text>
+      <text class="tx" x="572" y="72">songs to repair: txt + audio/video</text>
+      <text class="tx" x="572" y="90">optional admin files (section 6)</text>
+      <rect class="box-store" x="830" y="30" width="250" height="80" rx="4"/>
+      <text class="tt" x="842" y="52">.env + cookies/cookies.txt</text>
+      <text class="tx" x="842" y="72">settings, GENIUS_API_KEY, USDB login,</text>
+      <text class="tx" x="842" y="90">YouTube login for yt-dlp</text>
+      <!-- A -> B -->
+      <line class="ln" x1="145" y1="110" x2="145" y2="156" marker-end="url(#m1)"/>
+      <line class="ln" x1="415" y1="110" x2="415" y2="156" marker-end="url(#m1)"/>
+      <line class="ln" x1="685" y1="110" x2="685" y2="156" marker-end="url(#m1)"/>
+      <line class="ln" x1="955" y1="110" x2="955" y2="156" marker-end="url(#m1)"/>
+      <text class="tl" x="152" y="138">read at start</text>
+      <text class="tl" x="422" y="138">matched to folders</text>
+      <text class="tl" x="692" y="138">scanned</text>
+      <text class="tl" x="962" y="138">environment</text>
+      <!-- row B: orchestrator -->
+      <text class="tg" x="20" y="152">CONTAINER ultrasinger / ultrasinger-rocm</text>
+      <rect class="box" x="20" y="160" width="1060" height="112" rx="4"/>
+      <text class="tt" x="34" y="184">orchestrator.py - batch runner, one job at a time</text>
+      <text class="tx" x="34" y="206">plans jobs (new | repair) from the song list and input folders, keeps state/state.json, streams logs, progress view, finishing report</text>
+      <text class="tm" x="34" y="226">imports: usdb_lookup, usdb_eu_lookup, broken_report, recording_length, lyrics_divergence, compare_reference, resource_profile, resource_monitor</text>
+      <text class="tnet" x="34" y="246">network: usdb.animux.de + usdb.eu (existing uploads), MusicBrainz (recording length), YouTube via yt-dlp (media for USDB songs)</text>
+      <text class="tm" x="34" y="264">retries a failed job up to MAX_ATTEMPTS (3); moves partial output of a failed job to output/failed/</text>
+      <!-- B -> C -->
+      <line class="ln" x1="145" y1="272" x2="145" y2="318" marker-end="url(#m1)"/>
+      <line class="ln" x1="415" y1="272" x2="415" y2="318" marker-end="url(#m1)"/>
+      <line class="ln" x1="685" y1="272" x2="685" y2="318" marker-end="url(#m1)"/>
+      <line class="ln" x1="955" y1="272" x2="955" y2="318" marker-end="url(#m1)"/>
+      <text class="tl" x="152" y="300">starts (new song)</text>
+      <text class="tl" x="422" y="300">starts (repair, USDB, lyrics)</text>
+      <text class="tl" x="692" y="300">starts (lyrics)</text>
+      <text class="tl" x="962" y="300">starts (every job)</text>
+      <!-- row C: subprocesses -->
+      <rect class="box-new" x="20" y="320" width="250" height="132" rx="4"/>
+      <text class="tt" x="32" y="344">src/UltraSinger.py</text>
+      <text class="tx" x="32" y="366">creates a new song from a link</text>
+      <text class="tx" x="32" y="384">demucs, whisperX large-v2, SwiftF0</text>
+      <text class="tnet" x="32" y="402">net: YouTube (yt-dlp), MusicBrainz</text>
+      <text class="tm" x="32" y="420">see figure 2</text>
+      <rect class="box-repair" x="290" y="320" width="250" height="132" rx="4"/>
+      <text class="tt" x="302" y="344">repair.py</text>
+      <text class="tx" x="302" y="366">modes gap, sync, lyrics</text>
+      <text class="tx" x="302" y="384">wav2vec2 aligner, demucs, SwiftF0</text>
+      <text class="tm" x="302" y="402">imports ctc_align, outro, anchors,</text>
+      <text class="tm" x="302" y="420">pitch_normalise, src/modules</text>
+      <text class="tm" x="302" y="438">lyrics mode: figure 3</text>
+      <rect class="box" x="560" y="320" width="250" height="132" rx="4"/>
+      <text class="tt" x="572" y="344">lyrics_fetch.py</text>
+      <text class="tx" x="572" y="366">trusted lyrics for one song</text>
+      <text class="tnet" x="572" y="384">lyrics_url first (Genius or text)</text>
+      <text class="tnet" x="572" y="402">else Genius + syncedlyrics search</text>
+      <text class="tm" x="572" y="420">writes work/&lt;job&gt;-lyrics.json</text>
+      <rect class="box" x="830" y="320" width="250" height="132" rx="4"/>
+      <text class="tt" x="842" y="344">romanize.py</text>
+      <text class="tx" x="842" y="366">Latin script, txt rewritten in place</text>
+      <text class="tx" x="842" y="384">Cyrillic: cyrtranslit or own table</text>
+      <text class="tx" x="842" y="402">Korean: korean-romanizer</text>
+      <text class="tx" x="842" y="420">Japanese: pykakasi</text>
+      <!-- C -> D -->
+      <line class="ln-new" x1="145" y1="452" x2="145" y2="498" marker-end="url(#m1n)"/>
+      <text class="tl" x="152" y="480">writes</text>
+      <line class="ln" x1="415" y1="452" x2="415" y2="498" marker-end="url(#m1)"/>
+      <text class="tl" x="422" y="480">writes repairs</text>
+      <line class="ln-new" x1="330" y1="452" x2="245" y2="498" marker-end="url(#m1n)"/>
+      <text class="tl" x="238" y="470" text-anchor="end">lyrics / gap mode</text>
+      <text class="tl" x="238" y="484" text-anchor="end">rewrites new songs</text>
+      <line class="ln" x1="900" y1="452" x2="330" y2="498" marker-end="url(#m1)" stroke-dasharray="3 3"/>
+      <text class="tl" x="690" y="470">rewrites txt in place</text>
+      <!-- orchestrator -> report: right side route -->
+      <polyline class="ln" points="1080,215 1092,215 1092,532 1082,532" marker-end="url(#m1)"/>
+      <text class="tl" x="1086" y="380" transform="rotate(90 1086 380)" text-anchor="middle">writes report.md</text>
+      <!-- row D: outputs -->
+      <text class="tg" x="20" y="494">STACK/OUTPUT</text>
+      <rect class="box-store" x="20" y="500" width="250" height="64" rx="4"/>
+      <text class="tt" x="32" y="522">output/new/&lt;Artist - Title&gt;/</text>
+      <text class="tx" x="32" y="542">txt, audio, video, vocals, instrumental,</text>
+      <text class="tx" x="32" y="558">.mid, cover, lyrics.txt, language.txt</text>
+      <rect class="box-store" x="290" y="500" width="250" height="64" rx="4"/>
+      <text class="tt" x="302" y="522">output/repaired/&lt;folder&gt;/</text>
+      <text class="tx" x="302" y="542">full copy of the input folder</text>
+      <text class="tx" x="302" y="558">with the fixed txt</text>
+      <rect class="box-store" x="560" y="500" width="250" height="64" rx="4"/>
+      <text class="tt" x="572" y="522">output/failed/&lt;new|repair&gt;/</text>
+      <text class="tx" x="572" y="542">partial output of failed jobs,</text>
+      <text class="tx" x="572" y="558">moved here by the orchestrator</text>
+      <rect class="box-store" x="830" y="500" width="250" height="64" rx="4"/>
+      <text class="tt" x="842" y="522">output/report.md</text>
+      <text class="tx" x="842" y="542">created, repaired, failed, needs review,</text>
+      <text class="tx" x="842" y="558">lyrics to review / not checkable, skipped</text>
+      <!-- row E: volumes -->
+      <text class="tg" x="20" y="604">MOUNTED VOLUMES USED BY ALL STEPS (stack/...)</text>
+      <rect class="box-store" x="20" y="612" width="1060" height="108" rx="4"/>
+      <text class="tt" x="34" y="636">state/</text><text class="tx" x="150" y="636">state.json (every job's status, attempts, lyrics source, review), backups/, usdb_catalog.json</text>
+      <text class="tt" x="34" y="654">logs/</text><text class="tx" x="150" y="654">one log per job, plus -lyrics-fetch, -lyrics-align and -romanize logs</text>
+      <text class="tt" x="34" y="672">work/</text><text class="tx" x="150" y="672">audio caches per song (demucs vocals, denoised, muted), lyrics JSON, USDB staging; bench/ holds benchmarks, not part of the pipeline</text>
+      <text class="tt" x="34" y="690">models/</text><text class="tx" x="150" y="690">whisper, demucs, aligner and Hugging Face downloads</text>
+      <text class="tt" x="34" y="708">orchestrator/</text><text class="tx" x="150" y="708">the code, mounted live: changes need no image rebuild</text>
+    </svg>
+    </div>
+    <figcaption>The orchestrator never edits songs itself: it plans jobs and starts one tool per step as a subprocess. Only <code>src/UltraSinger.py</code> (and the demucs/whisper/SwiftF0 code under <code>src/modules</code>) lives inside the image; <code>stack/orchestrator/</code> is mounted, so its changes apply without a rebuild. Green text marks the steps that go to the network.</figcaption>
+  </figure>
+</section>
+
+<!-- ============================ FIGURE 2 ============================ -->
+<section>
+  <h2>2. A new song, step by step</h2>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1000 1000" role="img" aria-label="New-song pipeline: USDB lookup first; on a match the USDB notes get downloaded media and a gap repair; otherwise UltraSinger generates the song, then the orchestrator replaces the lyrics with online lyrics, reviews them, romanises and applies the cover.">
+      <defs>
+        <marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-new"/></marker>
+        <marker id="m2g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+      </defs>
+      <!-- group brackets -->
+      <line class="ln" x1="40" y1="148" x2="40" y2="660"/>
+      <text class="tg" x="30" y="404" transform="rotate(-90 30 404)" text-anchor="middle">src/UltraSinger.py</text>
+      <line class="ln" x1="40" y1="660" x2="40" y2="980"/>
+      <text class="tg" x="30" y="820" transform="rotate(-90 30 820)" text-anchor="middle">orchestrator finish_done_job()</text>
+      <line class="ln" x1="40" y1="20" x2="40" y2="130"/>
+      <text class="tg" x="30" y="75" transform="rotate(-90 30 75)" text-anchor="middle">orchestrator</text>
+
+      <!-- main steps: x=60..620, y = 20 + 64*i, h = 46 -->
+      <g>
+        <rect class="box-new" x="60" y="20" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="39">song list row  (job id new|&lt;url&gt;)</text>
+        <text class="tm" x="72" y="57">duet=yes, or link empty / "-" / "skip": skipped with its reason in the report</text>
+        <rect class="box-new" x="60" y="84" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="103">USDB lookup</text>
+        <text class="tnet" x="72" y="121">usdb.animux.de (usdb_syncer scraper), then usdb.eu - an existing community upload wins</text>
+
+        <rect class="box-new" x="60" y="148" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="167">download + metadata</text>
+        <text class="tnet" x="72" y="185">yt-dlp: video + audio; MusicBrainz: artist, title, year, genres, cover (by musicbrainz_id)</text>
+        <rect class="box-new" x="60" y="212" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="231">vocal track</text>
+        <text class="tx" x="72" y="249">demucs separation (htdemucs / htdemucs_ft) - denoise - mono - mute parts without singing</text>
+        <rect class="box-new" x="60" y="276" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="295">BPM and key</text>
+        <text class="tx" x="72" y="313">librosa tempo on the vocals gives #BPM; detected key only goes into #TAGS</text>
+        <rect class="box-new" x="60" y="340" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="359">language</text>
+        <text class="tx" x="72" y="377">language.txt, else the list's language, else whisper detection - saved to language.txt</text>
+        <rect class="box-new" x="60" y="404" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="423">transcription</text>
+        <text class="tx" x="72" y="441">whisperX large-v2 on the CPU + word alignment; a trailing spoken end-card is dropped</text>
+        <rect class="box-new" x="60" y="468" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="487">syllables</text>
+        <text class="tx" x="72" y="505">punctuation removed, hyphenation (pyphen), split at silence, segments by BPM</text>
+        <rect class="box-new" x="60" y="532" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="551">pitch</text>
+        <text class="tx" x="72" y="569">SwiftF0 0.3.0 on the muted vocals, one note per syllable, short syllables merged</text>
+        <rect class="box-new" x="60" y="596" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="615">write song</text>
+        <text class="tx" x="72" y="633">txt, [Vocals] + [Instrumental] audio, .mid, cover into output/new/; cache folder deleted</text>
+
+        <rect class="box-new" x="60" y="676" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="695">keep the transcript</text>
+        <text class="tx" x="72" y="713">UltraSinger's words with times are read from the txt before the lyrics step replaces it</text>
+        <rect class="box-new" x="60" y="740" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="759">lyrics step  (figure 3)</text>
+        <text class="tx" x="72" y="777">lyrics_fetch.py - repair.py --mode lyrics [--recording-seconds]; nothing found: transcript stays</text>
+        <rect class="box-new" x="60" y="804" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="823">lyrics review</text>
+        <text class="tx" x="72" y="841">lyrics.txt vs transcript: under 60% heard or 5+ lines in a row unheard - "Lyrics to review"</text>
+        <rect class="box-new" x="60" y="868" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="887">romanise</text>
+        <text class="tx" x="72" y="905">romanize.py: Cyrillic, Korean, Japanese to Latin (ROMANIZE_STYLE for Russian)</text>
+        <rect class="box-new" x="60" y="932" width="560" height="46" rx="4"/>
+        <text class="tt" x="72" y="951">cover + state</text>
+        <text class="tx" x="72" y="969">cover_url replaces the cover; job done in state.json; row in report.md</text>
+      </g>
+      <!-- down arrows -->
+      <g>
+        <line class="ln-new" x1="340" y1="66" x2="340" y2="82" marker-end="url(#m2)"/>
+        <line class="ln-new" x1="340" y1="130" x2="340" y2="146" marker-end="url(#m2)"/>
+        <text class="tl" x="348" y="142">no match</text>
+        <line class="ln-new" x1="340" y1="194" x2="340" y2="210" marker-end="url(#m2)"/>
+        <line class="ln-new" x1="340" y1="258" x2="340" y2="274" marker-end="url(#m2)"/>
+        <line class="ln-new" x1="340" y1="322" x2="340" y2="338" marker-end="url(#m2)"/>
+        <line class="ln-new" x1="340" y1="386" x2="340" y2="402" marker-end="url(#m2)"/>
+        <line class="ln-new" x1="340" y1="450" x2="340" y2="466" marker-end="url(#m2)"/>
+        <line class="ln-new" x1="340" y1="514" x2="340" y2="530" marker-end="url(#m2)"/>
+        <line class="ln-new" x1="340" y1="578" x2="340" y2="594" marker-end="url(#m2)"/>
+        <line class="ln-new" x1="340" y1="642" x2="340" y2="674" marker-end="url(#m2)"/>
+        <text class="tl" x="348" y="662">UltraSinger exits, orchestrator continues</text>
+        <line class="ln-new" x1="340" y1="722" x2="340" y2="738" marker-end="url(#m2)"/>
+        <line class="ln-new" x1="340" y1="786" x2="340" y2="802" marker-end="url(#m2)"/>
+        <line class="ln-new" x1="340" y1="850" x2="340" y2="866" marker-end="url(#m2)"/>
+        <line class="ln-new" x1="340" y1="914" x2="340" y2="930" marker-end="url(#m2)"/>
+      </g>
+      <!-- USDB branch -->
+      <line class="ln" x1="620" y1="107" x2="678" y2="107" marker-end="url(#m2g)"/>
+      <text class="tl" x="626" y="99">match</text>
+      <rect class="box" x="680" y="84" width="300" height="64" rx="4"/>
+      <text class="tt" x="692" y="103">USDB notes + media</text>
+      <text class="tnet" x="692" y="121">USDB txt; video via yt-dlp (linked video,</text>
+      <text class="tnet" x="692" y="139">else the list's link); audio to mp3</text>
+      <line class="ln" x1="830" y1="148" x2="830" y2="178" marker-end="url(#m2g)"/>
+      <rect class="box-repair" x="680" y="180" width="300" height="46" rx="4"/>
+      <text class="tt" x="692" y="199">repair.py --mode gap</text>
+      <text class="tx" x="692" y="217">#GAP re-detected for the downloaded audio</text>
+      <polyline class="ln" points="830,226 830,891 622,891" marker-end="url(#m2g)"/>
+      <text class="tl" x="838" y="560">lyrics source usdb:&lt;site&gt;:&lt;id&gt;</text>
+      <text class="tl" x="838" y="576">no lyrics step, no review</text>
+    </svg>
+    </div>
+    <figcaption>A song list row either becomes a USDB song (right branch: community notes, only media and <code>#GAP</code> are new) or is generated by UltraSinger and then gets online lyrics, the lyrics review, romanisation and the cover. A failed step retries the whole job up to <code>MAX_ATTEMPTS</code> times; a missing online lyrics source is not a failure, the song keeps its transcription and the report marks it.</figcaption>
+  </figure>
+</section>
+
+<!-- ============================ FIGURE 3 ============================ -->
+<section>
+  <h2>3. Lyrics mode: fitting known lyrics to the vocals</h2>
+  <p>The same code builds the notes of every new song with online lyrics and every repair in lyrics mode (<code>repair.py --mode lyrics</code>). The admin files on the right change single steps.</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1000 690" role="img" aria-label="Lyrics mode pipeline in repair.py: vocal track, song end, language and aligner, global CTC alignment, refinement, syllables, lines, pitch, write; song_end.txt, anchors.txt, language.txt and the recording length feed specific steps.">
+      <defs>
+        <marker id="m3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+        <marker id="m3s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-store"/></marker>
+      </defs>
+      <!-- steps: x=20..640, y = 20 + 66*i, h = 48 -->
+      <rect class="box-repair" x="20" y="20" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="40">inputs</text>
+      <text class="tx" x="32" y="58">song folder (txt gives #BPM and the tags), lyrics: JSON from lyrics_fetch.py or lyrics.txt</text>
+      <rect class="box-repair" x="20" y="86" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="106">vocal track + pauses</text>
+      <text class="tx" x="32" y="124">demucs vocals (cached in work/&lt;song&gt;/cache), muted copy for pitch; pauses of 1.2 s or more</text>
+      <rect class="box-repair" x="20" y="152" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="172">song end</text>
+      <text class="tx" x="32" y="190">anchors.txt end, else song_end.txt, else outro detection; the aligner sees audio up to here</text>
+      <rect class="box-repair" x="20" y="218" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="238">language + aligner</text>
+      <text class="tx" x="32" y="256">language.txt, else --language, else #LANGUAGE, else whisper tiny; wav2vec2 model per language</text>
+      <rect class="box-repair" x="20" y="284" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="304">global CTC alignment  (ctc_align.py)</text>
+      <text class="tx" x="32" y="322">emissions in 30 s chunks, one Viterbi path over all words; with anchors: piece by piece</text>
+      <rect class="box-repair" x="20" y="350" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="370">refinement</text>
+      <text class="tx" x="32" y="388">stray words back to their line, opening words before the first, held notes, starts -40 ms</text>
+      <rect class="box-repair" x="20" y="416" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="436">syllables</text>
+      <text class="tx" x="32" y="454">hyphenation; words the aligner could not place are interpolated around real pauses</text>
+      <rect class="box-repair" x="20" y="482" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="502">lines</text>
+      <text class="tx" x="32" y="520">a lyrics line is split when longer than 60 characters or at a pause of 2.5 s</text>
+      <rect class="box-repair" x="20" y="548" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="568">pitch  (pitch_normalise.py)</text>
+      <text class="tx" x="32" y="586">SwiftF0, window at least 0.4 s, confidence over 0.2; unsure notes filled, octaves folded</text>
+      <rect class="box-repair" x="20" y="614" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="634">write</text>
+      <text class="tx" x="32" y="652">txt (#GAP = first note), lyrics.txt, language.txt; song_end.txt + anchors.txt copied along</text>
+      <!-- down arrows -->
+      <line class="ln" x1="330" y1="68" x2="330" y2="84" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="134" x2="330" y2="150" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="200" x2="330" y2="216" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="266" x2="330" y2="282" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="332" x2="330" y2="348" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="398" x2="330" y2="414" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="464" x2="330" y2="480" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="530" x2="330" y2="546" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="596" x2="330" y2="612" marker-end="url(#m3)"/>
+      <!-- side inputs -->
+      <text class="tg" x="720" y="112">ADMIN FILES AND HINTS</text>
+      <rect class="box-side" x="720" y="122" width="260" height="48" rx="4"/>
+      <text class="tt" x="732" y="142">--recording-seconds</text>
+      <text class="tm" x="732" y="160">MusicBrainz length, orchestrator</text>
+      <rect class="box-side" x="720" y="182" width="260" height="48" rx="4"/>
+      <text class="tt" x="732" y="202">song_end.txt</text>
+      <text class="tm" x="732" y="220">end time, e.g. 4:34.5</text>
+      <rect class="box-side" x="720" y="242" width="260" height="48" rx="4"/>
+      <text class="tt" x="732" y="262">language.txt</text>
+      <text class="tm" x="732" y="280">two-letter language code</text>
+      <rect class="box-side" x="720" y="302" width="260" height="48" rx="4"/>
+      <text class="tt" x="732" y="322">anchors.txt</text>
+      <text class="tm" x="732" y="340">"4:12.0 | line" + "end 4:34.5"</text>
+      <line class="ln-store" x1="720" y1="146" x2="642" y2="170" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="206" x2="642" y2="180" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="266" x2="642" y2="245" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="318" x2="642" y2="308" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="330" x2="642" y2="376" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="316" x2="642" y2="192" marker-end="url(#m3s)"/>
+      <text class="tl" x="660" y="400">pins re-applied</text>
+      <!-- outro rule detail -->
+      <rect class="box" x="720" y="420" width="260" height="110" rx="4"/>
+      <text class="tt" x="732" y="440">outro detection (outro.py)</text>
+      <text class="tx" x="732" y="460">only when the video is 8 s or more</text>
+      <text class="tx" x="732" y="478">longer than the recording; cuts at a</text>
+      <text class="tx" x="732" y="496">pause of 1 s or more within -10 / +15 s</text>
+      <text class="tx" x="732" y="514">of the expected end, else no cut</text>
+    </svg>
+    </div>
+    <figcaption>The whole lyrics text is aligned to the whole vocal track in one pass, so a repeated chorus cannot pull the lines after it out of place. The song end is decided before the alignment; anchors split the alignment into pieces and keep their lines at the given times even after the 40 ms lead of the refinement.</figcaption>
+  </figure>
+</section>
+
+<!-- ============================ FIGURE 4: REPAIR ============================ -->
+<section>
+  <h2>4. Repairing a song, step by step</h2>
+  <p>A repair works on a copy: the folder in <code>input/</code> is never changed. The mode (section 5) decides which of the three lanes runs; gap and sync keep the song's own notes and lyrics, lyrics mode rebuilds the notes from a trusted text.</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1000 1060" role="img" aria-label="Repair pipeline: a folder in input becomes a job, is matched to broken.csv, gets its mode and optional preparation, then runs gap, sync or lyrics mode in repair.py, and ends as a full copy in output/repaired followed by romanisation, cover and report.">
+      <defs>
+        <marker id="m4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+      </defs>
+      <text class="tg" x="40" y="14">ORCHESTRATOR</text>
+      <rect class="box-repair" x="40" y="20" width="920" height="46" rx="4"/>
+      <text class="tt" x="52" y="39">input/&lt;song folder&gt;/  (job id repair|&lt;folder&gt;)</text>
+      <text class="tx" x="52" y="57">every folder with an UltraStar txt becomes a job; a finished job runs again only after a reset</text>
+      <line class="ln" x1="500" y1="66" x2="500" y2="82" marker-end="url(#m4)"/>
+      <rect class="box-repair" x="40" y="84" width="920" height="46" rx="4"/>
+      <text class="tt" x="52" y="103">match broken.csv</text>
+      <text class="tx" x="52" y="121">fuzzy match on the txt's #ARTIST / #TITLE: category, description, lyrics_url, language, cover_url</text>
+      <line class="ln" x1="500" y1="130" x2="500" y2="146" marker-end="url(#m4)"/>
+      <rect class="box-repair" x="40" y="148" width="920" height="46" rx="4"/>
+      <text class="tt" x="52" y="167">choose the mode  (section 5)</text>
+      <text class="tx" x="52" y="185">lyrics.txt: lyrics; gap: gap; async: sync; lyrics: lyrics; video / audio: media; other or empty: stops as needs review</text>
+      <line class="ln" x1="500" y1="194" x2="500" y2="210" marker-end="url(#m4)"/>
+      <rect class="box-repair" x="40" y="212" width="920" height="62" rx="4"/>
+      <text class="tt" x="52" y="231">preparation  (only some jobs)</text>
+      <text class="tx" x="52" y="249">category lyrics without lyrics.txt: lyrics_fetch.py (report's lyrics_url first); nothing found fails the job</text>
+      <text class="tnet" x="52" y="265">category video / audio: staging copy, tag linked to a loose file or media downloaded via yt-dlp from the .usdb file; then gap mode</text>
+      <text class="tg" x="40" y="300">REPAIR.PY  (one subprocess, JOB_TIMEOUT_MIN 90)</text>
+      <line class="ln" x1="185" y1="274" x2="185" y2="328" marker-end="url(#m4)"/>
+      <line class="ln" x1="500" y1="274" x2="500" y2="328" marker-end="url(#m4)"/>
+      <line class="ln" x1="815" y1="274" x2="815" y2="328" marker-end="url(#m4)"/>
+      <text class="tl" x="193" y="318">--mode gap</text>
+      <text class="tl" x="508" y="318">--mode sync</text>
+      <text class="tl" x="823" y="318">--mode lyrics</text>
+      <rect class="box" x="40" y="330" width="290" height="58" rx="4"/>
+      <text class="tt" x="52" y="349">find audio</text>
+      <text class="tx" x="52" y="367">#AUDIO / #MP3, else the sound of #VIDEO</text>
+      <line class="ln" x1="185" y1="388" x2="185" y2="400" marker-end="url(#m4)"/>
+      <rect class="box" x="40" y="402" width="290" height="58" rx="4"/>
+      <text class="tt" x="52" y="421">language + aligner</text>
+      <text class="tx" x="52" y="439">language.txt, else --language, else</text>
+      <text class="tx" x="52" y="454">#LANGUAGE, else whisper tiny</text>
+      <line class="ln" x1="185" y1="460" x2="185" y2="472" marker-end="url(#m4)"/>
+      <rect class="box" x="40" y="474" width="290" height="58" rx="4"/>
+      <text class="tt" x="52" y="493">align the opening</text>
+      <text class="tx" x="52" y="511">first 2 units (lines merged to 8+ words)</text>
+      <text class="tx" x="52" y="526">on the full mix, each in its own window</text>
+      <line class="ln" x1="185" y1="532" x2="185" y2="544" marker-end="url(#m4)"/>
+      <rect class="box" x="40" y="546" width="290" height="58" rx="4"/>
+      <text class="tt" x="52" y="565">new #GAP</text>
+      <text class="tx" x="52" y="583">median of the gaps the opening implies</text>
+      <line class="ln" x1="185" y1="604" x2="185" y2="616" marker-end="url(#m4)"/>
+      <rect class="box" x="40" y="618" width="290" height="58" rx="4"/>
+      <text class="tt" x="52" y="637">write</text>
+      <text class="tx" x="52" y="655">notes untouched, only #GAP changes</text>
+      <line class="ln" x1="185" y1="676" x2="185" y2="858" marker-end="url(#m4)"/>
+      <rect class="box" x="355" y="330" width="290" height="58" rx="4"/>
+      <text class="tt" x="367" y="349">find audio</text>
+      <text class="tx" x="367" y="367">#AUDIO / #MP3, else the sound of #VIDEO</text>
+      <line class="ln" x1="500" y1="388" x2="500" y2="400" marker-end="url(#m4)"/>
+      <rect class="box" x="355" y="402" width="290" height="58" rx="4"/>
+      <text class="tt" x="367" y="421">vocal track</text>
+      <text class="tx" x="367" y="439">demucs vocals + muted copy</text>
+      <text class="tx" x="367" y="454">(cached in work/&lt;folder&gt;/cache)</text>
+      <line class="ln" x1="500" y1="460" x2="500" y2="472" marker-end="url(#m4)"/>
+      <rect class="box" x="355" y="474" width="290" height="58" rx="4"/>
+      <text class="tt" x="367" y="493">language + aligner</text>
+      <text class="tx" x="367" y="511">language.txt, else --language, else</text>
+      <text class="tx" x="367" y="526">#LANGUAGE, else whisper tiny</text>
+      <line class="ln" x1="500" y1="532" x2="500" y2="544" marker-end="url(#m4)"/>
+      <rect class="box" x="355" y="546" width="290" height="58" rx="4"/>
+      <text class="tt" x="367" y="565">align line by line</text>
+      <text class="tx" x="367" y="583">each unit in a search window around</text>
+      <text class="tx" x="367" y="598">its old time (REPAIR_ALIGN_PAD 6 s)</text>
+      <line class="ln" x1="500" y1="604" x2="500" y2="616" marker-end="url(#m4)"/>
+      <rect class="box" x="355" y="618" width="290" height="58" rx="4"/>
+      <text class="tt" x="367" y="637">fix the alignment</text>
+      <text class="tx" x="367" y="655">outlier units re-anchored, dropped</text>
+      <text class="tx" x="367" y="670">units rescued, the opening refined</text>
+      <line class="ln" x1="500" y1="676" x2="500" y2="688" marker-end="url(#m4)"/>
+      <rect class="box" x="355" y="690" width="290" height="58" rx="4"/>
+      <text class="tt" x="367" y="709">lyrics match the audio?</text>
+      <text class="tx" x="367" y="727">detect_lyrics_mismatch; no: UltraSinger</text>
+      <text class="tx" x="367" y="742">re-creates the song (REPAIR_FALLBACK)</text>
+      <line class="ln" x1="500" y1="748" x2="500" y2="760" marker-end="url(#m4)"/>
+      <rect class="box" x="355" y="762" width="290" height="58" rx="4"/>
+      <text class="tt" x="367" y="781">timing + pitch</text>
+      <text class="tx" x="367" y="799">words mapped to the notes, new #GAP,</text>
+      <text class="tx" x="367" y="814">SwiftF0 re-pitch; same notes, new times</text>
+      <line class="ln" x1="500" y1="820" x2="500" y2="858" marker-end="url(#m4)"/>
+      <rect class="box" x="670" y="330" width="290" height="58" rx="4"/>
+      <text class="tt" x="682" y="349">lyrics source</text>
+      <text class="tx" x="682" y="367">lyrics.txt in the folder, or the JSON</text>
+      <text class="tx" x="682" y="382">that lyrics_fetch.py wrote</text>
+      <line class="ln" x1="815" y1="388" x2="815" y2="400" marker-end="url(#m4)"/>
+      <rect class="box" x="670" y="402" width="290" height="58" rx="4"/>
+      <text class="tt" x="682" y="421">figure 3</text>
+      <text class="tx" x="682" y="439">vocals, song end, language, global CTC,</text>
+      <text class="tx" x="682" y="454">refinement, syllables, lines, pitch</text>
+      <line class="ln" x1="815" y1="460" x2="815" y2="472" marker-end="url(#m4)"/>
+      <rect class="box" x="670" y="474" width="290" height="58" rx="4"/>
+      <text class="tt" x="682" y="493">write</text>
+      <text class="tx" x="682" y="511">notes rebuilt from the text; lyrics.txt</text>
+      <text class="tx" x="682" y="526">and language.txt next to the txt</text>
+      <line class="ln" x1="815" y1="532" x2="815" y2="858" marker-end="url(#m4)"/>
+      <text class="tg" x="40" y="852">ORCHESTRATOR</text>
+      <rect class="box-repair" x="40" y="860" width="920" height="46" rx="4"/>
+      <text class="tt" x="52" y="879">output/repaired/&lt;folder&gt;/</text>
+      <text class="tx" x="52" y="897">full copy of the input folder with the repaired txt (a re-created song: UltraSinger's new txt); language.txt next to it</text>
+      <line class="ln" x1="500" y1="906" x2="500" y2="922" marker-end="url(#m4)"/>
+      <rect class="box-repair" x="40" y="924" width="920" height="46" rx="4"/>
+      <text class="tt" x="52" y="943">romanise + cover</text>
+      <text class="tx" x="52" y="961">romanize.py on the txt; the report's cover_url replaces the cover (repairs get no lyrics review)</text>
+      <line class="ln" x1="500" y1="970" x2="500" y2="986" marker-end="url(#m4)"/>
+      <rect class="box-repair" x="40" y="988" width="920" height="46" rx="4"/>
+      <text class="tt" x="52" y="1007">state + report</text>
+      <text class="tx" x="52" y="1025">row in 'Songs repaired' with the mode (gap, sync, recreated, lyrics); a failure retries up to 3 times, partial output to output/failed/repair/</text>
+    </svg>
+    </div>
+    <figcaption>Gap mode only needs the opening lines and the full mix. Sync mode aligns every line separately around its old position and, when the lyrics do not fit the audio at all, re-creates the song from its audio. Lyrics mode is the same engine new songs use (figure 3), so <code>song_end.txt</code> and <code>anchors.txt</code> only take effect there.</figcaption>
+  </figure>
+</section>
+
+<!-- ============================ REPAIR ROUTING ============================ -->
+<section>
+  <h2>5. How a repair job picks its mode</h2>
+  <p>A folder in <code>input/</code> becomes a repair job. <code>build_job_plan()</code> matches it to a <code>broken.csv</code> row and picks the mode in this order; the first matching row wins.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Condition</th><th>Mode</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr><td><code>lyrics.txt</code> in the folder</td><td>lyrics</td><td>figure 3 with that text</td></tr>
+      <tr><td>category <code>gap</code></td><td>gap</td><td>only <code>#GAP</code> is re-detected from the first lyric lines</td></tr>
+      <tr><td>category <code>async</code></td><td>sync</td><td>every line aligned in its own window (<code>progressively_align</code>, re-anchor, rescue); if lyrics and audio do not match (<code>detect_lyrics_mismatch</code>), the song is re-created with UltraSinger (<code>REPAIR_FALLBACK</code>)</td></tr>
+      <tr><td>category <code>lyrics</code></td><td>lyrics</td><td><code>lyrics_fetch.py</code> first (report's <code>lyrics_url</code>, else search); nothing found fails the job</td></tr>
+      <tr><td>category <code>video</code> / <code>audio</code></td><td>media, then gap</td><td>file already fine: needs review; one loose file in the folder: tag linked; a <code>.usdb</code> sync-meta file: media downloaded with yt-dlp; else failed</td></tr>
+      <tr><td>category <code>other</code> or empty</td><td>none</td><td>listed under "Needs review" in the report</td></tr>
+      <tr><td>no <code>broken.csv</code> row</td><td><code>REPAIR_MODE</code></td><td>default <code>sync</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>Every finished repair then runs <code>romanize.py</code> and the report's <code>cover_url</code>, like a new song. The input folder is never changed; the result is a full copy in <code>output/repaired/</code>.</p>
+</section>
+
+<!-- ============================ ADMIN FILES ============================ -->
+<section>
+  <h2>6. Files an admin can put next to a song</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>File</th><th>Read by</th><th>Written by</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>lyrics.txt</code></td><td>orchestrator (in <code>input/</code>: lyrics mode), repair.py</td><td>every lyrics-mode song</td><td>one sung line per text line; the trusted text</td></tr>
+      <tr><td><code>language.txt</code></td><td>UltraSinger, repair.py</td><td>both, once the language is known</td><td>wins over every other language source</td></tr>
+      <tr><td><code>song_end.txt</code></td><td>repair.py (lyrics mode)</td><td>admin only</td><td>nothing after this time is used for the lyrics</td></tr>
+      <tr><td><code>anchors.txt</code></td><td>repair.py (lyrics mode)</td><td>admin only</td><td>pinned line starts + end; wins over <code>song_end.txt</code></td></tr>
+      <tr><td><code>*.usdb</code></td><td>orchestrator (media repair)</td><td>USDB Syncer</td><td>original video/audio source for a download</td></tr>
+    </tbody>
+  </table></div>
+  <p>Exact formats: <code>stack/docs/repairs.md</code> (sections "Trusted lyrics", "Song end", "Anchors").</p>
+</section>
+
+<!-- ============================ MODULE INDEX ============================ -->
+<section>
+  <h2>7. Module index</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>File</th><th>Runs as</th><th>Job</th></tr></thead>
+    <tbody>
+      <tr><td><code>orchestrator/orchestrator.py</code></td><td>container command</td><td>plans and runs jobs, state, progress, report, lyrics review</td></tr>
+      <tr><td><code>src/UltraSinger.py</code> + <code>src/modules/</code></td><td>subprocess per new song</td><td>generation (download, demucs, whisperX, hyphenation, SwiftF0, txt writer)</td></tr>
+      <tr><td><code>orchestrator/repair.py</code></td><td>subprocess</td><td>gap, sync and lyrics modes</td></tr>
+      <tr><td><code>orchestrator/lyrics_fetch.py</code></td><td>subprocess</td><td>online lyrics, section tags resolved</td></tr>
+      <tr><td><code>orchestrator/romanize.py</code></td><td>subprocess</td><td>Latin script for Cyrillic, Korean, Japanese</td></tr>
+      <tr><td><code>ctc_align.py</code></td><td>imported by repair.py</td><td>global CTC forced alignment</td></tr>
+      <tr><td><code>outro.py</code></td><td>imported by repair.py</td><td>outro detection, <code>song_end.txt</code></td></tr>
+      <tr><td><code>anchors.py</code></td><td>imported by repair.py</td><td><code>anchors.txt</code> reading and matching</td></tr>
+      <tr><td><code>pitch_normalise.py</code></td><td>imported by repair.py</td><td>unsure notes, octave folding</td></tr>
+      <tr><td><code>usdb_lookup.py</code>, <code>usdb_eu_lookup.py</code></td><td>imported by orchestrator</td><td>USDB search and txt download (usdb_syncer submodule for animux)</td></tr>
+      <tr><td><code>broken_report.py</code></td><td>imported by orchestrator</td><td>reads <code>broken.csv</code></td></tr>
+      <tr><td><code>recording_length.py</code></td><td>imported by orchestrator</td><td>MusicBrainz length of the list's <code>musicbrainz_id</code></td></tr>
+      <tr><td><code>lyrics_divergence.py</code></td><td>imported by orchestrator</td><td>lyrics review rule and note</td></tr>
+      <tr><td><code>compare_reference.py</code></td><td>imported + command line</td><td>word times from a txt; regression check against <code>stack/reference/</code></td></tr>
+      <tr><td><code>resource_profile.py</code>, <code>resource_monitor.py</code></td><td>imported by orchestrator</td><td>model choice from <code>STACK_*</code>; CPU/RAM/VRAM in the progress view</td></tr>
+      <tr><td><code>work/bench/*.py</code></td><td>by hand</td><td>benchmarks on the known-working songs, not part of the pipeline</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============================ BUILD ============================ -->
+<section>
+  <h2>8. Building the images</h2>
+  <p>Rebuild after changes to <code>src/</code>, <code>pyproject.toml</code>, <code>stack/Dockerfile</code> or the <code>usdb_syncer</code> submodule; <code>stack/orchestrator/</code> is mounted and needs none. From inside <code>stack/</code>:</p>
+<pre>docker compose build ultrasinger                        # CPU image  ultrasinger-stack:cpu
+docker compose --profile rocm build ultrasinger-rocm    # ROCm image ultrasinger-stack:rocm
+docker compose --profile rocm build --pull --no-cache ultrasinger-rocm   # from scratch</pre>
+  <p>Details, restart and the check whether an image matches your code: <code>stack/docs/development.md</code>, section "Building the images".</p>
+</section>
+</main>
+
+</body>
+</html>

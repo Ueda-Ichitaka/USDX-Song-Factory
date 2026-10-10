@@ -30,7 +30,7 @@ def check(name, condition):
 # in karaoke-dashboard's app/models.py, category is nullable there)
 # --------------------------------------------------------------------------
 
-for code in ("gap", "async", "lyrics", "video", "audio", "other"):
+for code in ("gap", "async", "lyrics", "video", "audio", "other", "cover"):
     check(f"normalize_category accepts {code!r}", br.normalize_category(code) == code)
 
 check("normalize_category is case/whitespace-insensitive",

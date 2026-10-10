@@ -31,6 +31,7 @@ x-common-env: &common-env
   WHISPER_BATCH_SIZE: ${WHISPER_BATCH_SIZE:-}
   REPAIR_MODE: ${REPAIR_MODE:-sync}
   ROMANIZE: ${ROMANIZE:-1}
+  ROMANIZE_STYLE: ${ROMANIZE_STYLE:-scientific}
   LYRICS_ENABLED: ${LYRICS_ENABLED:-1}
   GENIUS_API_KEY: ${GENIUS_API_KEY:-}
   # USDB (usdb.animux.de) account - when both are set, a new song first

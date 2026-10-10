@@ -11,6 +11,15 @@ concatenated lyrics. The order of the lyrics is enforced by construction,
 so repeated lines cannot swap places and an error stays local instead of
 cascading.
 
+With `end_penalty` the path may end after any word: lyrics that are never
+sung at the end (a video that fades out before the album lyrics end) are
+left out (NOT_SUNG) instead of being squeezed into the audio, each token
+left out costing `end_penalty`. Measured on 110 hand-synced songs
+(stack/work/bench/bench26_tail.py): audio cut at 70% of the song - sung
+words within 0.3 s 52.5% -> 80.4%, 96% of the unsung words left out; whole
+songs unchanged (77.5% -> 77.6%), 0.6% of the sung words left out, mostly
+wordless "ah ah" endings the forced path misplaced anyway.
+
 Everything here is plain torch: the Viterbi is implemented locally because
 torchaudio.functional.forced_align is deprecated and removed in torchaudio 2.9.
 """
@@ -23,6 +32,7 @@ SAMPLE_RATE = 16000
 FRAME_SAMPLES = 320  # wav2vec2 stride: one emission frame per 20 ms
 FRAME_SECONDS = FRAME_SAMPLES / SAMPLE_RATE
 WILDCARD = -1  # token for a letter/digit the model's dictionary does not know
+NOT_SUNG = "not sung"  # a word the path left out at the end (end_penalty)
 
 
 def blank_id_from(dictionary: dict) -> int:
@@ -62,12 +72,35 @@ def tokenize_words(words: list, dictionary: dict, blank_id: int):
     return tokens, word_index
 
 
-def ctc_viterbi(log_probs: torch.Tensor, tokens: list, blank_id: int):
+def _end_state(alpha, word_index, end_penalty) -> int:
+    """The state the best path ends in. Forced (end_penalty None): the last
+    token or the blank after it. Otherwise the end of any word (its last
+    token or the blank after it), less end_penalty per token left out."""
+    n_tok = len(word_index)
+    last = 2 * n_tok
+    if end_penalty is None:
+        return last if alpha[last] >= alpha[last - 1] else last - 1
+    best, best_state = -math.inf, last
+    for k in range(n_tok):
+        if word_index[k] < 0 or (k + 1 < n_tok and word_index[k + 1] >= 0):
+            continue  # a separator, or the next token belongs to the same word
+        cost = end_penalty * (n_tok - 1 - k)
+        for state in (2 * k + 1, 2 * k + 2):
+            value = float(alpha[state]) - cost
+            if value > best:
+                best, best_state = value, state
+    return best_state
+
+
+def ctc_viterbi(log_probs: torch.Tensor, tokens: list, blank_id: int,
+                end_penalty: float = None, word_index: list = None):
     """Best CTC path forcing `tokens` (in order) through `log_probs` (T, C).
 
     Returns one (start_frame, end_frame_exclusive, mean_posterior) per token.
     Standard CTC: a token may span several frames, blanks may sit anywhere,
     and two identical neighbouring tokens need a blank between them.
+    With `end_penalty` (and `word_index` from tokenize_words()) the path may
+    end after any word; the tokens after it get None.
     Raises ValueError when there are too few frames for the tokens."""
     n_tok = len(tokens)
     if n_tok == 0:
@@ -97,7 +130,10 @@ def ctc_viterbi(log_probs: torch.Tensor, tokens: list, blank_id: int):
         alpha = best + log_probs[t][labels]
         back[t] = choice.to(torch.int8)
 
-    state = n_states - 1 if alpha[n_states - 1] >= alpha[n_states - 2] else n_states - 2
+    if end_penalty is not None and word_index is None:
+        raise ValueError("end_penalty needs word_index")
+    state = _end_state(alpha, word_index if end_penalty is not None else [0] * n_tok,
+                       end_penalty)
     states = [0] * n_frames
     for t in range(n_frames - 1, -1, -1):
         states[t] = state
@@ -114,7 +150,7 @@ def ctc_viterbi(log_probs: torch.Tensor, tokens: list, blank_id: int):
             last[k] = t
             total[k] += math.exp(float(log_probs[t, tokens[k]]))
     return [(first[k], last[k] + 1, total[k] / (last[k] + 1 - first[k]))
-            for k in range(n_tok)]
+            if first[k] is not None else None for k in range(n_tok)]
 
 
 def emissions_for_audio(model, meta: dict, audio16k, device: str = "cpu",
@@ -154,14 +190,16 @@ def emissions_for_audio(model, meta: dict, audio16k, device: str = "cpu",
     return torch.cat(pieces, 0)
 
 
-def align_words_globally(words: list, emission: torch.Tensor, meta: dict) -> list:
+def align_words_globally(words: list, emission: torch.Tensor, meta: dict,
+                         end_penalty: float = None) -> list:
     """Word timings from one global alignment of `words` (in order) over
     `emission` (T, C).
 
-    Returns one (start_s, end_s, score) per word, or None for a word with no
-    alignable character. score is the mean token posterior (0..1): low
-    scores mark stretches the model could not really hear (wordless
-    vocals, mumbling) where the placement is a guess."""
+    Returns one (start_s, end_s, score) per word, None for a word with no
+    alignable character, or NOT_SUNG for a word the path left out at the
+    end (only with `end_penalty`, see ctc_viterbi()). score is the mean
+    token posterior (0..1): low scores mark stretches the model could not
+    really hear (wordless vocals, mumbling) where the placement is a guess."""
     dictionary = meta["dictionary"]
     blank_id = blank_id_from(dictionary)
     tokens, word_index = tokenize_words(words, dictionary, blank_id)
@@ -175,17 +213,22 @@ def align_words_globally(words: list, emission: torch.Tensor, meta: dict) -> lis
         wildcard_id = emission.shape[1]
         emission = torch.cat([emission, wildcard_col], dim=1)
         tokens = [wildcard_id if t == WILDCARD else t for t in tokens]
-    spans = ctc_viterbi(emission, tokens, blank_id)
+    spans = ctc_viterbi(emission, tokens, blank_id, end_penalty=end_penalty,
+                        word_index=word_index)
 
     scores = {}
-    for (start, end, score), wi in zip(spans, word_index):
+    for span, wi in zip(spans, word_index):
         if wi < 0:
             continue
+        if span is None:
+            result[wi] = NOT_SUNG
+            continue
+        start, end, score = span
         if result[wi] is None:
             result[wi] = [start * FRAME_SECONDS, end * FRAME_SECONDS]
             scores[wi] = [score]
         else:
             result[wi][1] = end * FRAME_SECONDS
             scores[wi].append(score)
-    return [(r[0], r[1], sum(scores[i]) / len(scores[i])) if r else None
+    return [r if r is None or r == NOT_SUNG else (r[0], r[1], sum(scores[i]) / len(scores[i]))
             for i, r in enumerate(result)]

@@ -23,9 +23,17 @@ by string similarity against what was asked for; syncedlyrics/other
 sources that return only text (no matched metadata) get a fixed baseline
 confidence (synced/timed results are trusted more than plain-text ones).
 
+Whatever the source, lines entirely in round brackets (backing voices
+sung at the same time as the lead) are left out, as are section markers,
+credit lines and leftover timestamps.
+
 A lyrics_url is fetched directly, not searched: genius.com urls are
-scraped via lyricsgenius' own URL-based scraper; anything else is fetched
-as raw plain text or LRC. Arbitrary HTML lyrics sites are NOT scraped -
+scraped via lyricsgenius' own URL-based scraper; lrclib.net track links
+(lrclib.net/tracks/<id>) are read from lrclib.net's JSON API, synced lyrics
+first, with the User-Agent lrclib.net requires (USER_AGENT); other http(s)
+links are fetched as raw plain text or LRC; anything else is a local lyrics file
+(plain text or LRC), relative to INPUT_DIR unless the path is absolute.
+Arbitrary HTML lyrics sites are NOT scraped -
 only Genius, since lyricsgenius already provides/maintains that scraper
 (see knowledge/06-IDEAS.md's darklyrics.com writeup for why a hand-rolled
 scraper against a site with no official API is a bad trade).
@@ -52,35 +60,88 @@ import json
 import os
 import re
 import sys
+import time
 
 # a candidate whose confidence falls below this is discarded - whisper's
 # own transcription takes over instead of using a poor lyrics match
 MIN_CONFIDENCE = float(os.environ.get("LYRICS_MIN_CONFIDENCE", "0.5"))
 
-LRC_LINE_RE = re.compile(r"^\[(\d+):(\d+(?:\.\d+)?)\](.*)$")
+# a lyrics_url that is a file path (not an http(s) link) is relative to this
+INPUT_DIR = os.environ.get("INPUT_DIR", "/data/input")
+
+# lrclib.net track links: the page (/tracks/<id>) and the API record
+# (/api/get/<id>) both name one record
+LRCLIB_TRACK_RE = re.compile(
+    r"^https?://(?:www\.)?lrclib\.net/(?:tracks|api/get)/(\d+)/?(?:[?#].*)?$", re.IGNORECASE)
+LRCLIB_API_GET = "https://lrclib.net/api/get/{}"
+# lrclib.net asks a client answering 429/503 to wait Retry-After seconds;
+# the stack waits once if that is at most this long, else gives up
+LRCLIB_MAX_WAIT_S = float(os.environ.get("LRCLIB_MAX_WAIT_S", "10"))
+
+
+def _app_version() -> str:
+    """UltraSinger's APP_VERSION (src/Settings.py), read as text so this
+    script needs none of UltraSinger's imports: repo checkout or container."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for path in (os.path.join(here, "..", "..", "src", "Settings.py"),
+                 "/app/UltraSinger/src/Settings.py"):
+        try:
+            with open(path, encoding="utf-8") as f:
+                m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', f.read())
+        except OSError:
+            continue
+        if m:
+            return m.group(1)
+    return "unknown"
+
+
+# lrclib.net requires clients to name themselves: name, version, project link
+USER_AGENT = (f"USDX-Song-Factory/{_app_version()} "
+              "(https://github.com/Ueda-Ichitaka/USDX-Song-Factory)")
+
+# [mm:ss.xx], [mm:ss:xx] (some sources put a colon before the hundredths)
+# and [mm:ss]
+LRC_LINE_RE = re.compile(r"^\[(\d+):(\d+)(?:[.:](\d+))?\](.*)$")
+# timestamps left at the start of a line of plain lyrics
+LEADING_TIMESTAMPS_RE = re.compile(r"^(?:\[\d+:\d+(?:[.:]\d+)?\]\s*)+")
 # credit lines some LRC sources (esp. NetEase, in Chinese) place INSIDE
 # the timed lyrics themselves rather than as [ar:.../ti:...] tags - these
-# are not sung and must not become fake "lyric lines" at t=0/1/2s ahead of
-# the real first line
+# are not sung and must not become fake "lyric lines" ahead of the real
+# first line. The Chinese credit words match also without a colon ("作曲
+# Arkona"), the English ones only with one, so a sung line such as
+# "Producer of my dreams" stays
 CREDIT_LINE_RE = re.compile(
-    r"^(作词|作曲|编曲|制作人|混音|母带|lyrics?\s*by|lyricist|composer|arranger"
-    r"|producer|mixed\s*by|mastered\s*by)\s*[:：]", re.IGNORECASE)
+    r"^(?:(?:作词|作曲|编曲|制作人|混音|母带)(?:\s*[:：]|\s)"
+    r"|(?:lyrics?\s*by|lyricist|composer|arranger|producer|mixed\s*by"
+    r"|mastered\s*by)\s*[:：])", re.IGNORECASE)
+
+
+# a line that is one group in round brackets is a backing voice sung at the
+# same time as the lead (a canon, the second voice of a duet, a choir call);
+# aligned as its own line it pushes the lead lines later (measured on the 8
+# fetched songs that have such lines, stack/work/bench/an25_brackets.py:
+# the other lines align at least as well without them, Nanowar of Steel -
+# Valhalleluja's canon part lands where it is sung)
+BACKING_LINE_RE = re.compile(r"^\([^()]*\)$")
 
 
 def parse_lrc(lrc_text: str) -> list:
     """Parse LRC-format text into [{"text":, "start":}, ...], dropping
     metadata tags ('[ar:...]', '[ti:...]', ...), in-line credit lines
-    ('作词 : ...', 'Composer: ...', ...) and blank lines."""
+    ('作词 : ...', 'Composer: ...', ...), backing lines entirely in
+    brackets and blank lines."""
     lines = []
     for raw in lrc_text.splitlines():
         m = LRC_LINE_RE.match(raw.strip())
         if not m:
             continue
-        minutes, seconds, text = m.groups()
+        minutes, seconds, fraction, text = m.groups()
         text = text.strip()
-        if not text or CREDIT_LINE_RE.match(text):
+        if not text or CREDIT_LINE_RE.match(text) or BACKING_LINE_RE.match(text):
             continue
-        start = int(minutes) * 60 + float(seconds)
+        start = int(minutes) * 60 + int(seconds)
+        if fraction:
+            start += int(fraction) / 10 ** len(fraction)
         lines.append({"text": text, "start": start})
     return lines
 
@@ -145,10 +206,16 @@ def resolve_and_strip_section_markers(text: str) -> str:
 
 
 def parse_plain(text: str) -> list:
-    """Plain lyrics: one non-empty line = one sung line, no timing."""
+    """Plain lyrics: one non-empty line = one sung line, no timing.
+    Timestamps left at the start of a line, credit lines and backing lines
+    entirely in brackets are dropped."""
     text = resolve_and_strip_section_markers(text)
-    return [{"text": line.strip(), "start": None}
-            for line in text.splitlines() if line.strip()]
+    lines = []
+    for line in text.splitlines():
+        line = LEADING_TIMESTAMPS_RE.sub("", line.strip()).strip()
+        if line and not CREDIT_LINE_RE.match(line) and not BACKING_LINE_RE.match(line):
+            lines.append({"text": line, "start": None})
+    return lines
 
 
 def _similarity(a: str, b: str) -> float:
@@ -285,19 +352,86 @@ def _fetch_plain_or_lrc_url(url: str):
     return None
 
 
+def _fetch_lrclib_url(url: str):
+    """One lrclib.net record, from a track page or API link, read from
+    lrclib.net's JSON API: synced lyrics first (their line times seed the
+    alignment, as with syncedlyrics), plain lyrics otherwise. A search link
+    names no single song and an instrumental record has no lyrics -> None.
+    A 429/503 waits Retry-After once when it is at most LRCLIB_MAX_WAIT_S."""
+    m = LRCLIB_TRACK_RE.match(url.strip())
+    if not m:
+        print("lyrics_fetch: lrclib.net link is not a track "
+              "(expected lrclib.net/tracks/<id>)", file=sys.stderr)
+        return None
+    try:
+        import requests
+        api_url = LRCLIB_API_GET.format(m.group(1))
+        headers = {"User-Agent": USER_AGENT}
+        resp = requests.get(api_url, headers=headers, timeout=15)
+        if resp.status_code in (429, 503):
+            try:
+                wait = float(resp.headers.get("Retry-After", ""))
+            except ValueError:
+                wait = None
+            if wait is not None and 0 <= wait <= LRCLIB_MAX_WAIT_S:
+                time.sleep(wait)
+                resp = requests.get(api_url, headers=headers, timeout=15)
+        if not resp.ok:
+            print(f"lyrics_fetch: lrclib.net answered {resp.status_code}", file=sys.stderr)
+            return None
+        record = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        print(f"lyrics_fetch: lrclib.net fetch failed: {exc}", file=sys.stderr)
+        return None
+
+    if record.get("instrumental"):
+        return None
+    lines = parse_lrc(record.get("syncedLyrics") or "")
+    if lines:
+        return {"source": "lyrics_url (lrclib synced)", "lines": lines, "confidence": 1.0}
+    lines = parse_plain(record.get("plainLyrics") or "")
+    if lines:
+        return {"source": "lyrics_url (lrclib plain)", "lines": lines, "confidence": 1.0}
+    return None
+
+
+def _read_lyrics_file(value: str):
+    """A local lyrics file (plain text or LRC), relative to INPUT_DIR
+    unless absolute - the same rule as a local media file in the url
+    column (orchestrator.resolve_song_input())."""
+    path = value if os.path.isabs(value) else os.path.join(INPUT_DIR, value)
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"lyrics_fetch: lyrics file not readable: {exc}", file=sys.stderr)
+        return None
+    lines = parse_lrc(text) or parse_plain(text)
+    if not lines:
+        return None
+    return {"source": "lyrics_url (file)", "lines": lines, "confidence": 1.0}
+
+
 def fetch_from_url(url: str, genius_api_key: str = None):
     """Fetch lyrics directly from a csv-supplied lyrics_url - explicitly
     trusted (the CSV author already vetted it), so it is used as-is
     rather than confidence-scored against other sources (see
     fetch_lyrics()). genius.com urls are scraped via lyricsgenius;
-    anything else is fetched as raw plain text or LRC - arbitrary HTML
+    lrclib.net track links are read from lrclib.net's API
+    (_fetch_lrclib_url()); other http(s) links are fetched as raw plain
+    text or LRC - arbitrary HTML
     lyrics sites are NOT scraped (only Genius is, since lyricsgenius
     already provides/maintains that scraper - see 06-IDEAS.md's
-    darklyrics lesson on why a hand-rolled scraper is a bad trade)."""
+    darklyrics lesson on why a hand-rolled scraper is a bad trade).
+    Anything else is a local lyrics file (see _read_lyrics_file())."""
     if not url:
         return None
+    if not url.lower().startswith(("http://", "https://")):
+        return _read_lyrics_file(url)
     if "genius.com/" in url.lower():
         return _fetch_genius_url(url, genius_api_key)
+    if "lrclib.net/" in url.lower():
+        return _fetch_lrclib_url(url)
     return _fetch_plain_or_lrc_url(url)
 
 
@@ -336,7 +470,8 @@ def main():
     parser.add_argument("--title", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--lyrics-url", default=None,
-                        help="csv-supplied trusted lyrics url, tried first")
+                        help="csv-supplied trusted lyrics url or lyrics file "
+                             "path (relative to INPUT_DIR), tried first")
     args = parser.parse_args()
 
     genius_api_key = os.environ.get("GENIUS_API_KEY") or None

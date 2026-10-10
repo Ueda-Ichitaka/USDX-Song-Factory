@@ -1,5 +1,11 @@
-"""Separate vocals from audio"""
+"""Separate vocals from audio
+
+About me: vocal separation with demucs, cached per audio file name. demucs
+shifts the audio by a random amount (0-0.5 s) before separating; the shift
+is drawn from a fixed seed (SEPARATION_SEED), so the same song gives the
+same vocals - and the same lyrics alignment - on every run."""
 import os
+import random
 from enum import Enum
 
 import demucs.separate
@@ -10,6 +16,9 @@ from modules.console_colors import (
     red_highlighted, green_highlighted,
 )
 from modules.os_helper import check_file_exists
+
+SEPARATION_SEED = 0
+
 
 class DemucsModel(Enum):
     HTDEMUCS = "htdemucs"           # first version of Hybrid Transformer Demucs. Trained on MusDB + 800 songs. Default model.
@@ -29,17 +38,22 @@ def separate_audio(input_file_path: str, output_folder: str, model: DemucsModel,
         f"{ULTRASINGER_HEAD} Separating vocals from audio with {blue_highlighted('demucs')} with model {blue_highlighted(model.value)} and {red_highlighted(device)} as worker."
     )
 
-    demucs.separate.main(
-        [
-            "--two-stems", "vocals",
-            "-d", f"{device}",
-            "--float32",
-            "-n",
-            model.value,
-            "--out", f"{os.path.join(output_folder, 'separated')}",
-            f"{input_file_path}",
-        ]
-    )
+    caller_state = random.getstate()
+    random.seed(SEPARATION_SEED)
+    try:
+        demucs.separate.main(
+            [
+                "--two-stems", "vocals",
+                "-d", f"{device}",
+                "--float32",
+                "-n",
+                model.value,
+                "--out", f"{os.path.join(output_folder, 'separated')}",
+                f"{input_file_path}",
+            ]
+        )
+    finally:
+        random.setstate(caller_state)
 
 def separate_vocal_from_audio(cache_folder_path: str,
                               audio_output_file_path: str,

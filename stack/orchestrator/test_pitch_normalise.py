@@ -2,8 +2,7 @@
 """Tests for pitch_normalise.py.
 
 About me: plain assert-based checks (same style as the other orchestrator
-tests) for the octave folding and unsure-note filling applied to generated
-note pitches. Pure standard library, runs on the host:
+tests) for the octave folding applied to generated note pitches. Pure standard library, runs on the host:
 
     python3 test_pitch_normalise.py
 """
@@ -80,34 +79,56 @@ check("fold_to_song_range: only whole octaves are applied",
 check("fold_to_song_range: an empty list stays empty", pn.fold_to_song_range([]) == [])
 
 # --------------------------------------------------------------------------
-# fill_unsure_notes(): notes without a confident pitch take the local level
+# normalise_pitches(): fold locally, fold to the song range, whole numbers -
+# every note keeps its own pitch class, however unsure the detector was
 # --------------------------------------------------------------------------
 
-pitches = [4, 5, 40, 5, 4, 2, 4]
-sure = [1.0, 1.0, 0.0, 0.9, 0.5, 1.0, 0.8]
-filled = pn.fill_unsure_notes(pitches, sure)
-check(f"fill_unsure_notes: an unsure note takes the median of its sure neighbours "
-      f"(got {filled})",
-      filled[2] == 4.0 and filled[:2] == [4, 5] and filled[3:] == [5, 4, 2, 4])
-check("fill_unsure_notes: notes at or above the threshold are kept",
-      pn.fill_unsure_notes([4, 30, 5, 6], [1.0, 0.3, 1.0, 1.0]) == [4, 30, 5, 6])
-check("fill_unsure_notes: with fewer than 3 sure notes nothing changes",
-      pn.fill_unsure_notes([4, 30, 5], [1.0, 0.0, 1.0]) == [4, 30, 5])
-
-# --------------------------------------------------------------------------
-# normalise_pitches(): fill, fold locally, fold to the song range, whole numbers
-# --------------------------------------------------------------------------
-
-result = pn.normalise_pitches([4, 5, 7, 5, 28, 2, 4, 5, 40, 9, 7, 5],
-                              [1, 1, 1, 1, 1, 1, 1, 1, 0.1, 1, 1, 1])
-check(f"normalise_pitches: unsure notes filled, octave errors folded, ints (got {result})",
-      result[4] == 4 and abs(result[8] - 5) <= 2 and all(isinstance(p, int) for p in result))
+result = pn.normalise_pitches([4, 5, 7, 5, 28, 2, 4, 5, 40, 9, 7, 5])
+check(f"normalise_pitches: octave errors folded, ints (got {result})",
+      result[4] == 4 and result[8] == 4 and all(isinstance(p, int) for p in result))
 check("normalise_pitches: same length as the input",
       len(result) == 12)
-wide = pn.normalise_pitches(scattered, [1.0] * len(scattered))
+check("normalise_pitches: only whole octaves are applied (every pitch class kept)",
+      all((a - b) % 12 == 0 for a, b in zip(result, [4, 5, 7, 5, 28, 2, 4, 5, 40, 9, 7, 5])))
+growl = [3, 9, 2, 10, 4, 8, 1, 11, 5, 7]
+check("normalise_pitches: a line of different pitches is not flattened",
+      pn.normalise_pitches(growl) == growl)
+wide = pn.normalise_pitches(scattered)
 check(f"normalise_pitches: the screamed passage ends up within an octave of its "
       f"median (got {wide})",
       all(abs(p - sorted(wide)[len(wide) // 2]) <= 12 for p in wide))
+
+# --------------------------------------------------------------------------
+# pull_unsure_notes() / normalise_harsh_pitches(): profile harsh_vocals - an
+# unsure note moves halfway towards the local melody, at most 3 semitones
+# from it; confident notes stay
+# --------------------------------------------------------------------------
+
+line = [5, 5, 5, 5, 5, 13, 5, 5, 5, 5, 5]
+sure = [1.0] * 11
+check("pull_unsure_notes: confident notes stay as they are",
+      pn.pull_unsure_notes(line, sure) == line)
+unsure = list(sure)
+unsure[5] = 0.1
+pulled = pn.pull_unsure_notes(line, unsure)
+check(f"pull_unsure_notes: an unsure note 8 above the melody ends 3 above it (got {pulled[5]})",
+      pulled[5] == 8 and pulled[:5] == line[:5] and pulled[6:] == line[6:])
+near = [5, 5, 5, 5, 5, 7, 5, 5, 5, 5, 5]
+check(f"pull_unsure_notes: an unsure note 2 above moves halfway (got {pn.pull_unsure_notes(near, unsure)[5]})",
+      pn.pull_unsure_notes(near, unsure)[5] == 6)
+low = [5, 5, 5, 5, 5, -1, 5, 5, 5, 5, 5]
+check(f"pull_unsure_notes: below the melody too (got {pn.pull_unsure_notes(low, unsure)[5]})",
+      pn.pull_unsure_notes(low, unsure)[5] == 2)
+check("pull_unsure_notes: a note with 30% confident frames counts as sure",
+      pn.pull_unsure_notes(line, [1.0] * 5 + [0.3] + [1.0] * 5) == line)
+check("pull_unsure_notes: whole numbers, same length",
+      all(isinstance(p, int) for p in pulled) and len(pulled) == len(line))
+octave = [5, 5, 5, 5, 5, 29, 5, 5, 5, 5, 5]
+check(f"normalise_harsh_pitches: octaves are folded before pulling (got "
+      f"{pn.normalise_harsh_pitches(octave, unsure)[5]})",
+      pn.normalise_harsh_pitches(octave, unsure)[5] == 5)
+check("normalise_harsh_pitches: pulls unsure notes after folding (6 above -> 3 above)",
+      pn.normalise_harsh_pitches([5, 5, 5, 5, 5, 11, 5, 5, 5, 5, 5], unsure)[5] == 8)
 
 print()
 if failures:

@@ -217,6 +217,51 @@ check(f"align_words_globally: a wildcard character (not in the dictionary) "
 check("align_words_globally: no words -> empty result",
       ctc_align.align_words_globally([], make_emission(10, 6, []), meta) == [])
 
+# --------------------------------------------------------------------------
+# end_penalty: the path may end after any word - lyrics never sung at the
+# end are left out instead of being squeezed into the audio
+# --------------------------------------------------------------------------
+
+# audio: "ab" sung, then nothing; lyrics: "ab c d"
+_tail_em = make_emission(40, 6, [(3, 2), (6, 3)])
+_tok, _widx = ctc_align.tokenize_words(["ab", "c", "d"], DICT, 0)
+_forced = ctc_align.ctc_viterbi(_tail_em, _tok, 0)
+check("ctc_viterbi: without end_penalty every token is placed (forced)",
+      all(sp is not None for sp in _forced))
+_free = ctc_align.ctc_viterbi(_tail_em, _tok, 0, end_penalty=4.0, word_index=_widx)
+check(f"ctc_viterbi: with end_penalty the unsung words at the end are left out (got {_free})",
+      _free[0] is not None and _free[1] is not None and all(sp is None for sp in _free[2:]))
+check("ctc_viterbi: the sung part keeps its frames",
+      _free[0][0] == 3 and _free[1][0] == 6)
+
+# everything sung: nothing is left out
+_all_em = make_emission(40, 6, [(3, 2), (6, 3), (9, 1), (12, 4), (15, 1), (18, 5)])
+_all = ctc_align.ctc_viterbi(_all_em, _tok, 0, end_penalty=4.0, word_index=_widx)
+check("ctc_viterbi: with end_penalty nothing is left out when all is sung",
+      all(sp is not None for sp in _all))
+
+# "ab cd": only "ab" and "c" sung - "cd" is either placed whole or left out whole
+_half_em = make_emission(40, 6, [(3, 2), (6, 3), (9, 1), (12, 4)])
+_tok2, _widx2 = ctc_align.tokenize_words(["ab", "cd"], DICT, 0)
+for _pen in (1.0, 4.0, 100.0):
+    _half = ctc_align.ctc_viterbi(_half_em, _tok2, 0, end_penalty=_pen, word_index=_widx2)
+    _word2 = [sp for sp, wi in zip(_half, _widx2) if wi == 1]
+    check(f"ctc_viterbi: a word is never cut in half (penalty {_pen}, got {_half})",
+          all(sp is None for sp in _word2) or all(sp is not None for sp in _word2))
+
+_words = ctc_align.align_words_globally(["ab", "c", "d"], _tail_em, {"dictionary": DICT},
+                                        end_penalty=4.0)
+check(f"align_words_globally: left-out words are NOT_SUNG (got {_words})",
+      _words[0] is not None and _words[0] != ctc_align.NOT_SUNG
+      and _words[1] == ctc_align.NOT_SUNG and _words[2] == ctc_align.NOT_SUNG)
+_words = ctc_align.align_words_globally(["ab", "!!", "c", "d"], _tail_em, {"dictionary": DICT},
+                                        end_penalty=4.0)
+check(f"align_words_globally: a word without letters stays None, also at the end (got {_words})",
+      _words[1] is None)
+check("align_words_globally: without end_penalty nothing is NOT_SUNG",
+      ctc_align.NOT_SUNG not in ctc_align.align_words_globally(
+          ["ab", "c", "d"], _tail_em, {"dictionary": DICT}))
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")

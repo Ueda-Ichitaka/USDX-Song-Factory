@@ -19,6 +19,14 @@ import romanize as rz  # noqa: E402
 failures = []
 
 
+def _raises(fn):
+    try:
+        fn()
+    except ValueError:
+        return True
+    return False
+
+
 def check(name, condition):
     status = "PASS" if condition else "FAIL"
     print(f"[{status}] {name}")
@@ -149,6 +157,50 @@ finally:
     os.unlink(tmp2.name)
 
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# ROMANIZE_STYLE: "scientific" (default, GOST 7.79 B via cyrtranslit) or
+# "readable" (karaoke-friendly Russian: kh, ts, shch, y, yo, no soft/hard sign)
+# --------------------------------------------------------------------------
+
+check("style default is scientific (unchanged output)",
+      rz.romanize_text("щука", "cyrillic", "ru") == "shhuka")
+check("readable: shch/ts/kh/y instead of shh/cz/h/y'",
+      rz.romanize_text("щука", "cyrillic", "ru", style="readable") == "shchuka" and
+      rz.romanize_text("седмицу", "cyrillic", "ru", style="readable") == "sedmitsu" and
+      rz.romanize_text("лесных", "cyrillic", "ru", style="readable") == "lesnykh")
+check("readable: soft and hard signs are left out, yo/ya/yu/zh/ch",
+      rz.romanize_text("объём", "cyrillic", "ru", style="readable") == "obyom" and
+      rz.romanize_text("вольная", "cyrillic", "ru", style="readable") == "volnaya" and
+      rz.romanize_text("жую чай", "cyrillic", "ru", style="readable") == "zhuyu chay")
+check("readable: capitals keep their case, all-caps stays all-caps",
+      rz.romanize_text("Ярило", "cyrillic", "ru", style="readable") == "Yarilo" and
+      rz.romanize_text("Щит", "cyrillic", "ru", style="readable") == "Shchit" and
+      rz.romanize_text("ЩИТ", "cyrillic", "ru", style="readable") == "SHCHIT")
+check("readable: non-Cyrillic characters pass through",
+      rz.romanize_text("да!", "cyrillic", "ru", style="readable") == "da!")
+check("readable: Ukrainian stays scientific (its readable standard depends on the "
+      "position in the word, which a syllable does not know)",
+      rz.romanize_text("їжак", "cyrillic", "ua", style="readable") ==
+      rz.romanize_text("їжак", "cyrillic", "ua"))
+check("an unknown style is rejected",
+      _raises(lambda: rz.romanize_text("да", "cyrillic", "ru", style="fancy")))
+check("romanize_word_field passes the style on",
+      rz.romanize_word_field("щу", style="readable")[0] == "shchu")
+
+_saved_style, _saved_argv = rz.ROMANIZE_STYLE, sys.argv
+_exit = None
+try:
+    rz.ROMANIZE_STYLE = "fancy"
+    sys.argv = ["romanize.py", "--txt", "/nonexistent.txt"]
+    try:
+        rz.main()
+    except SystemExit as exc:
+        _exit = exc.code
+finally:
+    rz.ROMANIZE_STYLE, sys.argv = _saved_style, _saved_argv
+check(f"main: an unknown ROMANIZE_STYLE stops with exit code 2 before any file (got {_exit})",
+      _exit == 2)
 
 print()
 if failures:

@@ -48,7 +48,10 @@ is generated from scratch.
    matches always use the song list's link).
 4. The upload's `#GAP` was tuned for somebody else's audio file, so it is
    re-detected against the downloaded audio (`gap` repair mode - only
-   `#GAP` changes, the community-made notes stay untouched). `#GAP`
+   `#GAP` changes, the community-made notes stay untouched). The new value
+   is used only when the start values of the first words agree; otherwise
+   the upload's `#GAP` is kept and the report lists the song under "Start
+   kept by the gap check". `#GAP`
    corrections mentioned in animux.de comments are only logged into the
    txt's `#COMMENT`; they never override the re-detection.
 5. The report's Lyrics column shows `usdb:animux:<song id>` or
@@ -73,17 +76,35 @@ mis-heard words are the biggest lyrics-quality problem. So for every new song
 that is generated (not pulled from USDB), the stack looks up real lyrics
 before trusting the transcription:
 
-1. **`lyrics_url` from the song list**, if given - used directly.
+1. **`lyrics_url` from the song list**, if given - used directly. A link
+   (genius.com, an lrclib.net track page, a plain text or `.lrc` file on the
+   web), or a lyrics file under `stack/input/` (such as
+   `lyrics/Die Funkhausgruppe - Die Physiker.txt`) - see
+   [new-songs.md](new-songs.md#optional-columns).
 2. Otherwise all search sources are asked and the best-matching result wins
    (below a minimum confidence nothing is used):
    - **[syncedlyrics](https://pypi.org/project/syncedlyrics/)** - free, no
-     API key, aggregates LRCLIB, NetEase, Musixmatch and Megalobiz.
+     API key. A web lookup that asks Musixmatch, LRCLIB, NetEase, Megalobiz
+     and Genius one after another until one has the song.
    - **[Genius](https://genius.com/api-clients)** - only with a
      `GENIUS_API_KEY` in `stack/.env`; skipped without a key.
 
+These lookups depend on websites. When a site answers with an error,
+syncedlyrics reports "not found" without an error message (the log only shows
+`LYRICS_NOT_FOUND`), so a song that had lyrics in one run can be transcribed in
+the next. To make a song independent of the search, put its lrclib.net track
+page in `lyrics_url` (find it on https://lrclib.net; the link has the form
+`https://lrclib.net/tracks/<number>`), or save its lyrics as a file and put
+the path in `lyrics_url`. The lrclib.net requests name the stack and link its
+GitHub page (`User-Agent`), as lrclib.net requires.
+
 Section markers from Genius (`[Chorus]`, `[Verse 1]`, also with a repeat count
 such as `[Chorus] [x2]`) are removed; a bare repeated tag is replaced by that
-section's text.
+section's text. A line entirely in round brackets, such as `(With a big heart
+for the living room)`, is a backing voice sung at the same time as the lead
+(a canon, the second voice of a duet, a choir call) and is left out; brackets
+inside a line, as in `Oh (oh) my love`, stay. A `lyrics.txt` you put in the
+song folder is used as it is.
 
 When a source is found, its text is force-aligned to the separated vocals in
 one pass over the whole song and REPLACES the transcription; the notes are
@@ -99,7 +120,18 @@ kanji) are transliterated to Latin script right after a song is created or
 repaired. This is a transliteration (via `cyrtranslit`, `korean-romanizer`,
 `pykakasi`), not a translation: "Привет" becomes "Privet". Words already in
 Latin script (loanwords, an English chorus) are left alone. Disable with
-`ROMANIZE=0`. To romanize a txt manually (from inside `stack/`):
+`ROMANIZE=0`.
+
+Russian can be written in two styles, chosen with `ROMANIZE_STYLE` (see
+[configuration.md](configuration.md)): `scientific` (the default - exact and
+reversible, GOST 7.79 B: "Vo Rusal'i Dni vo lesny'h horomah") or `readable`
+(karaoke style: "Vo Rusali Dni vo lesnykh khoromakh"). Ukrainian always
+uses `scientific`. A finished song is already in Latin letters, so changing
+the style does not touch it; its `lyrics.txt` keeps the Cyrillic text, so a
+[lyrics repair](repairs.md#trusted-lyrics-lyrics-mode) of the song rebuilds it
+in the new style.
+
+To romanize a txt manually (from inside `stack/`):
 
 ```bash
 docker compose run --rm ultrasinger python /app/orchestrator/romanize.py --txt "/data/output/new/Some Song/Some Song.txt"

@@ -1,5 +1,17 @@
+"""MusicBrainz lookups for song metadata and cover art.
+
+About me: finds a song's title, artist, year, genres and cover image on
+MusicBrainz and the Cover Art Archive - by a given recording or release ID
+(lookup_musicbrainz_by_id()) or by a fuzzy artist/title search
+(search_musicbrainz()); get_song_info() tries the ID first. Every request
+goes through __musicbrainz_request(), which bounds it with a socket timeout
+and retries network errors, so a dead connection cannot hang a job.
+"""
+
 import musicbrainzngs
+import os
 import re
+import socket
 import string
 import time
 from urllib.error import URLError
@@ -29,6 +41,10 @@ title_filter = [
 
 
 MAX_RETRIES = 3
+# seconds a MusicBrainz / Cover Art Archive connection may stay silent
+# before the request fails (musicbrainzngs passes no timeout of its own, so
+# a dead connection would otherwise hang the job)
+MUSICBRAINZ_TIMEOUT_S = float(os.environ.get("MUSICBRAINZ_TIMEOUT_S", "60"))
 
 
 def __clean_string(s: str) -> str:
@@ -52,12 +68,20 @@ def __strip_bracketed(s: str) -> str:
 
 
 def __musicbrainz_request(func):
-    for i in range(MAX_RETRIES):
-        try:
-            return func()
-        except musicbrainzngs.musicbrainz.NetworkError:
-            time.sleep(1)
-    return None
+    """Run a musicbrainzngs call with MUSICBRAINZ_TIMEOUT_S as the socket
+    timeout, up to MAX_RETRIES times on network errors (a timeout is one);
+    None when every attempt failed."""
+    previous_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(MUSICBRAINZ_TIMEOUT_S)
+    try:
+        for i in range(MAX_RETRIES):
+            try:
+                return func()
+            except musicbrainzngs.musicbrainz.NetworkError:
+                time.sleep(1)
+        return None
+    finally:
+        socket.setdefaulttimeout(previous_timeout)
 
 
 def search_musicbrainz(title: str, artist) -> SongInfo:

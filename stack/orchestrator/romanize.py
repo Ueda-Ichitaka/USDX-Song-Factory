@@ -11,6 +11,10 @@ chorus, ...) is handled correctly - each word is only touched if it
 actually contains a script we know how to romanize; everything else
 (already-Latin words, digits, punctuation) passes through unchanged.
 
+Cyrillic comes in two styles (ROMANIZE_STYLE): "scientific" (default,
+exact GOST 7.79 System B) or "readable" (karaoke-friendly Russian) - see
+ROMANIZE_STYLE below.
+
 Only the word TEXT changes. Beat/dur/pitch and every other byte of the
 line (including the separating whitespace) are kept exactly as in the
 original file - reuses repair.py's Note/Txt parser and NOTE_LINE_RE so the
@@ -38,6 +42,22 @@ CYRILLIC_RE = re.compile(r"[Ѐ-ӿ]")
 HANGUL_RE = re.compile(r"[가-힣ᄀ-ᇿ]")
 JAPANESE_RE = re.compile(r"[぀-ヿ一-鿿]")
 UKRAINIAN_MARKERS = set("іїєґІЇЄҐ")
+
+# ROMANIZE_STYLE: "scientific" (cyrtranslit, GOST 7.79 System B: exact and
+# reversible - ts is "cz", y is "y'", kh is "h", shch is "shh") or
+# "readable" (karaoke-friendly Russian, close to the common English
+# practice: kh, ts, shch, y, yo, soft/hard sign left out). Ukrainian stays
+# scientific in both styles: its readable official standard depends on the
+# position in the WORD, and romanization runs per syllable.
+ROMANIZE_STYLE = os.environ.get("ROMANIZE_STYLE", "scientific").strip().lower()
+STYLES = ("scientific", "readable")
+READABLE_RU = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
 
 
 def detect_script(text: str):
@@ -75,14 +95,35 @@ def _romanize_korean(text: str) -> str:
     return Romanizer(text).romanize()
 
 
-def _romanize_cyrillic(text: str, lang: str) -> str:
+def _readable_russian(text: str) -> str:
+    out = []
+    for ch in text:
+        mapped = READABLE_RU.get(ch.lower())
+        if mapped is None:
+            out.append(ch)
+        else:
+            out.append(mapped.capitalize() if ch.isupper() else mapped)
+    result = "".join(out)
+    letters = [ch for ch in text if ch.isalpha()]
+    if len(letters) > 1 and all(ch.isupper() for ch in letters):
+        result = result.upper()
+    return result
+
+
+def _romanize_cyrillic(text: str, lang: str, style: str) -> str:
+    if style == "readable" and lang == "ru":
+        return _readable_russian(text)
     import cyrtranslit
     return cyrtranslit.to_latin(text, lang)
 
 
-def romanize_text(text: str, script: str, cyrillic_lang: str = "ru") -> str:
+def romanize_text(text: str, script: str, cyrillic_lang: str = "ru",
+                  style: str = None) -> str:
+    style = ROMANIZE_STYLE if style is None else style
+    if style not in STYLES:
+        raise ValueError(f"unknown ROMANIZE_STYLE {style!r} (use one of {', '.join(STYLES)})")
     if script == "cyrillic":
-        return _romanize_cyrillic(text, cyrillic_lang)
+        return _romanize_cyrillic(text, cyrillic_lang, style)
     if script == "korean":
         return _romanize_korean(text)
     if script == "japanese":
@@ -90,7 +131,7 @@ def romanize_text(text: str, script: str, cyrillic_lang: str = "ru") -> str:
     return text
 
 
-def romanize_word_field(word: str, cyrillic_lang: str = "ru"):
+def romanize_word_field(word: str, cyrillic_lang: str = "ru", style: str = None):
     """Romanize the CORE text of one note's word field.
 
     Leading/trailing whitespace and '~' hold markers are word-boundary
@@ -105,7 +146,7 @@ def romanize_word_field(word: str, cyrillic_lang: str = "ru"):
     script = detect_script(core)
     if script is None:
         return word, None
-    romanized = romanize_text(core, script, cyrillic_lang)
+    romanized = romanize_text(core, script, cyrillic_lang, style)
     if romanized == core:
         return word, None
     leading = word[:len(word) - len(word.lstrip())]
@@ -161,6 +202,9 @@ def main():
 
     if not args.txt and not args.song_dir:
         parser.error("either --txt or --song-dir is required")
+    if ROMANIZE_STYLE not in STYLES:
+        parser.error(f"unknown ROMANIZE_STYLE {ROMANIZE_STYLE!r} "
+                     f"(use one of {', '.join(STYLES)})")
 
     if args.txt:
         paths = [args.txt]

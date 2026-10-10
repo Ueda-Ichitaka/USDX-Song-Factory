@@ -8,16 +8,30 @@ Fixes two common defects of existing UltraStar songs:
   2. lyrics drifting out of sync mid-song - text and audio become
      asynchronous over time (mode: "sync", default)
 
-Both modes keep the ORIGINAL lyrics/syllables of the song. Nothing is
+A third mode, "lyrics", force-aligns trusted lyrics from a file and rebuilds
+the notes: one note per syllable, plus `~` notes where a held syllable
+changes pitch (held_notes.py). Lyrics at the end that are never sung are
+left out (drop_unsung_tail()). `--traits` (the song's traits from the song list) switches single
+steps: loud_high_instruments lets word ends follow held notes further down
+(word_end_drop_db()), harsh_vocals pulls unsure notes towards the melody
+(pitch_normalise.normalise_harsh_pitches()).
+
+"gap" and "sync" keep the ORIGINAL lyrics/syllables of the song. Nothing is
 re-transcribed; instead the known lyrics are force-aligned to the vocals
 of the audio (wav2vec2 alignment via whisperx).
 
 Modes
 -----
-gap   (cheap)   No track separation. Aligns the first lyric lines directly
-                against the original audio, measures where the first words
-                really start and shifts #GAP accordingly. Beats, durations
-                and pitches are kept as-is.
+gap             Separates the vocals, aligns the first lyric lines against
+                them and measures where each of the first words really
+                starts. #GAP moves to the median only when those values
+                agree (decide_gap(), GAP_MAX_SPREAD_S); otherwise the
+                original #GAP is kept and REPAIR_DONE says so. When no word
+                is found near #GAP at all, the repair fails ("audio does not
+                match the song file"); the reason names another recording
+                of the song folder that seems to fit
+                (describe_other_recordings()). Beats, durations and pitches
+                are kept as-is.
 
 sync  (default) Full repair: separates vocals (demucs), force-aligns every
                 lyric line progressively (so cumulative drift is corrected),
@@ -31,6 +45,9 @@ fallback and fails instead).
 
 The repaired song folder (a full copy incl. audio/video/cover) is written to
 <out>/<song folder name>/. The original input folder is never modified.
+Every song file written gets the format version new songs have
+(song_header.py); one using headers that version lacks stays unversioned
+and the log says why.
 
 For every processed txt a final line `REPAIR_DONE ...` is printed for the
 orchestrator to parse.
@@ -47,7 +64,10 @@ import sys
 sys.path.insert(0, "/app/UltraSinger/src")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import anchors as anchors_file  # noqa: E402
 import ctc_align  # noqa: E402
+import held_notes  # noqa: E402
+import outro  # noqa: E402
 import pitch_normalise  # noqa: E402
 from modules.Audio.convert_audio import convert_audio_to_mono_wav  # noqa: E402
 from modules.Audio.denoise import denoise_vocal_audio  # noqa: E402
@@ -67,6 +87,7 @@ from modules.console_colors import (  # noqa: E402
     green_highlighted,
     red_highlighted,
 )
+from song_header import FORMAT_VERSION, versioned_header  # noqa: E402
 
 NOTE_LINE_TYPES = (":", "F", "R", "G", "*")
 # type beat dur pitch [1 separator space] raw-word-field (verbatim)
@@ -99,11 +120,33 @@ MAX_ALIGNED_WORD_SECONDS = float(os.environ.get("MAX_ALIGNED_WORD_SECONDS", "4.0
 LYRICS_LINE_OUTLIER_GAP_S = float(os.environ.get("LYRICS_LINE_OUTLIER_GAP_S", "3.0"))
 WORD_END_EXTEND_DROP_DB = float(os.environ.get("WORD_END_EXTEND_DROP_DB", "6.0"))
 WORD_END_EXTEND_MAX_S = float(os.environ.get("WORD_END_EXTEND_MAX_S", "3.0"))
+# songs with the trait loud_high_instruments (song list, song_style.py):
+# word ends follow the singing further down (bench19_ends.py, 7 hand-synced
+# songs: long-note ends within 0.3 s 63.9% at 9 dB vs 61.7% at 6 dB; all
+# other songs are best at 6 dB)
+LOUD_INSTRUMENTS_WORD_END_DROP_DB = float(
+    os.environ.get("LOUD_INSTRUMENTS_WORD_END_DROP_DB", "9.0"))
 WORD_START_LEAD_S = float(os.environ.get("WORD_START_LEAD_S", "0.04"))
+# lyrics never sung at the end (a video that fades out before the album
+# lyrics end) are left out instead of squeezed in: each left-out letter
+# costs this much in the global alignment (ctc_align end_penalty; measured
+# on 110 hand-synced songs, stack/work/bench/bench26_tail.py: 3 loses sung
+# words, 5-6 leaves most unsung words in). 0 = always place every word.
+LYRICS_END_SKIP_PENALTY = float(os.environ.get("LYRICS_END_SKIP_PENALTY", "4.0"))
 # a note's pitch is picked from at least this much audio around its centre -
-# the pitch detector fails most on short notes (measured on 110 hand-made
-# songs, stack/work/bench/an11.py: 0.3-0.5 s best, 0.4 s chosen)
-PITCH_MIN_WINDOW_S = float(os.environ.get("PITCH_MIN_WINDOW_S", "0.4"))
+# the pitch detector fails most on short notes. Read PITCH_READ_DELAY_S
+# after the note: notes are placed like hand-made ones, which sit ~0.1 s
+# before the singing (110 hand-made songs, stack/work/bench/
+# bench21_syllables.py: right pitch class with the production word timing
+# 48.0% -> 49.4%, with `~` notes (held_notes.py) 50.2%; 0.2 s window best
+# together with the delay)
+PITCH_MIN_WINDOW_S = float(os.environ.get("PITCH_MIN_WINDOW_S", "0.2"))
+PITCH_READ_DELAY_S = float(os.environ.get("PITCH_READ_DELAY_S", "0.1"))
+# gap check: a new #GAP is accepted only when the per-word implied gaps
+# agree - spread between their 10th and 90th percentile at most this many
+# seconds (measured on 110 hand-synced songs, stack/work/bench/
+# bench14_gap.py: 64 accepted, 3 of them wrong by more than 1 s)
+GAP_MAX_SPREAD_S = float(os.environ.get("GAP_MAX_SPREAD_S", "0.3"))
 # real pauses for silence-aware seeding/interpolation (see
 # seed_lyric_windows()/interpolate_word_timings()) - get_silence_sections()'s
 # own default (50ms) flags ordinary inter-syllable micro-pauses WITHIN
@@ -404,6 +447,51 @@ def build_alignment_units(txt, lines, min_words=8, max_gap=8.0) -> list:
 # audio preparation
 # --------------------------------------------------------------------------
 
+def audio_from_video(video: str, work_dir: str):
+    """(audio path, error) of a video's sound track, extracted into
+    `work_dir` (an existing extraction is reused)."""
+    ext = ".m4a" if video.lower().endswith(".mp4") else ".audio"
+    audio_out = os.path.join(work_dir, os.path.basename(video) + ext)
+    if not os.path.isfile(audio_out):
+        import ffmpeg  # ffmpeg-python
+        print(f"{ULTRASINGER_HEAD} extracting audio from {video}")
+        try:
+            # stream copy: fast, no quality loss - works whenever
+            # the video's audio codec (usually AAC) is valid inside
+            # an m4a/mp4 container. vn is a bare flag: ffmpeg-python
+            # writes it without a value only for vn=None (vn=1 gives
+            # "-vn 1", which ffmpeg reads as a second output "1")
+            (
+                ffmpeg.input(video)
+                .output(audio_out, vn=None, acodec="copy")
+                .overwrite_output()
+                .run(capture_stdout=True, capture_stderr=True)
+            )
+        except ffmpeg.Error as copy_exc:
+            # some sources (e.g. yt-dlp's bestaudio merged into an
+            # mp4 container) carry Opus audio, which the m4a/mp4
+            # muxer cannot hold via stream copy ("Could not find
+            # tag for codec opus in stream ..., codec not
+            # currently supported in container") - fall back to a
+            # real transcode into WAV (codec-agnostic: ffmpeg can
+            # always decode the source and re-encode to PCM,
+            # regardless of what codec it started as)
+            wav_out = os.path.join(
+                work_dir, os.path.basename(video) + ".wav")
+            try:
+                (
+                    ffmpeg.input(video)
+                    .output(wav_out, vn=None)
+                    .overwrite_output()
+                    .run(capture_stdout=True, capture_stderr=True)
+                )
+            except ffmpeg.Error:
+                return None, ("audio extraction failed (stream copy: "
+                              f"{copy_exc.stderr[-300:]})")
+            audio_out = wav_out
+    return audio_out, None
+
+
 def locate_audio(song_dir: str, txt: Txt, work_dir: str):
     """Return path of the audio file used for alignment/pitching."""
     if txt.audio_ref:
@@ -416,51 +504,33 @@ def locate_audio(song_dir: str, txt: Txt, work_dir: str):
     if txt.video_ref:
         video = os.path.join(song_dir, txt.video_ref)
         if os.path.isfile(video):
-            ext = ".m4a" if video.lower().endswith(".mp4") else ".audio"
-            audio_out = os.path.join(work_dir, os.path.basename(video) + ext)
-            if not os.path.isfile(audio_out):
-                import ffmpeg  # ffmpeg-python
-                print(f"{ULTRASINGER_HEAD} extracting audio from {video}")
-                try:
-                    # stream copy: fast, no quality loss - works whenever
-                    # the video's audio codec (usually AAC) is valid inside
-                    # an m4a/mp4 container. vn is a bare flag (no value) -
-                    # ffmpeg-python only omits the value for kwargs=None;
-                    # vn=1/True was a real, longstanding bug here (emitted
-                    # "-vn 1", which ffmpeg parsed as a second, bogus
-                    # output target "1" and always failed - regardless of
-                    # video source - "Unable to find a suitable output
-                    # format for '1'")
-                    (
-                        ffmpeg.input(video)
-                        .output(audio_out, vn=None, acodec="copy")
-                        .overwrite_output()
-                        .run(capture_stdout=True, capture_stderr=True)
-                    )
-                except ffmpeg.Error as copy_exc:
-                    # some sources (e.g. yt-dlp's bestaudio merged into an
-                    # mp4 container) carry Opus audio, which the m4a/mp4
-                    # muxer cannot hold via stream copy ("Could not find
-                    # tag for codec opus in stream ..., codec not
-                    # currently supported in container") - fall back to a
-                    # real transcode into WAV (codec-agnostic: ffmpeg can
-                    # always decode the source and re-encode to PCM,
-                    # regardless of what codec it started as)
-                    wav_out = os.path.join(
-                        work_dir, os.path.basename(video) + ".wav")
-                    try:
-                        (
-                            ffmpeg.input(video)
-                            .output(wav_out, vn=None)
-                            .overwrite_output()
-                            .run(capture_stdout=True, capture_stderr=True)
-                        )
-                    except ffmpeg.Error:
-                        return None, ("audio extraction failed (stream copy: "
-                                      f"{copy_exc.stderr[-300:]})")
-                    audio_out = wav_out
-            return audio_out, None
+            return audio_from_video(video, work_dir)
     return None, "no audio file found (#MP3/#AUDIO missing and no usable #VIDEO)"
+
+
+MEDIA_AUDIO_EXTS = (".mp3", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac")
+MEDIA_VIDEO_EXTS = (".mp4", ".webm", ".mkv", ".avi", ".mov", ".m4v")
+
+
+def other_media(song_dir: str, txt: Txt, current_audio: str) -> list:
+    """The other recordings in a song folder: one {"stem", "audio",
+    "video"} per file name without extension (audio or video may be None),
+    sorted by name. The recording the song file references (#MP3/#AUDIO,
+    #VIDEO, `current_audio`) is left out."""
+    def stem(name):
+        return os.path.splitext(os.path.basename(name))[0] if name else None
+
+    referenced = {stem(txt.audio_ref), stem(txt.video_ref), stem(current_audio)} - {None}
+    found = {}
+    for name in sorted(os.listdir(song_dir)):
+        path = os.path.join(song_dir, name)
+        ext = os.path.splitext(name)[1].lower()
+        kind = "audio" if ext in MEDIA_AUDIO_EXTS else "video" if ext in MEDIA_VIDEO_EXTS else None
+        if not kind or not os.path.isfile(path) or stem(name) in referenced:
+            continue
+        entry = found.setdefault(stem(name), {"stem": stem(name), "audio": None, "video": None})
+        entry[kind] = entry[kind] or path
+    return [found[k] for k in sorted(found)]
 
 
 def prepare_processing_audio(audio_path: str, work_dir: str, device: str):
@@ -738,6 +808,71 @@ def implied_gap_samples(txt, units, aligned_units):
                 samples.append(timing["start"] - txt.beat_to_sec(note.beat))
         base += len(notes)
     return samples
+
+
+# does another recording fit the song file? (gap repair, when no word of the
+# first lines is found near #GAP) - bench20_shift.py/an20.py on 110
+# hand-synced songs vs. the same with #GAP moved 25 s: mean alignment score
+# >= 0.6 and >= 40% of the first-word values in one 0.3 s window find 70%
+# of fitting recordings and accept 6% of wrong ones
+RECORDING_FIT_MIN_SCORE = 0.6
+RECORDING_FIT_MIN_SHARE = 0.4
+RECORDING_FIT_WINDOW_S = 0.3
+
+
+def recording_fit(aligned_units, samples) -> dict:
+    """{"score", "share", "n"} of a recording for the first lines: mean
+    alignment score of the aligned lines, largest share of the per-word
+    values (implied_gap_samples()) inside one RECORDING_FIT_WINDOW_S
+    window, number of values."""
+    scores = [u.get("score") for u in aligned_units if u.get("score") is not None]
+    values = sorted(samples)
+    best, j = 0, 0
+    for i in range(len(values)):
+        while values[i] - values[j] > RECORDING_FIT_WINDOW_S + 1e-9:
+            j += 1
+        best = max(best, i - j + 1)
+    return {"score": sum(scores) / len(scores) if scores else 0.0,
+            "share": best / len(values) if values else 0.0,
+            "n": len(values)}
+
+
+def recording_seems_to_fit(fit: dict) -> bool:
+    """recording_fit() above the measured limits (at least three values)."""
+    return (fit["n"] >= 3 and fit["score"] >= RECORDING_FIT_MIN_SCORE
+            and fit["share"] >= RECORDING_FIT_MIN_SHARE)
+
+
+def _percentile(sorted_values: list, q: float) -> float:
+    """q-th percentile (0..1) with linear interpolation between the two
+    nearest values (numpy's default)."""
+    pos = q * (len(sorted_values) - 1)
+    low = int(pos)
+    high = min(low + 1, len(sorted_values) - 1)
+    return sorted_values[low] + (sorted_values[high] - sorted_values[low]) * (pos - low)
+
+
+def gap_spread(samples: list) -> float:
+    """How far the per-word implied gaps disagree: 90th minus 10th
+    percentile, in seconds."""
+    values = sorted(samples)
+    return _percentile(values, 0.9) - _percentile(values, 0.1)
+
+
+def decide_gap(samples: list, old_gap_ms: int, max_spread: float = None) -> dict:
+    """The gap check's verdict: the median of the per-word implied gaps
+    becomes the new #GAP only when at least two of them agree within
+    `max_spread` seconds (GAP_MAX_SPREAD_S); otherwise the original #GAP
+    is kept. Returns {"gap_ms", "kept", "spread_s"}."""
+    import statistics
+    max_spread = GAP_MAX_SPREAD_S if max_spread is None else max_spread
+    if len(samples) < 2:
+        return {"gap_ms": old_gap_ms, "kept": True, "spread_s": None}
+    spread = gap_spread(samples)
+    if spread > max_spread:
+        return {"gap_ms": old_gap_ms, "kept": True, "spread_s": spread}
+    return {"gap_ms": round(statistics.median(samples) * 1000), "kept": False,
+            "spread_s": spread}
 
 
 def refine_first_units(txt, units, aligned_units, model, meta, audio16k,
@@ -1262,12 +1397,16 @@ def recreate_song(song_dir: str, out_dir: str, work_dir: str, audio_path: str,
         print(f"{ULTRASINGER_HEAD} {red_highlighted('UltraSinger recreation failed')}")
         return None
 
-    created = [d for d in os.listdir(us_out)
+    # the folder UltraSinger wrote the song to: the newest one holding a
+    # song file (an earlier run can have left folders in us_out, and
+    # UltraSinger then writes to "<name> (1)")
+    created = [os.path.join(us_out, d) for d in os.listdir(us_out)
                if os.path.isdir(os.path.join(us_out, d))]
+    created = [d for d in created if find_ultrastar_txts(d)]
     if not created:
         print(f"{ULTRASINGER_HEAD} {red_highlighted('no output created')}")
         return None
-    src_dir = os.path.join(us_out, created[0])
+    src_dir = max(created, key=os.path.getmtime)
     for name in os.listdir(src_dir):
         src = os.path.join(src_dir, name)
         dst = os.path.join(out_song_dir, name)
@@ -1276,15 +1415,44 @@ def recreate_song(song_dir: str, out_dir: str, work_dir: str, audio_path: str,
         elif os.path.isfile(src):
             os.remove(src)
 
-    for name in sorted(os.listdir(out_song_dir)):
-        if name.lower().endswith(".txt"):
-            return os.path.join(out_song_dir, name)
-    return None
+    songs = find_ultrastar_txts(out_song_dir)
+    return songs[0].path if songs else None
 
 
 # --------------------------------------------------------------------------
 # repair pipeline
 # --------------------------------------------------------------------------
+
+def describe_other_recordings(txt, song_dir: str, audio_path: str, work_dir: str,
+                              device: str, align_first_units) -> str:
+    """The second half of the gap repair's failure reason: which other
+    recording of the song folder (other_media()) seems to fit the song file
+    (recording_seems_to_fit(), best alignment score first), or that none
+    does. `align_first_units(audio16k)` -> (aligned units, samples)."""
+    tried, best = [], None
+    for rec in other_media(song_dir, txt, audio_path):
+        name = os.path.basename(rec["audio"] or rec["video"])
+        rec_audio = rec["audio"]
+        if rec_audio is None:
+            rec_audio, err = audio_from_video(rec["video"], work_dir)
+            if err:
+                print(f"{ULTRASINGER_HEAD} {red_highlighted('skipped:')} {name}: {err}")
+                continue
+        tried.append(name)
+        rec_vocals, _ = prepare_processing_audio(rec_audio, work_dir, device)
+        fit = recording_fit(*align_first_units(load_audio_16k(rec_vocals)))
+        print(f"{ULTRASINGER_HEAD} other recording {name}: alignment score "
+              f"{fit['score']:.2f}, {fit['share']:.0%} of {fit['n']} first-word values agree")
+        if recording_seems_to_fit(fit) and (best is None or fit["score"] > best[1]["score"]):
+            best = (name, fit)
+    if best:
+        name, fit = best
+        return (f"{name} seems to fit (alignment score {fit['score']:.2f}, "
+                f"{fit['share']:.0%} of the first words agree) - set #MP3/#VIDEO to it by hand")
+    if tried:
+        return f"none of the other recordings in the folder fits ({', '.join(tried)})"
+    return "no other recording in the folder"
+
 
 def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
                work_dir: str, language: str = None, align_model: str = None):
@@ -1303,13 +1471,13 @@ def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
     print(f"{ULTRASINGER_HEAD} {len(lines)} lyric lines ({len(units)} alignment units), "
           f"{n_notes} notes, audio: {os.path.basename(audio_path)}")
 
-    if mode == "sync":
-        print(f"{ULTRASINGER_HEAD} separating vocals (demucs, device={device})")
-        vocals_audio, processing_audio = prepare_processing_audio(
-            audio_path, work_dir, device)
-        align_audio = vocals_audio  # raw vocals: best signal for alignment
-    else:
-        align_audio = audio_path
+    # raw separated vocals: the best signal for alignment, also for the gap
+    # check (on the full mix it moves a correct start by more than 1 s in a
+    # third of the songs, on the vocals in 9% - bench14_gap.py)
+    print(f"{ULTRASINGER_HEAD} separating vocals (demucs, device={device})")
+    vocals_audio, processing_audio = prepare_processing_audio(
+        audio_path, work_dir, device)
+    align_audio = vocals_audio
 
     audio16k = load_audio_16k(align_audio)
     audio_dur = len(audio16k) / 16000.0
@@ -1327,21 +1495,38 @@ def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
     if mode == "gap":
         # align the first units to find the real start of the vocals
         first_units = units[:2]
-        aligned = progressively_align(txt, first_units, model, meta, audio16k,
-                                      audio_dur)
-        samples = implied_gap_samples(txt, first_units, aligned)
+
+        def align_first_units(audio):
+            aligned_ = progressively_align(txt, first_units, model, meta, audio,
+                                           len(audio) / 16000.0)
+            return aligned_, implied_gap_samples(txt, first_units, aligned_)
+
+        aligned, samples = align_first_units(audio16k)
         if not samples:
-            msg = "could not align the first lines - aborting"
+            # no word of the first lines near #GAP: the song file may be
+            # timed to another recording in the same folder - named in the
+            # reason, never switched automatically
+            others = describe_other_recordings(txt, song_dir, audio_path, work_dir,
+                                               device, align_first_units)
+            msg = ("audio does not match the song file: no word of the first lines "
+                   f"found near #GAP in {os.path.basename(audio_path)}; {others}")
             print(f"{ULTRASINGER_HEAD} {red_highlighted(msg)}")
             return None
-        import statistics
-        new_gap_ms = round(statistics.median(samples) * 1000)
+        decision = decide_gap(samples, txt.gap_ms)
+        if decision["kept"]:
+            spread = decision["spread_s"]
+            why = (f"spread {spread:.2f} s" if spread is not None
+                   else "too few aligned words")
+            print(f"{ULTRASINGER_HEAD} {red_highlighted('gap check unsure')} "
+                  f"(the words disagree, {why}) - keeping #GAP {txt.gap_ms} ms")
+        new_gap_ms = decision["gap_ms"]
         n_aligned = sum(1 for a in aligned for w in a["words"] if w)
         out_path = write_repaired(txt, song_dir, out_dir, gap_ms=new_gap_ms,
                                   note_times=None, pitches=None)
         return {
             "output": out_path,
             "gap_old_ms": txt.gap_ms, "gap_new_ms": new_gap_ms,
+            "gap_kept": decision["kept"], "gap_spread_s": decision["spread_s"],
             "aligned_words": n_aligned,
             "total_words": sum(len(group_words(u["notes"])) for u in first_units),
             "repitched": 0, "mode": mode,
@@ -1437,9 +1622,50 @@ def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
     }
 
 
+def set_header_tags(header: list, tags: dict) -> list:
+    """The header lines (`#TAG:value`) with each of `tags` ({"GAP": "1000"})
+    set: an existing line of that tag (any case) is replaced in place, a
+    missing one is added after the last header line."""
+    out = list(header)
+    for tag, value in tags.items():
+        prefix = f"#{tag.upper()}:"
+        line = f"{prefix}{value}"
+        for i, raw in enumerate(out):
+            if raw.strip().upper().startswith(prefix):
+                out[i] = line
+                break
+        else:
+            out.append(line)
+    return out
+
+
+def _versioned(header: list) -> list:
+    """song_header.versioned_header(), with the reason logged when the song
+    stays unversioned."""
+    out, reason = versioned_header(header)
+    if reason:
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('note:')} written without "
+              f"#VERSION: the song uses {reason}, which format version "
+              f"{FORMAT_VERSION} does not have")
+    return out
+
+
+def _with_header_tags(lines: list, tags: dict) -> list:
+    """txt.lines-style dicts with set_header_tags() and versioning
+    (versioned_header()) applied to the header block (the `#` lines before
+    the first note or line break)."""
+    end = 0
+    while end < len(lines) and lines[end]["raw"].strip().startswith("#") \
+            and "note" not in lines[end]:
+        end += 1
+    header = _versioned(set_header_tags([l["raw"] for l in lines[:end]], tags))
+    return [{"raw": raw} for raw in header] + lines[end:]
+
+
 def write_repaired(txt: Txt, song_dir: str, out_dir: str, gap_ms: int,
                    note_times, pitches):
-    """Write the repaired song folder + txt (originals in input stay as-is)."""
+    """Write the repaired song folder + txt (originals in input stay as-is).
+    `#GAP` is set to `gap_ms` (added when the file has none)."""
     song_name = os.path.basename(song_dir.rstrip("/"))
     out_song_dir = os.path.join(out_dir, song_name)
     os.makedirs(out_song_dir, exist_ok=True)
@@ -1485,9 +1711,8 @@ def write_repaired(txt: Txt, song_dir: str, out_dir: str, gap_ms: int,
             if note_times is not None and prev_end_beat is not None:
                 # show the next line when the current line's last note ends
                 line["raw"] = f"- {_fmt_num(prev_end_beat)}"
-        elif line["raw"].strip().startswith("#GAP:"):
-            line["raw"] = f"#GAP:{gap_ms}"
 
+    lines = _with_header_tags(lines, {"GAP": gap_ms})
     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         for line in lines:
             f.write(line["raw"].rstrip("\r\n") + "\n")
@@ -1927,6 +2152,16 @@ def pitch_window(start: float, end: float, min_len: float = None):
     return max(0.0, start - extra), end + extra
 
 
+def tilde_word_field(word_field: str, is_tilde: bool, is_last: bool) -> str:
+    """The text of one part of a held syllable (held_notes.py): the syllable
+    on the first part, `~` on the others; the word end (trailing space)
+    goes to the last part."""
+    text = "~" if is_tilde else word_field.rstrip(" ")
+    if is_last and word_field.endswith(" "):
+        text += " "
+    return text
+
+
 def sure_pitch_fraction(start: float, end: float, pitched,
                         threshold: float = CONFIDENCE_THRESHOLD) -> float:
     """Share of the pitch frames of [start, end] whose confidence is above
@@ -1968,18 +2203,20 @@ def clamp_beat_to_max(beat: int, dur: int, prev_end_beat, max_beat: int = None):
 
 def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
                         per_unit_syllables: list, processing_audio: str,
-                        audio_dur: float = None):
+                        audio_dur: float = None, traits=()):
     """Build a FRESH UltraStar txt from per-unit syllable lists (start/end
     in seconds), re-pitching every syllable with SwiftF0. Unlike
     write_repaired() (which maps new timing onto an EXISTING note
     sequence), this builds an entirely new note sequence - the
     syllable/line count is whatever the lyrics source produced, not the
     original file's, EXCEPT a unit too long on screen or spanning a long
-    internal pause gets split further (see split_long_lyric_units()). The
-    pitch of a short note is picked from at least PITCH_MIN_WINDOW_S around
-    it, and the detected pitches are normalised for the whole song (octave errors
-    folded back, unsure notes set to the local melody level - see
-    pitch_normalise.py). BPM
+    internal pause gets split further (see split_long_lyric_units()). A held
+    syllable whose pitch changes level becomes the syllable plus `~` notes
+    (held_notes.py). Pitches are read PITCH_READ_DELAY_S after the note, a
+    short note's from at least PITCH_MIN_WINDOW_S around it, and the
+    detected pitches are normalised for the whole song (octave errors
+    folded back by whole octaves - see pitch_normalise.py; with the trait
+    harsh_vocals unsure notes are also pulled towards the melody). BPM
     is kept from the scaffold (audio-only, lyrics don't change it);
     header tags are kept verbatim except #GAP."""
     per_unit_syllables = split_long_lyric_units(per_unit_syllables)
@@ -1993,6 +2230,13 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
             dst = os.path.join(out_song_dir, name)
             if not os.path.isfile(dst):
                 shutil.copy2(src, dst)
+    # the admin's song_end.txt / anchors.txt stay with the song, so later
+    # re-runs keep them
+    for admin_file in (outro.SONG_END_FILE, anchors_file.ANCHORS_FILE):
+        src = os.path.join(song_dir, admin_file)
+        dst = os.path.join(out_song_dir, admin_file)
+        if os.path.isfile(src) and os.path.abspath(src) != os.path.abspath(dst):
+            shutil.copy2(src, dst)
 
     all_syllables = [s for unit in per_unit_syllables for s in unit]
     if not all_syllables:
@@ -2010,37 +2254,49 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
     pitched = get_pitch_with_file(processing_audio)
     import librosa
 
-    out_lines = []
-    for line in txt.lines:
-        raw = line["raw"]
-        if "note" in line or not raw.strip().startswith("#"):
-            continue  # only header (#TAG:) lines are kept - notes are rebuilt below
-        if raw.strip().startswith("#GAP:"):
-            out_lines.append(f"#GAP:{round(gap_s * 1000)}")
-        else:
-            out_lines.append(raw)
+    # only header (#TAG:) lines are kept - notes are rebuilt below; #GAP is
+    # set (added when the file has none, the notes are placed relative to it)
+    # and the song is versioned (versioned_header())
+    out_lines = _versioned(set_header_tags(
+        [line["raw"] for line in txt.lines
+         if "note" not in line and line["raw"].strip().startswith("#")],
+        {"GAP": round(gap_s * 1000)}))
 
     max_beat = max(0, round(sec_to_beat(audio_dur - gap_s))) \
         if audio_dur is not None else None
 
-    # first every note's detected pitch and how sure the detector was, then
-    # the whole song's pitches are normalised together (pitch_normalise.py)
+    # first every note's detected pitch, then the whole song's pitches are
+    # normalised together (pitch_normalise.py)
     notes, pitches, sure = [], [], []
     for ui, unit_syllables in enumerate(per_unit_syllables):
         for word_field, start, end in unit_syllables:
             start = max(start, gap_s)
             end = max(end, start + 0.05)
-            pitch_start, pitch_end = pitch_window(start, end)
-            try:
-                seg = create_midi_note_from_pitched_data(
-                    pitch_start, pitch_end, pitched, word_field.strip() or "~", None)
-                pitches.append(int(librosa.note_to_midi(seg.note)) - 48)
-                sure.append(sure_pitch_fraction(pitch_start, pitch_end, pitched))
-            except Exception:  # noqa: BLE001
-                pitches.append(0)
-                sure.append(0.0)
-            notes.append((ui, word_field, start, end))
-    pitches = pitch_normalise.normalise_pitches(pitches, sure)
+            parts = held_notes.split_held_note(
+                pitched.times, pitched.frequencies, pitched.confidence,
+                start, end, read_delay_s=PITCH_READ_DELAY_S)
+            for part_start, part_end, is_tilde in parts:
+                # a part of a held syllable is long enough to be read as is
+                pitch_start, pitch_end = (
+                    (part_start, part_end) if len(parts) > 1
+                    else pitch_window(part_start, part_end))
+                try:
+                    seg = create_midi_note_from_pitched_data(
+                        pitch_start + PITCH_READ_DELAY_S,
+                        pitch_end + PITCH_READ_DELAY_S,
+                        pitched, word_field.strip() or "~", None)
+                    pitches.append(int(librosa.note_to_midi(seg.note)) - 48)
+                except Exception:  # noqa: BLE001
+                    pitches.append(0)
+                sure.append(sure_pitch_fraction(part_start + PITCH_READ_DELAY_S,
+                                                part_end + PITCH_READ_DELAY_S, pitched))
+                notes.append((ui, tilde_word_field(word_field, is_tilde,
+                                                   part_end == end),
+                              part_start, part_end))
+    if "harsh_vocals" in (traits or ()):
+        pitches = pitch_normalise.normalise_harsh_pitches(pitches, sure)
+    else:
+        pitches = pitch_normalise.normalise_pitches(pitches)
 
     prev_end_beat = None
     current_unit = None
@@ -2083,7 +2339,80 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
     return out_path
 
 
-def align_units_globally(units, model, meta, audio16k, device: str = "cpu"):
+def _anchored_timings(units, emission, meta, anchors):
+    """Word timings like ctc_align.align_words_globally(), but aligned piece
+    by piece: the lines before the first anchor on the audio before it,
+    every anchored line and the lines up to the next anchor on the audio
+    between the two anchor times. A piece whose audio is too short for its
+    words leaves them untimed (interpolated later)."""
+    frame = ctc_align.FRAME_SECONDS
+    n_frames = emission.shape[0]
+    bounds = [(0, 0.0)] + [(ui, t) for ui, t in anchors]
+    timings = []
+    for k, (first_unit, start_s) in enumerate(bounds):
+        last_unit = bounds[k + 1][0] if k + 1 < len(bounds) else len(units)
+        end_s = bounds[k + 1][1] if k + 1 < len(bounds) else n_frames * frame
+        words = [w for u in units[first_unit:last_unit] for w in u["words"]]
+        if not words:
+            continue
+        f0, f1 = int(round(start_s / frame)), min(n_frames, int(round(end_s / frame)))
+        try:
+            piece = ctc_align.align_words_globally(words, emission[f0:f1], meta)
+        except ValueError:
+            piece = [None] * len(words)
+        offset = f0 * frame
+        for timing in piece:
+            if timing is None:
+                timings.append(None)
+            else:
+                start, end, score = timing
+                timings.append((start + offset, end + offset, score))
+    return timings
+
+
+def pin_anchor_words(aligned_units, units, anchors) -> None:
+    """The first word of every anchored line starts exactly at its anchor
+    time (an untimed one gets its natural length from there). Mutates
+    `aligned_units` in place."""
+    for ui, seconds in anchors or []:
+        words = aligned_units[ui]["words"]
+        if not words:
+            continue
+        if words[0]:
+            words[0]["start"] = seconds
+            words[0]["end"] = max(words[0]["end"], seconds + 0.03)
+        else:
+            words[0] = {"start": seconds, "score": 0.0,
+                        "end": seconds + _natural_word_seconds(units[ui]["words"][0])}
+
+
+def drop_unsung_tail(units: list, aligned_units: list):
+    """Cut the lyrics after the last sung word: every word from the first
+    ctc_align.NOT_SUNG on is left out (the path only leaves out an end, so
+    they all follow it). Returns (units, aligned_units, words left out);
+    a line sung only in part keeps its sung words."""
+    for ui, aligned in enumerate(aligned_units):
+        if ctc_align.NOT_SUNG not in aligned["words"]:
+            continue
+        wi = aligned["words"].index(ctc_align.NOT_SUNG)
+        left_out = sum(len(u["words"]) for u in units[ui:]) - wi
+        kept_units, kept_aligned = list(units[:ui]), list(aligned_units[:ui])
+        if wi:
+            words = units[ui]["words"][:wi]
+            kept_units.append(dict(units[ui], words=words, text=" ".join(words)))
+            timed = aligned["words"][:wi]
+            scores = [w["score"] for w in timed if w]
+            kept_aligned.append(dict(
+                aligned, words=timed, text=" ".join(words),
+                score=sum(scores) / len(scores) if scores else None,
+                word_orig_starts=aligned["word_orig_starts"][:wi],
+                word_orig_ends=aligned["word_orig_ends"][:wi]))
+        return kept_units, kept_aligned, left_out
+    return units, aligned_units, 0
+
+
+def align_units_globally(units, model, meta, audio16k, device: str = "cpu",
+                         anchors: list = None):
     """Force-align EVERY lyric word in one global, monotonic CTC pass (see
     ctc_align.py) and return (aligned_units, n_aligned) in the per-unit
     structure build_syllables_from_lyric_units() consumes:
@@ -2097,7 +2426,14 @@ def align_units_globally(units, model, meta, audio16k, device: str = "cpu"):
     progressively_align_lyrics() -> reanchor/rescue), whose windows let a
     repeated line re-match the previous occurrence and chained every later
     window off that mistake. If the GPU run fails (e.g. out of memory) the
-    emissions are recomputed on the CPU."""
+    emissions are recomputed on the CPU.
+
+    `anchors` ([(unit_index, seconds), ...] in lyric order, from
+    anchors.txt) splits the alignment into pieces between the anchor times
+    and pins each anchored line's first word to its time. Without anchors
+    the words at the end that are never sung are left out
+    (LYRICS_END_SKIP_PENALTY) and marked ctc_align.NOT_SUNG - see
+    drop_unsung_tail()."""
     words = [w for u in units for w in u["words"]]
     try:
         emission = ctc_align.emissions_for_audio(model, meta, audio16k, device)
@@ -2107,7 +2443,12 @@ def align_units_globally(units, model, meta, audio16k, device: str = "cpu"):
         print(f"{ULTRASINGER_HEAD} {red_highlighted('aligner failed on')} "
               f"{device} ({exc}) - retrying on cpu")
         emission = ctc_align.emissions_for_audio(model, meta, audio16k, "cpu")
-    timings = ctc_align.align_words_globally(words, emission, meta)
+    if anchors:
+        timings = _anchored_timings(units, emission, meta, anchors)
+    else:
+        timings = ctc_align.align_words_globally(
+            words, emission, meta,
+            end_penalty=LYRICS_END_SKIP_PENALTY if LYRICS_END_SKIP_PENALTY > 0 else None)
 
     aligned_units, n_aligned, k = [], 0, 0
     for unit in units:
@@ -2115,7 +2456,11 @@ def align_units_globally(units, model, meta, audio16k, device: str = "cpu"):
         for word in unit["words"]:
             timing = timings[k]
             k += 1
-            if timing:
+            if timing == ctc_align.NOT_SUNG:
+                unit_words.append(ctc_align.NOT_SUNG)
+                starts.append(0.0)
+                ends.append(_natural_word_seconds(word))
+            elif timing:
                 start, end, score = timing
                 end = min(max(end, start + 0.03), start + MAX_ALIGNED_WORD_SECONDS)
                 unit_words.append({"start": start, "end": end, "score": score})
@@ -2132,6 +2477,7 @@ def align_units_globally(units, model, meta, audio16k, device: str = "cpu"):
             "score": sum(unit_scores) / len(unit_scores) if unit_scores else None,
             "word_orig_starts": starts, "word_orig_ends": ends,
         })
+    pin_anchor_words(aligned_units, units, anchors)
     return aligned_units, n_aligned
 
 
@@ -2265,16 +2611,25 @@ def lead_word_starts(aligned_units, lead_s: float) -> None:
                 word["start"] = max(0.0, word["start"] - lead_s)
 
 
+def word_end_drop_db(traits) -> float:
+    """How far below a word's level its held note may fall before the word
+    ends (extend_word_ends()), for a song with these traits."""
+    if "loud_high_instruments" in (traits or ()):
+        return LOUD_INSTRUMENTS_WORD_END_DROP_DB
+    return WORD_END_EXTEND_DROP_DB
+
+
 def refine_global_alignment(aligned_units, units, audio16k,
-                            silence_sections) -> None:
+                            silence_sections, traits=()) -> None:
     """Precision pass over align_units_globally()'s result, in the order it
     was measured in: line outliers back next to their line, leading words
-    directly before the first timed word, word ends follow held notes,
-    starts lead by WORD_START_LEAD_S. Mutates `aligned_units` in place."""
+    directly before the first timed word, word ends follow held notes
+    (word_end_drop_db() of the song's traits), starts lead by
+    WORD_START_LEAD_S. Mutates `aligned_units` in place."""
     place_line_outliers(aligned_units, units, LYRICS_LINE_OUTLIER_GAP_S)
     place_leading_words(aligned_units, units, silence_sections)
     extend_word_ends(aligned_units, frame_levels_db(audio16k),
-                     WORD_END_EXTEND_DROP_DB, WORD_END_EXTEND_MAX_S)
+                     word_end_drop_db(traits), WORD_END_EXTEND_MAX_S)
     lead_word_starts(aligned_units, WORD_START_LEAD_S)
 
 
@@ -2305,9 +2660,38 @@ def run_alignment_with_retries(align_attempt_fn, max_attempts: int = None):
     return best
 
 
+def determine_song_end(song_dir: str, vocals_path: str, audio16k,
+                       recording_seconds: float = None, anchor_end: float = None):
+    """(end_seconds, source) of the song inside the audio, or (None, None)
+    when the whole audio belongs to the song. An admin's song_end.txt in
+    `song_dir` wins (an end at or after the audio end means: no outro) -
+    unless anchors.txt has an end line (`anchor_end`), which wins over it; an
+    unreadable one is reported and ignored. Otherwise, with a known
+    recording length, outro.find_outro_cut() looks for a pause near the
+    official end, using the instrumental stem next to `vocals_path`."""
+    duration = len(audio16k) / 16000.0
+    if anchor_end is not None:
+        return (anchor_end, anchors_file.ANCHORS_FILE) if anchor_end < duration else (None, None)
+    try:
+        end = outro.read_song_end(song_dir)
+    except ValueError as exc:
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('warning:')} {exc} - ignored")
+        end = None
+    if end is not None:
+        return (end, outro.SONG_END_FILE) if end < duration else (None, None)
+    if recording_seconds:
+        instrumental = load_audio_16k(
+            os.path.join(os.path.dirname(vocals_path), "no_vocals.wav"))
+        cut = outro.find_outro_cut(audio16k, instrumental, recording_seconds)
+        if cut is not None and cut < duration:
+            return cut, "outro detection"
+    return None, None
+
+
 def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir: str,
                            device: str, work_dir: str, language: str = None,
-                           align_model: str = None):
+                           align_model: str = None, recording_seconds: float = None,
+                           traits=None):
     print(f"{ULTRASINGER_HEAD} {gold_highlighted('Lyrics rebuild')} "
           f"{blue_highlighted(txt.path)} ({len(lyrics_units)} supplied lines)")
 
@@ -2334,6 +2718,22 @@ def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir:
 
     audio16k = load_audio_16k(vocals_audio)
     audio_dur = len(audio16k) / 16000.0
+    # a video outro (scene, talking, credits music) is cut off before the
+    # alignment - otherwise the last lyric lines get pulled into it
+    try:
+        anchor_data = anchors_file.read_anchors(song_dir)
+    except ValueError as exc:
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('warning:')} {exc} - "
+              f"{anchors_file.ANCHORS_FILE} ignored")
+        anchor_data = None
+    song_end, end_source = determine_song_end(
+        song_dir, vocals_audio, audio16k, recording_seconds,
+        anchor_end=anchor_data["end"] if anchor_data else None)
+    if song_end is not None:
+        print(f"{ULTRASINGER_HEAD} song ends at {song_end:.1f}s ({end_source}) - "
+              f"the last {audio_dur - song_end:.1f}s are not used for the lyrics")
+        audio16k = audio16k[:int(song_end * 16000)]
+        audio_dur = song_end
 
     if align_model:
         import whisperx
@@ -2344,13 +2744,31 @@ def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir:
         lang = resolve_language(txt, vocals_audio, language, song_dir, out_dir)
         model, meta, lang = load_aligner(lang, "cpu")
 
+    anchored = None
+    if anchor_data and anchor_data["lines"]:
+        try:
+            anchored = anchors_file.match_anchor_units(
+                anchor_data["lines"], [u["text"] for u in lyrics_units])
+            anchored = [(ui, t) for ui, t in anchored if t < audio_dur] or None
+            print(f"{ULTRASINGER_HEAD} {len(anchored or [])} anchored line(s) from "
+                  f"{anchors_file.ANCHORS_FILE}")
+        except ValueError as exc:
+            print(f"{ULTRASINGER_HEAD} {red_highlighted('warning:')} {exc} - "
+                  "anchors ignored")
+            anchored = None
     aligned_units, n_aligned = align_units_globally(
-        lyrics_units, model, meta, audio16k, device)
+        lyrics_units, model, meta, audio16k, device, anchors=anchored)
     n_total = sum(len(u["words"]) for u in lyrics_units)
     confident = sum(1 for a in aligned_units
                     if a["score"] is not None and a["score"] >= GLOBAL_CONFIDENT_LINE_SCORE)
     print(f"{ULTRASINGER_HEAD} global lyrics alignment: {n_aligned}/{n_total} "
           f"words placed, {confident}/{len(aligned_units)} lines confident")
+
+    lyrics_units, aligned_units, n_unsung = drop_unsung_tail(lyrics_units, aligned_units)
+    if n_unsung:
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('warning:')} the last "
+              f"{n_unsung} lyric word(s) were not found in the audio and are "
+              "left out (lyrics longer than the recording)")
 
     if n_total and n_aligned / n_total < 0.5:
         print(f"{ULTRASINGER_HEAD} {red_highlighted('warning:')} only "
@@ -2358,14 +2776,17 @@ def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir:
               "supplied lyrics may not match this audio well; result kept "
               "anyway (lyrics mode never falls back to re-transcription)")
 
-    refine_global_alignment(aligned_units, lyrics_units, audio16k, silence_sections)
+    refine_global_alignment(aligned_units, lyrics_units, audio16k, silence_sections,
+                            traits=traits or ())
+    if anchored:
+        pin_anchor_words(aligned_units, lyrics_units, anchored)
 
     per_unit_syllables = build_syllables_from_lyric_units(
         lyrics_units, aligned_units, lang, silence_sections=silence_sections,
         audio_dur=audio_dur)
     out_path = write_lyrics_result(
         txt, song_dir, out_dir, per_unit_syllables, processing_audio,
-        audio_dur=audio_dur)
+        audio_dur=audio_dur, traits=traits or ())
     if out_path is None:
         return None
 
@@ -2375,6 +2796,12 @@ def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir:
 # --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
+
+def parse_traits_arg(value) -> list:
+    """The song's traits from `--traits a,b` (codes of
+    orchestrator/song_style.py, already checked by the orchestrator)."""
+    return [t.strip() for t in (value or "").split(",") if t.strip()]
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -2396,8 +2823,22 @@ def main():
                         help="mode=lyrics only: line-delimited trusted lyrics "
                              "(plain text, or lyrics_fetch.py JSON) to force-align "
                              "instead of the txt's own (possibly wrong) lyrics")
+    parser.add_argument("--recording-seconds", type=float, default=None,
+                        help="mode=lyrics only: official length of the recording "
+                             "(MusicBrainz); a video that runs longer gets its "
+                             "outro cut off at a pause near that length "
+                             "(see outro.py; a song_end.txt in the song folder wins)")
+    parser.add_argument("--traits", default=None,
+                        help="the song's vocal/instrument traits from the song "
+                             "list, comma-joined (harsh_vocals, operatic_vocals, "
+                             "loud_high_instruments, choir); "
+                             "loud_high_instruments lets word ends follow held "
+                             "notes further down (word_end_drop_db())")
     args = parser.parse_args()
     args.language = args.language or os.environ.get("REPAIR_LANGUAGE")
+    traits = parse_traits_arg(args.traits)
+    if traits:
+        print(f"{ULTRASINGER_HEAD} song traits: {', '.join(traits)}")
 
     song_dir = args.song_dir.rstrip("/")
     work_dir = args.work_dir or os.path.join(
@@ -2423,7 +2864,8 @@ def main():
                 lyrics_units = parse_lyrics_lines(lines_data)
                 result = repair_txt_with_lyrics(
                     txt, lyrics_units, song_dir, args.out, args.device,
-                    work_dir, args.language, args.align_model)
+                    work_dir, args.language, args.align_model,
+                    recording_seconds=args.recording_seconds, traits=traits)
                 if result is not None:
                     result["lyrics_source"] = lyrics_source
             else:
@@ -2464,9 +2906,15 @@ def main():
                   f"gap_old_ms={result['gap_old_ms']} "
                   f"mode={result['mode']}")
         else:
+            gap_check = ""
+            if "gap_kept" in result:
+                spread = result.get("gap_spread_s")
+                gap_check = (f"gap_check={'kept' if result['gap_kept'] else 'moved'} "
+                             f"gap_spread_s={'none' if spread is None else f'{spread:.2f}'} ")
             print(f"REPAIR_DONE output={result['output']} "
                   f"gap_old_ms={result['gap_old_ms']} "
                   f"gap_new_ms={result['gap_new_ms']} "
+                  f"{gap_check}"
                   f"aligned={result['aligned_words']}/{result['total_words']} "
                   f"repitched={result['repitched']} mode={result['mode']}")
 

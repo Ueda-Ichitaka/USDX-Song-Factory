@@ -49,7 +49,13 @@ Local Band,A Song I Already Have,media/local-band-a-song.mp3
 
 ### Optional columns
 
-Append them after `url`; omit them for rows or files that don't need them:
+Append them after `url`; omit them for rows or files that don't need them.
+
+**Best practice: always fill in `language` and `musicbrainz_id`.** Without a
+language, whisper guesses it from the audio (and can guess wrong, which
+spoils the transcription and every check built on it); without a
+MusicBrainz ID, a video outro cannot be cut off automatically (see "What
+happens to a new song" below).
 
 ```csv
 band,title,url,language,musicbrainz_id,lyrics_url,cover_url,duet
@@ -60,15 +66,30 @@ Lacrimosa,Lichtgestalt,https://www.youtube.com/watch?v=XYZ,de,,,,
   language detection instead of letting it guess (anything else, like the
   dashboard's `mixed` for songs that switch language, means "detect it") - fixes mis-detections on
   short or ambiguous audio (a purely German song was once detected as English
-  at 0.41 confidence).
+  at 0.41 confidence). For a language whisper cannot transcribe, write its
+  name (for example `Gaulish`): whisper then detects on its own, and the
+  [lyrics review](#lyrics-review) lists the song as "not checkable" instead of
+  flagging it. The same happens for `mixed`.
 * **`musicbrainz_id`** - a MusicBrainz recording or release ID. Looked up
   directly (recording first, then release) instead of the fuzzy title/artist
   search, for more reliable cover art, year and genres. Does **not** affect
-  naming - `band`/`title` still win.
-* **`lyrics_url`** - a link to known-good lyrics, tried first and used
-  directly if it yields anything. `genius.com` URLs are scraped; anything else
+  naming - `band`/`title` still win. Its recording length is also used to
+  cut off a video outro before the lyrics are aligned (see "What happens to a
+  new song" below); a release or release-group ID works too - the track whose
+  title matches the song is used. Pick the ID of the version the video
+  actually shows (album, single or live) - a different version's length can
+  put the cut in the wrong place or prevent it.
+* **`lyrics_url`** - known-good lyrics, tried first and used directly if they
+  yield anything. `genius.com` URLs are scraped; an lrclib.net track page
+  (`https://lrclib.net/tracks/15562042`) is read from lrclib.net's API,
+  synced lyrics (with line times) first, plain otherwise - a lrclib.net
+  search link names no single song and is not used; any other `http(s)` link
   must point straight at plain text or an `.lrc` file (arbitrary lyrics-site
-  HTML pages are not supported). See [song-sources.md](song-sources.md).
+  HTML pages are not supported). Anything that is not a link is a lyrics file
+  (plain text, one sung line per line, or LRC), relative to `stack/input/`
+  unless the path is absolute, e.g. `lyrics/Die Funkhausgruppe - Die Physiker.txt`
+  for `stack/input/lyrics/Die Funkhausgruppe - Die Physiker.txt`. See
+  [song-sources.md](song-sources.md).
 * **`cover_url`** - a link to a cover image. After the song is created, the
   image replaces the cover (`<Artist - Title> [CO].jpg`/`.png`; WebP, GIF and
   BMP are converted to JPEG) and `#COVERURL` records the link. A link that
@@ -81,6 +102,22 @@ Lacrimosa,Lichtgestalt,https://www.youtube.com/watch?v=XYZ,de,,,,
   row is listed as skipped with the reason "duet generation is not available
   yet" (progress view: `2 skipped (1 duet)`), and the plain row is created
   as usual.
+* **`genre`** and **`trait`** - set by an admin on the dashboard. Each cell
+  may hold several comma-joined values (CSV-quoted:
+  `"metal,folk","harsh_vocals,loud_high_instruments"`); their order means
+  nothing, and they belong to the song, not the band. Genres: `metal`,
+  `medieval`, `folk`, `gothic`, `symphonic`, `punk`, `pop`, `rap`, `kpop`,
+  `jpop`, `rock`, `industrial`, `ebm`. Traits: `harsh_vocals`,
+  `operatic_vocals`, `loud_high_instruments`, `choir`. Empty, `default` and
+  `none` mean no special handling. A value the factory does not know is
+  ignored and listed in the finishing report under "Unknown genre or trait
+  values". What the traits switch: `loud_high_instruments` lets word ends
+  follow a held note down to 9 dB below the word instead of 6 dB
+  (`LOUD_INSTRUMENTS_WORD_END_DROP_DB`). `harsh_vocals` keeps growled and
+  screamed notes from jumping around: a note the pitch detector is unsure
+  about moves halfway towards the melody around it, at most 3 semitones
+  from it (`HARSH_MAX_DISTANCE`). The other traits and the genres change
+  nothing yet - no handling was measured to beat the default.
 
 ### `songs.txt` (plain list)
 
@@ -103,11 +140,62 @@ Point the stack to another file with the environment variable `SONGS_FILE`
    transcription, then real lyrics from the internet force-aligned to the
    vocals when a source is found (see
    [song-sources.md](song-sources.md#online-lyrics)). In that case the notes
-   are rebuilt from those lyrics and their pitches are re-detected and
-   normalised (octave errors folded back). Without an online source the song
-   keeps the transcription.
+   are rebuilt from those lyrics: one note per syllable, plus `~` notes where
+   a held syllable moves to another pitch. Pitches are re-detected slightly
+   after each note (the singing lags notes placed like hand-made ones) and
+   normalised (octave errors folded back). Lyrics at the end that are not
+   found in the audio at all (a video that fades out before the album
+   lyrics end) are left out, and the job log says how many words; without
+   this they would be squeezed into the last seconds and pull the sung
+   lines with them. Without an online source the song keeps the
+   transcription; there UltraSinger itself cuts a long note into `~` notes of
+   a fixed length and at pauses, each with its own pitch.
+   **Video outros:** a music video often runs past the song (a closing scene,
+   talking, credits music), and the aligner would pull the last lyric lines
+   into it. When the row has a `musicbrainz_id` and the video is at least 8 s
+   longer than that recording, the lyrics are aligned only up to a clear
+   pause (at least 1 s, both vocals and music quiet) within 10 s before to
+   15 s after the point where the recording should end. Without such a pause
+   nothing is cut. The log says `song ends at ...s (outro detection)`. For
+   songs without an ID, or when the detection misses, put a
+   [`song_end.txt`](repairs.md#song-end-song_endtxt) into the song folder and
+   repair it. UltraSinger's own MusicBrainz search is not used for this: it
+   picked the exact recording for only 15 of 32 list songs with a known ID
+   (often a live or music-video recording), which would cut in wrong places.
 3. Lyrics in Cyrillic, Korean or Japanese script are romanised.
+   **Lyrics review:** when online lyrics replaced the transcription, they are
+   compared with what whisper heard in the vocals (UltraSinger's own
+   transcription, kept from before the lyrics step). See
+   [Lyrics review](#lyrics-review) below.
 4. The result lands in `output/new/<Artist - Title>/`.
+
+## Lyrics review
+
+The worst lyrics errors come from a lyrics source that does not match the
+video: the album version when the video is a shorter edit, an extra verse, a
+different arrangement. The aligner then has to place lines that are never
+sung. After a new song gets online lyrics, its `lyrics.txt` is compared with
+UltraSinger's transcription of the vocals, word by word in order (a repeated
+chorus cannot pair with the wrong repeat; slightly misheard words still
+count). A line counts as heard when at least half of its words were found.
+
+The song is listed under **Lyrics to review** in `output/report.md` when
+
+* less than 60% of the lyric words were heard (`LYRICS_REVIEW_MIN_HEARD`), or
+* 5 or more lyric lines in a row were not heard
+  (`LYRICS_REVIEW_MAX_UNHEARD_RUN`).
+
+The note names the heard and unheard lines and when the singing ends, so you
+can check those lines and fix the song: trim `lyrics.txt`, or set the end
+with [`song_end.txt`](repairs.md#song-end-song_endtxt) or
+[`anchors.txt`](repairs.md#anchors-anchorstxt), then repair it.
+
+It is a hint where to look, not an automatic fix. Measured on 30 songs rated
+by ear: it flags 4 of 6 songs with a wrong lyrics source and 6 of 24 correct
+songs - mostly singing whisper cannot transcribe well (Gaulish, operatic
+vocals). Songs from USDB and songs without online lyrics are not reviewed.
+A `language` whisper cannot transcribe (see above) makes the song "not
+checkable" instead.
 
 ## Re-running: append to or overwrite `song-requests.csv`?
 
