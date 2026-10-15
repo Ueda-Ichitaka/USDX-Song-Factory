@@ -837,7 +837,7 @@ _mm_saved = {name: getattr(repair, name) for name in (
     "locate_audio", "build_alignment_units", "prepare_processing_audio",
     "load_audio_16k", "resolve_language", "load_aligner", "progressively_align",
     "implied_gap_samples", "write_repaired", "group_words", "other_media",
-    "audio_from_video")}
+    "audio_from_video", "global_timing_correction")}
 
 
 def _mm_run(recordings):
@@ -852,6 +852,8 @@ def _mm_run(recordings):
 
 
 try:
+    # the whole song does not fit the file either (no consistent shift)
+    repair.global_timing_correction = lambda *a, **k: None
     repair.locate_audio = lambda song_dir, txt, work_dir: ("/song/live.mp3", None)
     repair.build_alignment_units = lambda txt, lines: [{"notes": []}, {"notes": []}]
     repair.prepare_processing_audio = lambda audio, work, device: (audio + ".vocals.wav", audio + ".mute.wav")
@@ -896,6 +898,161 @@ finally:
     for name, func in _mm_saved.items():
         setattr(repair, name, func)
 
+
+# --------------------------------------------------------------------------
+# whole-song timing correction (timing_fit.py): gap mode uses it when no word
+# of the first lines is found near #GAP; sync mode corrects #GAP/#BPM first
+# when the song is clearly off, so its line windows start in the right place
+# --------------------------------------------------------------------------
+
+_tc = {}
+_tc_saved = {name: getattr(repair, name) for name in (
+    "locate_audio", "build_alignment_units", "prepare_processing_audio",
+    "load_audio_16k", "resolve_language", "load_aligner", "progressively_align",
+    "implied_gap_samples", "write_repaired", "group_words", "other_media",
+    "global_timing_correction", "reanchor_outlier_units", "rescue_dropped_units",
+    "refine_first_units", "detect_lyrics_mismatch")}
+
+
+class _TcTxt:
+    path = "/song/song.txt"
+    notes = []
+
+    def __init__(self):
+        self.gap_ms, self.bpm_tag = 31920.0, 300.0
+
+    def lyric_lines(self):
+        return []
+
+    def beat_to_sec(self, beat):
+        return 0.0
+
+    @property
+    def gap_s(self):
+        return self.gap_ms / 1000.0
+
+
+try:
+    repair.locate_audio = lambda song_dir, txt, work_dir: ("/song/mix.mp3", None)
+    repair.build_alignment_units = lambda txt, lines: [{"notes": []}, {"notes": []}]
+    repair.prepare_processing_audio = lambda audio, work, device: ("/w/vocals.wav", "/w/mute.wav")
+    repair.load_audio_16k = lambda path: [0.0] * 16000 * 60
+    repair.resolve_language = lambda *a, **k: "de"
+    repair.load_aligner = lambda lang, device: (None, None, lang)
+    repair.group_words = lambda notes: []
+    repair.other_media = lambda song_dir, txt, current: []
+
+    def _tc_write(txt, song_dir, out_dir, gap_ms, note_times, pitches):
+        _tc["written"] = (gap_ms, txt.bpm_tag)
+        return "/out/song.txt"
+    repair.write_repaired = _tc_write
+
+    def _tc_corr(txt, model, meta, audio16k, device, gap_only):
+        _tc["gap_only"] = gap_only
+        return _tc["corr"]
+    repair.global_timing_correction = _tc_corr
+
+    # gap mode: nothing near #GAP, but the whole song is shifted by -22.5 s
+    repair.progressively_align = lambda *a, **k: [{"words": [None]}] * 2
+    repair.implied_gap_samples = lambda txt, units, aligned: []
+    _tc["corr"] = {"gap_ms": 9420.4, "bpm": 300.0, "offset_s": -22.5, "drift_s": 0.1, "agree": 0.95}
+    _res = repair.repair_txt(_TcTxt(), "/song", "/out", "gap", "cpu", tempfile.mkdtemp())
+    check(f"gap: no word near #GAP -> the whole-song fit gives the new #GAP (got {_res}, {_tc})",
+          _res is not None and _tc.get("written") == (9420, 300.0) and _tc["gap_only"] is True
+          and _res["gap_new_ms"] == 9420 and _res["gap_kept"] is False
+          and "whole song" in _res.get("note", ""))
+
+    # gap mode: words found near #GAP but in the wrong place (they disagree)
+    # -> the whole-song fit wins (Maerchen schreibt die Zeit: 8 of 19 words
+    # "found" near the old #GAP, the song is 21 s off)
+    repair.progressively_align = lambda *a, **k: [{"words": [1]}] * 2
+    repair.implied_gap_samples = lambda txt, units, aligned: [30.0, 35.5, 41.0]
+    _tc["corr"] = {"gap_ms": 11230.0, "bpm": 300.0, "offset_s": -20.69, "drift_s": 0.0, "agree": 1.0}
+    _res = repair.repair_txt(_TcTxt(), "/song", "/out", "gap", "cpu", tempfile.mkdtemp())
+    check(f"gap: disagreeing words near #GAP -> the whole-song #GAP (got {_res})",
+          _res["gap_new_ms"] == 11230 and _res["gap_kept"] is False and "whole song" in _res["note"])
+    # agreeing words near #GAP, whole song within 0.3 s -> the opening's (finer) value
+    repair.implied_gap_samples = lambda txt, units, aligned: [32.02, 32.03, 32.01]
+    _tc["corr"] = {"gap_ms": 32200.0, "bpm": 300.0, "offset_s": 0.28, "drift_s": 0.0, "agree": 1.0}
+    _res = repair.repair_txt(_TcTxt(), "/song", "/out", "gap", "cpu", tempfile.mkdtemp())
+    check(f"gap: opening and whole song agree -> the opening's #GAP (got {_res})",
+          _res["gap_new_ms"] == 32020 and "note" not in _res)
+    # agreeing words near #GAP but the whole song says otherwise -> whole song
+    _tc["corr"] = {"gap_ms": 27000.0, "bpm": 300.0, "offset_s": -4.92, "drift_s": 0.0, "agree": 0.9}
+    _res = repair.repair_txt(_TcTxt(), "/song", "/out", "gap", "cpu", tempfile.mkdtemp())
+    check(f"gap: opening and whole song disagree -> the whole song's #GAP (got {_res})",
+          _res["gap_new_ms"] == 27000 and "whole song" in _res["note"])
+    # no consistent whole-song fit -> the opening's decision as before
+    _tc["corr"] = None
+    _res = repair.repair_txt(_TcTxt(), "/song", "/out", "gap", "cpu", tempfile.mkdtemp())
+    check(f"gap: no whole-song fit -> the opening's #GAP (got {_res})", _res["gap_new_ms"] == 32020)
+
+    # sync mode: clearly off (+5 s, drifting 1.2 s) -> #GAP/#BPM corrected before the line search
+    def _tc_align(txt, units, model, meta, audio16k, audio_dur):
+        _tc["seen_by_search"] = (txt.gap_ms, txt.bpm_tag)
+        return [{"words": [], "score": 0.9}] * 2
+    repair.progressively_align = _tc_align
+    repair.reanchor_outlier_units = lambda *a, **k: None
+    repair.rescue_dropped_units = lambda *a, **k: None
+    repair.refine_first_units = lambda *a, **k: None
+    repair.detect_lyrics_mismatch = lambda *a, **k: (True, 1.0, "test")
+    _saved_fb = os.environ.get("REPAIR_FALLBACK")
+    os.environ["REPAIR_FALLBACK"] = "0"
+    _tc["corr"] = {"gap_ms": 36920.0, "bpm": 297.0, "offset_s": 5.0, "drift_s": 1.2, "agree": 0.9}
+    repair.repair_txt(_TcTxt(), "/song", "/out", "sync", "cpu", tempfile.mkdtemp())
+    check(f"sync: a clearly shifted song is corrected before the line search (got {_tc.get('seen_by_search')})",
+          _tc.get("seen_by_search") == (36920.0, 297.0) and _tc["gap_only"] is False)
+    _tc["corr"] = {"gap_ms": 32020.0, "bpm": 300.0, "offset_s": 0.1, "drift_s": 0.05, "agree": 0.9}
+    repair.repair_txt(_TcTxt(), "/song", "/out", "sync", "cpu", tempfile.mkdtemp())
+    check(f"sync: a small shift is left to the line search (got {_tc.get('seen_by_search')})",
+          _tc.get("seen_by_search") == (31920.0, 300.0))
+    if _saved_fb is None:
+        os.environ.pop("REPAIR_FALLBACK", None)
+    else:
+        os.environ["REPAIR_FALLBACK"] = _saved_fb
+finally:
+    for name, func in _tc_saved.items():
+        setattr(repair, name, func)
+
+# write_repaired(): a changed #BPM is written, an unchanged one stays as it is
+_bpm_dir = tempfile.mkdtemp()
+_bpm_song = os.path.join(_bpm_dir, "Song")
+os.makedirs(_bpm_song)
+_bpm_txt = os.path.join(_bpm_song, "song.txt")
+with open(_bpm_txt, "w", encoding="utf-8") as _f:
+    _f.write("#TITLE:x\n#ARTIST:y\n#BPM:300\n#GAP:1000\n: 0 4 0 la\nE\n")
+_t = repair.Txt(_bpm_txt)
+_out = repair.write_repaired(_t, _bpm_song, os.path.join(_bpm_dir, "out"), 1000, None, None)
+check("write_repaired: an unchanged #BPM stays as written",
+      "#BPM:300\n" in open(_out, encoding="utf-8").read())
+_t.bpm_tag = 297.123456
+_out = repair.write_repaired(_t, _bpm_song, os.path.join(_bpm_dir, "out2"), 1000, None, None)
+check(f"write_repaired: a corrected #BPM is written",
+      "#BPM:297.1235\n" in open(_out, encoding="utf-8").read())
+
+# global_line_points(): one (file time, sung time) point per lyric line, from
+# the first word of the line the whole-song alignment placed
+_glp_dir = tempfile.mkdtemp()
+_glp_path = os.path.join(_glp_dir, "song.txt")
+with open(_glp_path, "w", encoding="utf-8") as _f:
+    _f.write("#TITLE:x\n#ARTIST:y\n#BPM:150\n#GAP:2000\n"
+             ": 0 4 0 eins \n: 4 4 0 zwei \n- 10\n: 10 4 0 drei \n: 14 4 0 vier \nE\n")
+_glp = {}
+_glp_saved = (repair.ctc_align.emissions_for_audio, repair.ctc_align.align_words_globally)
+try:
+    repair.ctc_align.emissions_for_audio = lambda *a, **k: "EM"
+
+    def _glp_align(words, em, meta, end_penalty=None, **kw):
+        _glp["words"], _glp["kw"] = words, kw
+        return [None, (7.0, 7.3, 0.9), (9.5, 9.8, 0.9), (10.0, 10.2, 0.9)]
+    repair.ctc_align.align_words_globally = _glp_align
+    _pts = repair.global_line_points(repair.Txt(_glp_path), None, {}, [0.0] * 16000, "cpu")
+finally:
+    repair.ctc_align.emissions_for_audio, repair.ctc_align.align_words_globally = _glp_saved
+check(f"global_line_points: the file's own words, line by line (got {_glp.get('words')}, {_glp.get('kw', {}).get('line_lengths')})",
+      _glp.get("words") == ["eins", "zwei", "drei", "vier"] and _glp["kw"].get("line_lengths") == [2, 2])
+check(f"global_line_points: first placed word per line against its file time (got {_pts})",
+      _pts == [(2.4, 7.0), (3.0, 9.5)])
 
 def _gap_main_output(result, extra_argv=(), all_lines=False):
     import contextlib

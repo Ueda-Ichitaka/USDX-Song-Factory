@@ -60,6 +60,8 @@ them are variables.
 | `LYRICS_END_SKIP_PENALTY` | `4.0` | lyrics at the end that are never sung (a video that fades out before the lyrics end) are left out; higher = more is placed anyway, `0` = always place every word |
 | `LYRICS_FILLER_ENTER` | `5.0` | singing between two lyric lines that the lyrics do not have (a chorus the source writes once) is skipped over instead of stretching the word before it; this is the cost of skipping over such singing once - higher = used less, `0` = off |
 | `LYRICS_FILLER_BETA` | `1.0` | cost per sung frame inside such a skipped part |
+| `SYNC_PRECORRECT_MIN_S` | `1.0` | sync mode: a song shifted at least this much (whole-song alignment) gets #GAP corrected before the line search |
+| `SYNC_PRECORRECT_DRIFT_S` | `0.5` | sync mode: a song that drifts at least this much over the song gets #GAP and #BPM corrected before the line search |
 | `LYRICS_FILL` | `1` | lines a new song's whisper transcript has but the online lyrics lack (a repeated chorus line written too few times) are filled in - as a copy of the matching lyric line, else with whisper's words; `0` = off |
 | `LYRICS_FILL_OPTIONAL_COST` | `2.0` | a filled-in line is only kept where the alignment finds it in the singing; this is the cost per letter of leaving it out - higher = kept more often |
 | `LYRICS_FILLER_NOTE_S` | `2.0` | skipped singing at least this long is logged as "singing not in the lyrics" with its time |

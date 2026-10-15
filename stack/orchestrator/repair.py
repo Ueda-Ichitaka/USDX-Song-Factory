@@ -31,15 +31,21 @@ Modes
 gap             Separates the vocals, aligns the first lyric lines against
                 them and measures where each of the first words really
                 starts. #GAP moves to the median only when those values
-                agree (decide_gap(), GAP_MAX_SPREAD_S); otherwise the
-                original #GAP is kept and REPAIR_DONE says so. When no word
+                agree (decide_gap(), GAP_MAX_SPREAD_S); the whole song's
+                own lyrics aligned in one pass give a second opinion
+                (global_timing_correction(), timing_fit.py) that wins when
+                the opening is unsure or contradicts it - songs shifted far
+                beyond the opening's search window are fixed that way.
+                Otherwise the original #GAP is kept and REPAIR_DONE says so. When no word
                 is found near #GAP at all, the repair fails ("audio does not
                 match the song file"); the reason names another recording
                 of the song folder that seems to fit
                 (describe_other_recordings()). Beats, durations and pitches
                 are kept as-is.
 
-sync  (default) Full repair: separates vocals (demucs), force-aligns every
+sync  (default) Full repair: separates vocals (demucs); a song clearly
+                shifted or drifting first gets #GAP/#BPM from the
+                whole-song fit (SYNC_PRECORRECT_*); then force-aligns every
                 lyric line progressively (so cumulative drift is corrected),
                 rebuilds all beats/durations, re-detects the pitch of every
                 note (SwiftF0) and rewrites #GAP. Line breaks are kept.
@@ -74,6 +80,7 @@ import anchors as anchors_file  # noqa: E402
 import compare_reference  # noqa: E402
 import ctc_align  # noqa: E402
 import lyrics_fill  # noqa: E402
+import timing_fit  # noqa: E402
 import held_notes  # noqa: E402
 import outro  # noqa: E402
 import pitch_normalise  # noqa: E402
@@ -173,6 +180,12 @@ PITCH_READ_DELAY_S = float(os.environ.get("PITCH_READ_DELAY_S", "0.1"))
 # seconds (measured on 110 hand-synced songs, stack/work/bench/
 # bench14_gap.py: 64 accepted, 3 of them wrong by more than 1 s)
 GAP_MAX_SPREAD_S = float(os.environ.get("GAP_MAX_SPREAD_S", "0.3"))
+# sync mode corrects #GAP/#BPM from the whole-song fit (timing_fit.py) before
+# its line search when the song is off by at least this much at the first
+# line, or drifts at least SYNC_PRECORRECT_DRIFT_S over the song - the line
+# search only looks a few seconds around each line's old place
+SYNC_PRECORRECT_MIN_S = float(os.environ.get("SYNC_PRECORRECT_MIN_S", "1.0"))
+SYNC_PRECORRECT_DRIFT_S = float(os.environ.get("SYNC_PRECORRECT_DRIFT_S", "0.5"))
 # real pauses for silence-aware seeding/interpolation (see
 # seed_lyric_windows()/interpolate_word_timings()) - get_silence_sections()'s
 # own default (50ms) flags ordinary inter-syllable micro-pauses WITHIN
@@ -264,6 +277,7 @@ class Txt:
         self.notes = []        # flat list of Note (in file order)
         self.gap_ms = 0.0      # a missing #GAP tag means gap 0
         self.bpm_tag = None
+        self.bpm_tag_file = None  # #BPM as written in the file
         self.audio_ref = None
         self.video_ref = None
         self.language = None
@@ -280,7 +294,7 @@ class Txt:
                 if stripped.startswith("#GAP:"):
                     self.gap_ms = _to_float(stripped[5:])
                 elif stripped.startswith("#BPM:"):
-                    self.bpm_tag = _to_float(stripped[5:])
+                    self.bpm_tag = self.bpm_tag_file = _to_float(stripped[5:])
                 elif stripped.startswith("#MP3:"):
                     self.audio_ref = stripped[5:].strip()
                 elif stripped.startswith("#AUDIO:"):
@@ -1480,6 +1494,61 @@ def describe_other_recordings(txt, song_dir: str, audio_path: str, work_dir: str
     return "no other recording in the folder"
 
 
+def global_line_points(txt, model, meta, audio16k, device: str = "cpu") -> list:
+    """[(file_s, sung_s), ...] one per lyric line: the file's own words are
+    aligned to the whole vocal track in one global pass (ctc_align, with the
+    filler between lines and the end penalty), and the first word of a line
+    the path placed gives the line's point - the time the file gives that
+    word against the time it is sung."""
+    words, line_of_word, file_start = [], [], []
+    for li, line in enumerate(txt.lyric_lines()):
+        notes = line["notes"]
+        for group in text_word_groups(notes):
+            words.append(word_text(notes, group))
+            line_of_word.append(li)
+            file_start.append(txt.note_start_sec(notes[group[0]]))
+    if not words:
+        return []
+    line_lengths = []
+    for k, li in enumerate(line_of_word):
+        if k == 0 or li != line_of_word[k - 1]:
+            line_lengths.append(0)
+        line_lengths[-1] += 1
+    try:
+        emission = ctc_align.emissions_for_audio(model, meta, audio16k, device)
+    except RuntimeError:
+        if device == "cpu":
+            raise
+        emission = ctc_align.emissions_for_audio(model, meta, audio16k, "cpu")
+    opts = _filler_options([{"words": [None] * n} for n in line_lengths])
+    opts["line_lengths"] = line_lengths
+    timings = ctc_align.align_words_globally(
+        words, emission, meta,
+        end_penalty=LYRICS_END_SKIP_PENALTY if LYRICS_END_SKIP_PENALTY > 0 else None, **opts)
+    points, done = [], set()
+    for k, timing in enumerate(timings):
+        li = line_of_word[k]
+        if li in done or timing is None or timing == ctc_align.NOT_SUNG:
+            continue
+        done.add(li)
+        points.append((file_start[k], timing[0]))
+    return points
+
+
+def global_timing_correction(txt, model, meta, audio16k, device: str, gap_only: bool):
+    """timing_fit.correction() of the whole-song alignment of the file's own
+    lyrics (global_line_points()), or None when too few lines agree."""
+    fit = timing_fit.fit(global_line_points(txt, model, meta, audio16k, device))
+    if not fit:
+        return None
+    corr = timing_fit.correction(fit, txt.gap_ms or 0.0, txt.bpm_tag, gap_only=gap_only)
+    print(f"{ULTRASINGER_HEAD} whole-song fit: {fit['n']} lines, "
+          f"{fit['agree']:.0%} agree, sung = {fit['intercept']:+.2f} s + "
+          f"{fit['slope']:.4f} x file time"
+          + ("" if corr else " - not consistent enough to correct"))
+    return corr
+
+
 def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
                work_dir: str, language: str = None, align_model: str = None):
     print(f"{ULTRASINGER_HEAD} {gold_highlighted('Repair')} "
@@ -1528,10 +1597,36 @@ def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
             return aligned_, implied_gap_samples(txt, first_units, aligned_)
 
         aligned, samples = align_first_units(audio16k)
+        # the whole-song fit (timing_fit.py) as a second opinion: the search
+        # around #GAP only looks a few seconds around the first lines and can
+        # pick up wrong words when the song is shifted further
+        corr = global_timing_correction(txt, model, meta, audio16k, device, gap_only=True)
+
+        def whole_song_result():
+            new_gap = int(round(corr["gap_ms"]))
+            note = (f"start found by the whole song: shifted {corr['offset_s']:+.2f} s, "
+                    f"{corr['agree']:.0%} of the lines agree")
+            if abs(corr["drift_s"]) >= SYNC_PRECORRECT_DRIFT_S:
+                note += (f"; the song also drifts {corr['drift_s']:+.2f} s - "
+                         "category async corrects that")
+            print(f"{ULTRASINGER_HEAD} {green_highlighted(note)}")
+            out = write_repaired(txt, song_dir, out_dir, gap_ms=new_gap,
+                                 note_times=None, pitches=None)
+            return {
+                "output": out,
+                "gap_old_ms": txt.gap_ms, "gap_new_ms": new_gap,
+                "gap_kept": False, "gap_spread_s": None,
+                "aligned_words": 0, "total_words": 0,
+                "repitched": 0, "mode": mode, "note": note,
+            }
+
         if not samples:
-            # no word of the first lines near #GAP: the song file may be
-            # timed to another recording in the same folder - named in the
-            # reason, never switched automatically
+            # no word of the first lines near #GAP: the whole song may just be
+            # shifted further; only when it does not fit either may the file be
+            # timed to another recording in the same folder (named in the
+            # reason, never switched automatically)
+            if corr:
+                return whole_song_result()
             others = describe_other_recordings(txt, song_dir, audio_path, work_dir,
                                                device, align_first_units)
             msg = ("audio does not match the song file: no word of the first lines "
@@ -1539,6 +1634,11 @@ def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
             print(f"{ULTRASINGER_HEAD} {red_highlighted(msg)}")
             return None
         decision = decide_gap(samples, txt.gap_ms)
+        if corr and (decision["kept"]
+                     or abs(decision["gap_ms"] - corr["gap_ms"]) > GAP_MAX_SPREAD_S * 1000):
+            # the opening is unsure or contradicts the whole song: many lines
+            # agreeing beat a few words near the old #GAP
+            return whole_song_result()
         if decision["kept"]:
             spread = decision["spread_s"]
             why = (f"spread {spread:.2f} s" if spread is not None
@@ -1559,6 +1659,19 @@ def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
         }
 
     # ---------------- sync mode ----------------
+    # a song far off or drifting: #GAP/#BPM from the whole-song fit first, so
+    # the line search below starts each line in the right place
+    gap_from_file_ms = txt.gap_ms
+    corr = global_timing_correction(txt, model, meta, audio16k, device, gap_only=False)
+    precorrected = None
+    if corr and (abs(corr["offset_s"]) >= SYNC_PRECORRECT_MIN_S
+                 or abs(corr["drift_s"]) >= SYNC_PRECORRECT_DRIFT_S):
+        precorrected = (f"timing corrected first: shifted {corr['offset_s']:+.2f} s, "
+                        f"drift {corr['drift_s']:+.2f} s (#GAP {_fmt_num(txt.gap_ms)} -> "
+                        f"{corr['gap_ms']:.0f}, #BPM {_fmt_num(txt.bpm_tag)} -> {corr['bpm']:.4f})")
+        print(f"{ULTRASINGER_HEAD} {green_highlighted(precorrected)}")
+        txt.gap_ms, txt.bpm_tag = corr["gap_ms"], corr["bpm"]
+        units = build_alignment_units(txt, txt.lyric_lines())
     aligned_units = progressively_align(txt, units, model, meta, audio16k,
                                         audio_dur)
     reanchor_outlier_units(txt, units, aligned_units, model, meta, audio16k,
@@ -1596,7 +1709,7 @@ def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
             return None
         return {
             "output": out_path,
-            "gap_old_ms": txt.gap_ms, "gap_new_ms": None,
+            "gap_old_ms": gap_from_file_ms, "gap_new_ms": None,
             "aligned_words": 0, "total_words": 0,
             "repitched": 0, "mode": "recreated",
             "note": f"lyrics mismatch detected ({detail}) - song re-created "
@@ -1640,12 +1753,15 @@ def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
 
     out_path = write_repaired(txt, song_dir, out_dir, gap_ms=new_gap_ms,
                               note_times=note_times, pitches=pitches)
-    return {
+    result = {
         "output": out_path,
-        "gap_old_ms": txt.gap_ms, "gap_new_ms": new_gap_ms,
+        "gap_old_ms": gap_from_file_ms, "gap_new_ms": new_gap_ms,
         "aligned_words": n_aligned, "total_words": total_words,
         "repitched": repitched, "mode": mode,
     }
+    if precorrected:
+        result["note"] = precorrected
+    return result
 
 
 def set_header_tags(header: list, tags: dict) -> list:
@@ -1691,7 +1807,8 @@ def _with_header_tags(lines: list, tags: dict) -> list:
 def write_repaired(txt: Txt, song_dir: str, out_dir: str, gap_ms: int,
                    note_times, pitches):
     """Write the repaired song folder + txt (originals in input stay as-is).
-    `#GAP` is set to `gap_ms` (added when the file has none)."""
+    `#GAP` is set to `gap_ms` (added when the file has none); `#BPM` is
+    written when txt.bpm_tag was changed (whole-song timing correction)."""
     song_name = os.path.basename(song_dir.rstrip("/"))
     out_song_dir = os.path.join(out_dir, song_name)
     os.makedirs(out_song_dir, exist_ok=True)
@@ -1738,7 +1855,10 @@ def write_repaired(txt: Txt, song_dir: str, out_dir: str, gap_ms: int,
                 # show the next line when the current line's last note ends
                 line["raw"] = f"- {_fmt_num(prev_end_beat)}"
 
-    lines = _with_header_tags(lines, {"GAP": gap_ms})
+    tags = {"GAP": gap_ms}
+    if getattr(txt, "bpm_tag_file", None) is not None and txt.bpm_tag != txt.bpm_tag_file:
+        tags["BPM"] = f"{txt.bpm_tag:.4f}".rstrip("0").rstrip(".")
+    lines = _with_header_tags(lines, tags)
     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         for line in lines:
             f.write(line["raw"].rstrip("\r\n") + "\n")

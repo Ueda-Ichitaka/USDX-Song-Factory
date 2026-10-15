@@ -463,8 +463,8 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <line class="ln" x1="185" y1="532" x2="185" y2="544" marker-end="url(#m4)"/>
       <rect class="box" x="40" y="546" width="290" height="58" rx="4"/>
       <text class="tt" x="52" y="565">new #GAP</text>
-      <text class="tx" x="52" y="583">median of the opening, only if within</text>
-      <text class="tx" x="52" y="598">0.3 s; else the old #GAP stays</text>
+      <text class="tx" x="52" y="583">opening (within 0.3 s) or the whole-song</text>
+      <text class="tx" x="52" y="598">fit (timing_fit.py), else old #GAP stays</text>
       <line class="ln" x1="185" y1="604" x2="185" y2="616" marker-end="url(#m4)"/>
       <rect class="box" x="40" y="618" width="290" height="58" rx="4"/>
       <text class="tt" x="52" y="637">write</text>
@@ -486,8 +486,8 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <line class="ln" x1="500" y1="532" x2="500" y2="544" marker-end="url(#m4)"/>
       <rect class="box" x="355" y="546" width="290" height="58" rx="4"/>
       <text class="tt" x="367" y="565">align line by line</text>
-      <text class="tx" x="367" y="583">each unit in a search window around</text>
-      <text class="tx" x="367" y="598">its old time (REPAIR_ALIGN_PAD 6 s)</text>
+      <text class="tx" x="367" y="583">clearly off: #GAP/#BPM from the whole</text>
+      <text class="tx" x="367" y="598">song first; then each unit near its time</text>
       <line class="ln" x1="500" y1="604" x2="500" y2="616" marker-end="url(#m4)"/>
       <rect class="box" x="355" y="618" width="290" height="58" rx="4"/>
       <text class="tt" x="367" y="637">fix the alignment</text>
@@ -584,6 +584,7 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <tr><td><code>orchestrator/lyrics_fetch.py</code></td><td>subprocess</td><td>online lyrics, section tags resolved</td></tr>
       <tr><td><code>orchestrator/romanize.py</code></td><td>subprocess</td><td>Latin script for Cyrillic, Korean, Japanese</td></tr>
       <tr><td><code>ctc_align.py</code></td><td>imported by repair.py</td><td>global CTC forced alignment, filler between lines, optional lines</td></tr>
+      <tr><td><code>timing_fit.py</code></td><td>imported by repair.py</td><td>whole-song fit of a file's timing: shift and drift, new <code>#GAP</code>/<code>#BPM</code></td></tr>
       <tr><td><code>lyrics_fill.py</code></td><td>imported by repair.py</td><td>lines whisper heard that the lyrics lack, offered for the alignment</td></tr>
       <tr><td><code>held_notes.py</code></td><td>imported by repair.py</td><td><code>~</code> notes where a held syllable changes pitch</td></tr>
       <tr><td><code>song_header.py</code></td><td>imported by repair.py, orchestrator</td><td><code>#VERSION:1.2.0</code> for repaired songs (unversionable songs left as they are)</td></tr>
@@ -605,7 +606,7 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
 <!-- ============================ ROADMAP ============================ -->
 <section>
   <h2>8. Built and planned: the road to 0.9 and 1.0</h2>
-  <p>Version 0.9 makes the default profile reliable for generating and repairing songs; 1.0 adds duets; after that each further profile (harsh vocals and metal, then operatic and symphonic) gets its own measurements. Steps 1 to 3 of the 0.9 plan were built in October 2026; dashed boxes are planned.</p>
+  <p>Version 0.9 makes the default profile reliable for generating and repairing songs; 1.0 adds duets; after that each further profile (harsh vocals and metal, then operatic and symphonic) gets its own measurements. Steps 1 to 3 of the 0.9 plan and the repair part of step 6 were built in October 2026; dashed boxes are planned.</p>
   <figure>
     <div class="scroll">
     <svg viewBox="0 0 1100 560" role="img" aria-label="Roadmap: 0.9 default profile with plan steps 1 to 3 built (mismatch benchmark, plausibility checks, alignment repairs) and steps 4 to 7 planned (windows per section, dashboard data, USDB checks, listening rounds), then 1.0 duets, then the harsh vocals / metal profile and the operatic / symphonic profile.">
@@ -651,10 +652,10 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <text class="tt" x="32" y="383">5. more input from the dashboard</text>
       <text class="tx" x="32" y="401">vocals begin, song end, sections with traits</text>
       <text class="tplan" x="568" y="383" text-anchor="end">planned</text>
-      <rect class="box-plan" x="20" y="422" width="560" height="46" rx="4"/>
-      <text class="tt" x="32" y="441">6. USDB uploads checked</text>
-      <text class="tx" x="32" y="459">against their audio; #GAP / timing corrected</text>
-      <text class="tplan" x="568" y="441" text-anchor="end">planned</text>
+      <rect class="box-done" x="20" y="422" width="560" height="46" rx="4"/>
+      <text class="tt" x="32" y="441">6. song files checked against their audio</text>
+      <text class="tx" x="32" y="459">whole-song fit corrects #GAP / #BPM in gap + sync repair</text>
+      <text class="tnet" x="568" y="441" text-anchor="end">repair built</text>
       <rect class="box-plan" x="20" y="480" width="560" height="46" rx="4"/>
       <text class="tt" x="32" y="499">7. listening rounds</text>
       <text class="tx" x="32" y="517">default songs only, structured notes per spot</text>

@@ -15,6 +15,8 @@ Notes for changing the stack itself.
   the song ends inside a video (outro cut, `song_end.txt`, `anchors.txt`).
 * `stack/orchestrator/lyrics_divergence.py` - the lyrics review (does the
   lyrics text match what is sung?).
+* `stack/orchestrator/timing_fit.py` - how far a song file is shifted or
+  drifts against the singing, and the `#GAP`/`#BPM` that fix it.
 * `stack/orchestrator/lyrics_fill.py` - lines whisper heard that the lyrics
   text lacks (a chorus repeat written once too few), proposed for the
   lyrics step.
@@ -93,6 +95,7 @@ python3 test_recording_length.py
 python3 test_anchors.py
 python3 test_lyrics_divergence.py
 python3 test_lyrics_fill.py
+python3 test_timing_fit.py
 python3 test_song_header.py
 
 # container (from stack/): tests that need the heavy dependencies
