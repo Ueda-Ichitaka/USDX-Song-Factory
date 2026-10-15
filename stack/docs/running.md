@@ -135,7 +135,7 @@ unreachable`) and where its partial output went; and
 every skipped song with the reason ("no link in the song list", or "no longer
 in the song list" for a stale record that `reset --prune` removes).
 
-Two more sections appear when needed:
+More sections appear when needed:
 
 * **Lyrics to review** - new songs whose online lyrics differ from what is
   actually sung (see [new-songs.md](new-songs.md#lyrics-review)). Each row
@@ -145,6 +145,12 @@ Two more sections appear when needed:
   is a shorter edit of the album version the lyrics belong to.
 * **Lyrics not checkable** - new songs in a language whisper cannot
   transcribe, so their lyrics could not be compared.
+* **Lyrics filled or skipped over** - new songs where the lyrics step put
+  in lines whisper heard but the online lyrics lack ("lyrics filled at
+  3:09.3: ... (repeat of line 2)"), skipped over singing the lyrics lack
+  ("singing not in the lyrics: 2:28.7-2:38.2 before line 51 ...") or found
+  singing it could not fill ("please check: ..."). Listen to these spots
+  first.
 
 Regenerate the report without running anything:
 

@@ -59,7 +59,8 @@ def parse_broken_csv(path: str) -> list:
     "style_unknown"}. Column names are matched
     case-insensitively against a few accepted spellings (the dashboard's
     own header is "band,song name,category,description,lyrics_url,
-    language,cover_url") so a hand-edited file isn't overly fragile."""
+    language,cover_url,genre,trait") so a hand-edited file isn't overly
+    fragile."""
     entries = []
     if not path or not os.path.isfile(path):
         return entries

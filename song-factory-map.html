@@ -34,6 +34,7 @@ code, .mono { font-family: var(--mono); font-size: 0.86em; }
 .key span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 .key .k-new::before { background: var(--new); } .key .k-repair::before { background: var(--repair); }
 .key .k-store::before { background: var(--store); } .key .k-net::before { background: var(--net); }
+.key .k-plan::before { background: none; border: 1.5px dashed var(--muted); width: 10px; height: 10px; }
 figure { margin: 0; display: grid; gap: 10px; min-width: 0; }
 .scroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
 .scroll svg { display: block; min-width: 900px; width: 100%; height: auto; }
@@ -45,6 +46,9 @@ svg { color: var(--line); }
 .box-repair { fill: var(--panel); stroke: var(--repair); stroke-width: 1.6; }
 .box-store { fill: var(--panel); stroke: var(--store); stroke-width: 1.4; stroke-dasharray: 5 3; }
 .box-side { fill: var(--panel); stroke: var(--store); stroke-width: 1.3; }
+.box-plan { fill: var(--panel); stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 2 3; }
+.box-done { fill: var(--panel); stroke: var(--net); stroke-width: 1.6; }
+.tplan { fill: var(--muted); font: italic 12px var(--body); }
 .tt { fill: var(--fg); font: 600 13px var(--mono); }
 .tx { fill: var(--fg); font: 12px var(--body); }
 .tm { fill: var(--muted); font: 12px var(--body); }
@@ -69,8 +73,8 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
 <main>
 <header style="display:grid;gap:8px">
   <h1>Song Factory Map</h1>
-  <p class="lede">Every component of the USDX Song Factory stack and the path a song takes through it, as of 30 September 2026. File and function names are the real ones in <code>stack/</code> and <code>src/</code>.</p>
-  <div class="key"><span class="k-new">new-song path</span><span class="k-repair">repair path</span><span class="k-store">folders and admin files</span><span class="k-net">network access</span></div>
+  <p class="lede">Every component of the USDX Song Factory stack and the path a song takes through it, as of 15 October 2026. Section 8 shows what is built and what is planned for 0.9, 1.0 and the later profiles. File and function names are the real ones in <code>stack/</code> and <code>src/</code>.</p>
+  <div class="key"><span class="k-new">new-song path</span><span class="k-repair">repair path</span><span class="k-store">folders and admin files</span><span class="k-net">network access</span><span class="k-plan">planned, not built yet</span></div>
 </header>
 
 <!-- ============================ FIGURE 1 ============================ -->
@@ -86,13 +90,15 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <!-- row A: inputs -->
       <text class="tg" x="20" y="20">STACK/INPUT AND SETTINGS</text>
       <rect class="box-store" x="20" y="30" width="250" height="80" rx="4"/>
-      <text class="tt" x="32" y="52">input/song-requests.csv</text>
-      <text class="tx" x="32" y="72">band, title, youtube link, language,</text>
-      <text class="tx" x="32" y="90">musicbrainz_id, lyrics_url, cover_url, duet</text>
+      <text class="tt" x="32" y="50">input/song-requests.csv</text>
+      <text class="tx" x="32" y="68">band name, song name, youtube link,</text>
+      <text class="tx" x="32" y="84">language, musicbrainz_id, lyrics_url,</text>
+      <text class="tx" x="32" y="100">cover_url, duet, genre, trait</text>
       <rect class="box-store" x="290" y="30" width="250" height="80" rx="4"/>
-      <text class="tt" x="302" y="52">input/broken.csv</text>
-      <text class="tx" x="302" y="72">song, category, description</text>
-      <text class="tx" x="302" y="90">(+ lyrics_url, language, cover_url)</text>
+      <text class="tt" x="302" y="50">input/broken.csv</text>
+      <text class="tx" x="302" y="68">band, song name, category, description,</text>
+      <text class="tx" x="302" y="84">lyrics_url, language, cover_url,</text>
+      <text class="tx" x="302" y="100">genre, trait (dashboard export)</text>
       <rect class="box-store" x="560" y="30" width="250" height="80" rx="4"/>
       <text class="tt" x="572" y="52">input/&lt;song folder&gt;/</text>
       <text class="tx" x="572" y="72">songs to repair: txt + audio/video</text>
@@ -106,7 +112,7 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <line class="ln" x1="415" y1="110" x2="415" y2="156" marker-end="url(#m1)"/>
       <line class="ln" x1="685" y1="110" x2="685" y2="156" marker-end="url(#m1)"/>
       <line class="ln" x1="955" y1="110" x2="955" y2="156" marker-end="url(#m1)"/>
-      <text class="tl" x="152" y="138">read at start</text>
+      <text class="tl" x="152" y="138">dashboard export, read at start</text>
       <text class="tl" x="422" y="138">matched to folders</text>
       <text class="tl" x="692" y="138">scanned</text>
       <text class="tl" x="962" y="138">environment</text>
@@ -115,7 +121,7 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <rect class="box" x="20" y="160" width="1060" height="112" rx="4"/>
       <text class="tt" x="34" y="184">orchestrator.py - batch runner, one job at a time</text>
       <text class="tx" x="34" y="206">plans jobs (new | repair) from the song list and input folders, keeps state/state.json, streams logs, progress view, finishing report</text>
-      <text class="tm" x="34" y="226">imports: usdb_lookup, usdb_eu_lookup, broken_report, recording_length, lyrics_divergence, compare_reference, resource_profile, resource_monitor</text>
+      <text class="tm" x="34" y="226">imports: usdb_lookup, usdb_eu_lookup, broken_report, song_style, song_header, recording_length, lyrics_divergence, compare_reference, resource_*</text>
       <text class="tnet" x="34" y="246">network: usdb.animux.de + usdb.eu (existing uploads), MusicBrainz (recording length), YouTube via yt-dlp (media for USDB songs)</text>
       <text class="tm" x="34" y="264">retries a failed job up to MAX_ATTEMPTS (3); moves partial output of a failed job to output/failed/</text>
       <!-- B -> C -->
@@ -136,17 +142,18 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <text class="tm" x="32" y="420">see figure 2</text>
       <rect class="box-repair" x="290" y="320" width="250" height="132" rx="4"/>
       <text class="tt" x="302" y="344">repair.py</text>
-      <text class="tx" x="302" y="366">modes gap, sync, lyrics</text>
+      <text class="tx" x="302" y="366">modes gap, sync, lyrics; --traits</text>
       <text class="tx" x="302" y="384">wav2vec2 aligner, demucs, SwiftF0</text>
-      <text class="tm" x="302" y="402">imports ctc_align, outro, anchors,</text>
-      <text class="tm" x="302" y="420">pitch_normalise, src/modules</text>
-      <text class="tm" x="302" y="438">lyrics mode: figure 3</text>
+      <text class="tm" x="302" y="402">imports ctc_align, lyrics_fill, outro,</text>
+      <text class="tm" x="302" y="420">anchors, pitch_normalise, held_notes,</text>
+      <text class="tm" x="302" y="438">song_header (lyrics mode: figure 3)</text>
       <rect class="box" x="560" y="320" width="250" height="132" rx="4"/>
       <text class="tt" x="572" y="344">lyrics_fetch.py</text>
       <text class="tx" x="572" y="366">trusted lyrics for one song</text>
-      <text class="tnet" x="572" y="384">lyrics_url first (Genius or text)</text>
-      <text class="tnet" x="572" y="402">else Genius + syncedlyrics search</text>
-      <text class="tm" x="572" y="420">writes work/&lt;job&gt;-lyrics.json</text>
+      <text class="tnet" x="572" y="384">lyrics_url first: Genius, lrclib.net,</text>
+      <text class="tnet" x="572" y="402">text/.lrc link (or a file in input/)</text>
+      <text class="tnet" x="572" y="420">else Genius + syncedlyrics search</text>
+      <text class="tm" x="572" y="438">writes work/&lt;job&gt;-lyrics.json</text>
       <rect class="box" x="830" y="320" width="250" height="132" rx="4"/>
       <text class="tt" x="842" y="344">romanize.py</text>
       <text class="tx" x="842" y="366">Latin script, txt rewritten in place</text>
@@ -183,11 +190,11 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <rect class="box-store" x="830" y="500" width="250" height="64" rx="4"/>
       <text class="tt" x="842" y="522">output/report.md</text>
       <text class="tx" x="842" y="542">created, repaired, failed, needs review,</text>
-      <text class="tx" x="842" y="558">lyrics to review / not checkable, skipped</text>
+      <text class="tx" x="842" y="558">lyrics to review / filled, skipped</text>
       <!-- row E: volumes -->
       <text class="tg" x="20" y="604">MOUNTED VOLUMES USED BY ALL STEPS (stack/...)</text>
       <rect class="box-store" x="20" y="612" width="1060" height="108" rx="4"/>
-      <text class="tt" x="34" y="636">state/</text><text class="tx" x="150" y="636">state.json (every job's status, attempts, lyrics source, review), backups/, usdb_catalog.json</text>
+      <text class="tt" x="34" y="636">state/</text><text class="tx" x="150" y="636">state.json (every job's status, attempts, lyrics source, review, lyrics notes), backups/, usdb_catalog.json</text>
       <text class="tt" x="34" y="654">logs/</text><text class="tx" x="150" y="654">one log per job, plus -lyrics-fetch, -lyrics-align and -romanize logs</text>
       <text class="tt" x="34" y="672">work/</text><text class="tx" x="150" y="672">audio caches per song (demucs vocals, denoised, muted), lyrics JSON, USDB staging; bench/ holds benchmarks, not part of the pipeline</text>
       <text class="tt" x="34" y="690">models/</text><text class="tx" x="150" y="690">whisper, demucs, aligner and Hugging Face downloads</text>
@@ -220,7 +227,7 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <g>
         <rect class="box-new" x="60" y="20" width="560" height="46" rx="4"/>
         <text class="tt" x="72" y="39">song list row  (job id new|&lt;url&gt;)</text>
-        <text class="tm" x="72" y="57">duet=yes, or link empty / "-" / "skip": skipped with its reason in the report</text>
+        <text class="tm" x="72" y="57">genre/trait become the job's traits; duet=yes or link empty / "-" / "skip": skipped</text>
         <rect class="box-new" x="60" y="84" width="560" height="46" rx="4"/>
         <text class="tt" x="72" y="103">USDB lookup</text>
         <text class="tnet" x="72" y="121">usdb.animux.de (usdb_syncer scraper), then usdb.eu - an existing community upload wins</text>
@@ -255,16 +262,16 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
         <text class="tx" x="72" y="713">UltraSinger's words with times are read from the txt before the lyrics step replaces it</text>
         <rect class="box-new" x="60" y="740" width="560" height="46" rx="4"/>
         <text class="tt" x="72" y="759">lyrics step  (figure 3)</text>
-        <text class="tx" x="72" y="777">lyrics_fetch.py - repair.py --mode lyrics [--recording-seconds]; nothing found: transcript stays</text>
+        <text class="tx" x="72" y="777">lyrics_fetch.py - repair.py --mode lyrics --fill-from-input [--traits] [--recording-seconds]</text>
         <rect class="box-new" x="60" y="804" width="560" height="46" rx="4"/>
         <text class="tt" x="72" y="823">lyrics review</text>
-        <text class="tx" x="72" y="841">lyrics.txt vs transcript: under 60% heard or 5+ lines in a row unheard - "Lyrics to review"</text>
+        <text class="tx" x="72" y="841">"Lyrics to review" (too little heard) + "Lyrics filled or skipped over" (notes of the lyrics step)</text>
         <rect class="box-new" x="60" y="868" width="560" height="46" rx="4"/>
         <text class="tt" x="72" y="887">romanise</text>
         <text class="tx" x="72" y="905">romanize.py: Cyrillic, Korean, Japanese to Latin (ROMANIZE_STYLE for Russian)</text>
         <rect class="box-new" x="60" y="932" width="560" height="46" rx="4"/>
         <text class="tt" x="72" y="951">cover + state</text>
-        <text class="tx" x="72" y="969">cover_url replaces the cover; job done in state.json; row in report.md</text>
+        <text class="tx" x="72" y="969">cover_url replaces the cover; job done in state.json; row in report.md (txt: #VERSION 1.2.0)</text>
       </g>
       <!-- down arrows -->
       <g>
@@ -295,13 +302,13 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <line class="ln" x1="830" y1="148" x2="830" y2="178" marker-end="url(#m2g)"/>
       <rect class="box-repair" x="680" y="180" width="300" height="46" rx="4"/>
       <text class="tt" x="692" y="199">repair.py --mode gap</text>
-      <text class="tx" x="692" y="217">#GAP re-detected for the downloaded audio</text>
+      <text class="tx" x="692" y="217">#GAP re-detected only if the openings agree</text>
       <polyline class="ln" points="830,226 830,891 622,891" marker-end="url(#m2g)"/>
       <text class="tl" x="838" y="560">lyrics source usdb:&lt;site&gt;:&lt;id&gt;</text>
       <text class="tl" x="838" y="576">no lyrics step, no review</text>
     </svg>
     </div>
-    <figcaption>A song list row either becomes a USDB song (right branch: community notes, only media and <code>#GAP</code> are new) or is generated by UltraSinger and then gets online lyrics, the lyrics review, romanisation and the cover. A failed step retries the whole job up to <code>MAX_ATTEMPTS</code> times; a missing online lyrics source is not a failure, the song keeps its transcription and the report marks it.</figcaption>
+    <figcaption>A song list row either becomes a USDB song (right branch: community notes, only media and <code>#GAP</code> are new) or is generated by UltraSinger and then gets online lyrics (lines whisper heard that the lyrics lack are filled in, singing the lyrics lack is skipped over), the lyrics review, romanisation and the cover. A failed step retries the whole job up to <code>MAX_ATTEMPTS</code> times; a missing online lyrics source is not a failure, the song keeps its transcription and the report marks it.</figcaption>
   </figure>
 </section>
 
@@ -311,52 +318,56 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
   <p>The same code builds the notes of every new song with online lyrics and every repair in lyrics mode (<code>repair.py --mode lyrics</code>). The admin files on the right change single steps.</p>
   <figure>
     <div class="scroll">
-    <svg viewBox="0 0 1000 690" role="img" aria-label="Lyrics mode pipeline in repair.py: vocal track, song end, language and aligner, global CTC alignment, refinement, syllables, lines, pitch, write; song_end.txt, anchors.txt, language.txt and the recording length feed specific steps.">
+    <svg viewBox="0 0 1000 770" role="img" aria-label="Lyrics mode pipeline in repair.py: vocal track, song end, language and aligner, filling from whisper's transcript, global CTC alignment with a filler between lines, refinement, syllables, lines, pitch with held notes, write; song_end.txt, anchors.txt, language.txt, the recording length, the traits and the transcript feed specific steps.">
       <defs>
         <marker id="m3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
         <marker id="m3s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-store"/></marker>
       </defs>
-      <!-- steps: x=20..640, y = 20 + 66*i, h = 48 -->
+      <!-- steps: x=20..640, y = 20 + 68*i, h = 48 -->
       <rect class="box-repair" x="20" y="20" width="620" height="48" rx="4"/>
       <text class="tt" x="32" y="40">inputs</text>
-      <text class="tx" x="32" y="58">song folder (txt gives #BPM and the tags), lyrics: JSON from lyrics_fetch.py or lyrics.txt</text>
-      <rect class="box-repair" x="20" y="86" width="620" height="48" rx="4"/>
-      <text class="tt" x="32" y="106">vocal track + pauses</text>
-      <text class="tx" x="32" y="124">demucs vocals (cached in work/&lt;song&gt;/cache), muted copy for pitch; pauses of 1.2 s or more</text>
-      <rect class="box-repair" x="20" y="152" width="620" height="48" rx="4"/>
-      <text class="tt" x="32" y="172">song end</text>
-      <text class="tx" x="32" y="190">anchors.txt end, else song_end.txt, else outro detection; the aligner sees audio up to here</text>
-      <rect class="box-repair" x="20" y="218" width="620" height="48" rx="4"/>
-      <text class="tt" x="32" y="238">language + aligner</text>
-      <text class="tx" x="32" y="256">language.txt, else --language, else #LANGUAGE, else whisper tiny; wav2vec2 model per language</text>
-      <rect class="box-repair" x="20" y="284" width="620" height="48" rx="4"/>
-      <text class="tt" x="32" y="304">global CTC alignment  (ctc_align.py)</text>
-      <text class="tx" x="32" y="322">emissions in 30 s chunks, one Viterbi path over all words; with anchors: piece by piece</text>
-      <rect class="box-repair" x="20" y="350" width="620" height="48" rx="4"/>
-      <text class="tt" x="32" y="370">refinement</text>
-      <text class="tx" x="32" y="388">stray words back to their line, opening words before the first, held notes, starts -40 ms</text>
-      <rect class="box-repair" x="20" y="416" width="620" height="48" rx="4"/>
-      <text class="tt" x="32" y="436">syllables</text>
-      <text class="tx" x="32" y="454">hyphenation; words the aligner could not place are interpolated around real pauses</text>
-      <rect class="box-repair" x="20" y="482" width="620" height="48" rx="4"/>
-      <text class="tt" x="32" y="502">lines</text>
-      <text class="tx" x="32" y="520">a lyrics line is split when longer than 60 characters or at a pause of 2.5 s</text>
-      <rect class="box-repair" x="20" y="548" width="620" height="48" rx="4"/>
-      <text class="tt" x="32" y="568">pitch  (pitch_normalise.py)</text>
-      <text class="tx" x="32" y="586">SwiftF0, window at least 0.4 s, confidence over 0.2; unsure notes filled, octaves folded</text>
-      <rect class="box-repair" x="20" y="614" width="620" height="48" rx="4"/>
-      <text class="tt" x="32" y="634">write</text>
-      <text class="tx" x="32" y="652">txt (#GAP = first note), lyrics.txt, language.txt; song_end.txt + anchors.txt copied along</text>
+      <text class="tx" x="32" y="58">song folder (txt: #BPM, tags; a new song's txt is also whisper's transcript), lyrics JSON or lyrics.txt</text>
+      <rect class="box-repair" x="20" y="88" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="108">vocal track + pauses</text>
+      <text class="tx" x="32" y="126">demucs vocals (cached in work/&lt;song&gt;/cache), muted copy for pitch; pauses of 1.2 s or more</text>
+      <rect class="box-repair" x="20" y="156" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="176">song end</text>
+      <text class="tx" x="32" y="194">anchors.txt end, else song_end.txt, else outro detection; the aligner sees audio up to here</text>
+      <rect class="box-repair" x="20" y="224" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="244">language + aligner</text>
+      <text class="tx" x="32" y="262">language.txt, else --language, else #LANGUAGE, else whisper tiny; wav2vec2 model per language</text>
+      <rect class="box-repair" x="20" y="292" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="312">fill from the transcript  (lyrics_fill.py, new songs)</text>
+      <text class="tx" x="32" y="330">lines whisper heard that the lyrics lack: a copy of the matching line, else whisper's words - optional</text>
+      <rect class="box-repair" x="20" y="360" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="380">global CTC alignment  (ctc_align.py)</text>
+      <text class="tx" x="32" y="398">one Viterbi path over all words; a filler takes singing the text lacks; unsung end + unused offers left out</text>
+      <rect class="box-repair" x="20" y="428" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="448">refinement</text>
+      <text class="tx" x="32" y="466">stray words to their line, opening words, word ends follow held notes, starts -40 ms</text>
+      <rect class="box-repair" x="20" y="496" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="516">syllables</text>
+      <text class="tx" x="32" y="534">hyphenation; words the aligner could not place are interpolated around real pauses</text>
+      <rect class="box-repair" x="20" y="564" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="584">lines</text>
+      <text class="tx" x="32" y="602">a lyrics line is split when longer than 60 characters or at a pause of 2.5 s</text>
+      <rect class="box-repair" x="20" y="632" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="652">pitch  (pitch_normalise.py, held_notes.py)</text>
+      <text class="tx" x="32" y="670">SwiftF0 over at least 0.2 s, read 0.1 s late; ~ notes where a held syllable moves; octaves folded</text>
+      <rect class="box-repair" x="20" y="700" width="620" height="48" rx="4"/>
+      <text class="tt" x="32" y="720">write</text>
+      <text class="tx" x="32" y="738">txt (#VERSION 1.2.0, #GAP = first note), lyrics.txt, language.txt; log: filled / skipped over / please check</text>
       <!-- down arrows -->
-      <line class="ln" x1="330" y1="68" x2="330" y2="84" marker-end="url(#m3)"/>
-      <line class="ln" x1="330" y1="134" x2="330" y2="150" marker-end="url(#m3)"/>
-      <line class="ln" x1="330" y1="200" x2="330" y2="216" marker-end="url(#m3)"/>
-      <line class="ln" x1="330" y1="266" x2="330" y2="282" marker-end="url(#m3)"/>
-      <line class="ln" x1="330" y1="332" x2="330" y2="348" marker-end="url(#m3)"/>
-      <line class="ln" x1="330" y1="398" x2="330" y2="414" marker-end="url(#m3)"/>
-      <line class="ln" x1="330" y1="464" x2="330" y2="480" marker-end="url(#m3)"/>
-      <line class="ln" x1="330" y1="530" x2="330" y2="546" marker-end="url(#m3)"/>
-      <line class="ln" x1="330" y1="596" x2="330" y2="612" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="68" x2="330" y2="86" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="136" x2="330" y2="154" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="204" x2="330" y2="222" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="272" x2="330" y2="290" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="340" x2="330" y2="358" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="408" x2="330" y2="426" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="476" x2="330" y2="494" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="544" x2="330" y2="562" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="612" x2="330" y2="630" marker-end="url(#m3)"/>
+      <line class="ln" x1="330" y1="680" x2="330" y2="698" marker-end="url(#m3)"/>
       <!-- side inputs -->
       <text class="tg" x="720" y="112">ADMIN FILES AND HINTS</text>
       <rect class="box-side" x="720" y="122" width="260" height="48" rx="4"/>
@@ -369,25 +380,36 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <text class="tt" x="732" y="262">language.txt</text>
       <text class="tm" x="732" y="280">two-letter language code</text>
       <rect class="box-side" x="720" y="302" width="260" height="48" rx="4"/>
-      <text class="tt" x="732" y="322">anchors.txt</text>
-      <text class="tm" x="732" y="340">"4:12.0 | line" + "end 4:34.5"</text>
-      <line class="ln-store" x1="720" y1="146" x2="642" y2="170" marker-end="url(#m3s)"/>
-      <line class="ln-store" x1="720" y1="206" x2="642" y2="180" marker-end="url(#m3s)"/>
-      <line class="ln-store" x1="720" y1="266" x2="642" y2="245" marker-end="url(#m3s)"/>
-      <line class="ln-store" x1="720" y1="318" x2="642" y2="308" marker-end="url(#m3s)"/>
-      <line class="ln-store" x1="720" y1="330" x2="642" y2="376" marker-end="url(#m3s)"/>
-      <line class="ln-store" x1="720" y1="316" x2="642" y2="192" marker-end="url(#m3s)"/>
-      <text class="tl" x="660" y="400">pins re-applied</text>
+      <text class="tt" x="732" y="322">--fill-from-input</text>
+      <text class="tm" x="732" y="340">the input txt is whisper's transcript</text>
+      <rect class="box-side" x="720" y="362" width="260" height="48" rx="4"/>
+      <text class="tt" x="732" y="382">anchors.txt</text>
+      <text class="tm" x="732" y="400">"4:12.0 | line" + "end 4:34.5"</text>
+      <rect class="box-side" x="720" y="422" width="260" height="48" rx="4"/>
+      <text class="tt" x="732" y="442">--traits</text>
+      <text class="tm" x="732" y="460">song list / broken.csv trait column</text>
+      <line class="ln-store" x1="720" y1="146" x2="642" y2="174" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="206" x2="642" y2="182" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="266" x2="642" y2="248" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="326" x2="642" y2="316" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="374" x2="642" y2="384" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="380" x2="642" y2="188" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="392" x2="642" y2="448" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="440" x2="642" y2="456" marker-end="url(#m3s)"/>
+      <line class="ln-store" x1="720" y1="452" x2="642" y2="656" marker-end="url(#m3s)"/>
+      <text class="tl" x="652" y="646">harsh_vocals:</text>
+      <text class="tl" x="652" y="660">unsure notes pulled</text>
+      <text class="tl" x="732" y="488">loud_high_instruments: word ends 9 dB, not 6</text>
       <!-- outro rule detail -->
-      <rect class="box" x="720" y="420" width="260" height="110" rx="4"/>
-      <text class="tt" x="732" y="440">outro detection (outro.py)</text>
-      <text class="tx" x="732" y="460">only when the video is 8 s or more</text>
-      <text class="tx" x="732" y="478">longer than the recording; cuts at a</text>
-      <text class="tx" x="732" y="496">pause of 1 s or more within -10 / +15 s</text>
-      <text class="tx" x="732" y="514">of the expected end, else no cut</text>
+      <rect class="box" x="720" y="540" width="260" height="110" rx="4"/>
+      <text class="tt" x="732" y="560">outro detection (outro.py)</text>
+      <text class="tx" x="732" y="578">only when the video is 8 s or more</text>
+      <text class="tx" x="732" y="596">longer than the recording; cuts at a</text>
+      <text class="tx" x="732" y="614">pause of 1 s or more within -10 / +15 s</text>
+      <text class="tx" x="732" y="632">of the expected end, else no cut</text>
     </svg>
     </div>
-    <figcaption>The whole lyrics text is aligned to the whole vocal track in one pass, so a repeated chorus cannot pull the lines after it out of place. The song end is decided before the alignment; anchors split the alignment into pieces and keep their lines at the given times even after the 40 ms lead of the refinement.</figcaption>
+    <figcaption>The whole lyrics text is aligned to the whole vocal track in one pass, so a repeated chorus cannot pull the lines after it out of place. Between two lines a filler takes singing the text lacks (a chorus the lyrics source writes once too few times) instead of stretching the word before it; for a new song, lines whisper heard but the lyrics lack are offered as optional lines and kept only where the alignment finds them. The song end is decided before the alignment; anchors split the alignment into pieces and keep their lines at the given times even after the 40 ms lead of the refinement (with anchors nothing is filled in).</figcaption>
   </figure>
 </section>
 
@@ -441,11 +463,12 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <line class="ln" x1="185" y1="532" x2="185" y2="544" marker-end="url(#m4)"/>
       <rect class="box" x="40" y="546" width="290" height="58" rx="4"/>
       <text class="tt" x="52" y="565">new #GAP</text>
-      <text class="tx" x="52" y="583">median of the gaps the opening implies</text>
+      <text class="tx" x="52" y="583">median of the opening, only if within</text>
+      <text class="tx" x="52" y="598">0.3 s; else the old #GAP stays</text>
       <line class="ln" x1="185" y1="604" x2="185" y2="616" marker-end="url(#m4)"/>
       <rect class="box" x="40" y="618" width="290" height="58" rx="4"/>
       <text class="tt" x="52" y="637">write</text>
-      <text class="tx" x="52" y="655">notes untouched, only #GAP changes</text>
+      <text class="tx" x="52" y="655">notes untouched; #GAP, #VERSION 1.2.0</text>
       <line class="ln" x1="185" y1="676" x2="185" y2="858" marker-end="url(#m4)"/>
       <rect class="box" x="355" y="330" width="290" height="58" rx="4"/>
       <text class="tt" x="367" y="349">find audio</text>
@@ -493,8 +516,8 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <line class="ln" x1="815" y1="460" x2="815" y2="472" marker-end="url(#m4)"/>
       <rect class="box" x="670" y="474" width="290" height="58" rx="4"/>
       <text class="tt" x="682" y="493">write</text>
-      <text class="tx" x="682" y="511">notes rebuilt from the text; lyrics.txt</text>
-      <text class="tx" x="682" y="526">and language.txt next to the txt</text>
+      <text class="tx" x="682" y="511">notes rebuilt from the text, #VERSION</text>
+      <text class="tx" x="682" y="526">1.2.0; lyrics.txt, language.txt beside</text>
       <line class="ln" x1="815" y1="532" x2="815" y2="858" marker-end="url(#m4)"/>
       <text class="tg" x="40" y="852">ORCHESTRATOR</text>
       <rect class="box-repair" x="40" y="860" width="920" height="46" rx="4"/>
@@ -510,7 +533,7 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <text class="tx" x="52" y="1025">row in 'Songs repaired' with the mode (gap, sync, recreated, lyrics); a failure retries up to 3 times, partial output to output/failed/repair/</text>
     </svg>
     </div>
-    <figcaption>Gap mode only needs the opening lines and the full mix. Sync mode aligns every line separately around its old position and, when the lyrics do not fit the audio at all, re-creates the song from its audio. Lyrics mode is the same engine new songs use (figure 3), so <code>song_end.txt</code> and <code>anchors.txt</code> only take effect there.</figcaption>
+    <figcaption>Gap mode only needs the opening lines and the full mix; when no word is found near the old <code>#GAP</code> the job fails and names another recording in the folder that seems to fit (it never switches by itself). Sync mode aligns every line separately around its old position and, when the lyrics do not fit the audio at all, re-creates the song from its audio. Lyrics mode is the same engine new songs use (figure 3), so <code>song_end.txt</code> and <code>anchors.txt</code> only take effect there.</figcaption>
   </figure>
 </section>
 
@@ -539,7 +562,7 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
   <div class="tablewrap"><table>
     <thead><tr><th>File</th><th>Read by</th><th>Written by</th><th>Effect</th></tr></thead>
     <tbody>
-      <tr><td><code>lyrics.txt</code></td><td>orchestrator (in <code>input/</code>: lyrics mode), repair.py</td><td>every lyrics-mode song</td><td>one sung line per text line; the trusted text</td></tr>
+      <tr><td><code>lyrics.txt</code></td><td>orchestrator (in <code>input/</code>: lyrics mode), repair.py</td><td>every lyrics-mode song (filled-in lines included)</td><td>one sung line per text line; the trusted text</td></tr>
       <tr><td><code>language.txt</code></td><td>UltraSinger, repair.py</td><td>both, once the language is known</td><td>wins over every other language source</td></tr>
       <tr><td><code>song_end.txt</code></td><td>repair.py (lyrics mode)</td><td>admin only</td><td>nothing after this time is used for the lyrics</td></tr>
       <tr><td><code>anchors.txt</code></td><td>repair.py (lyrics mode)</td><td>admin only</td><td>pinned line starts + end; wins over <code>song_end.txt</code></td></tr>
@@ -560,24 +583,110 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <tr><td><code>orchestrator/repair.py</code></td><td>subprocess</td><td>gap, sync and lyrics modes</td></tr>
       <tr><td><code>orchestrator/lyrics_fetch.py</code></td><td>subprocess</td><td>online lyrics, section tags resolved</td></tr>
       <tr><td><code>orchestrator/romanize.py</code></td><td>subprocess</td><td>Latin script for Cyrillic, Korean, Japanese</td></tr>
-      <tr><td><code>ctc_align.py</code></td><td>imported by repair.py</td><td>global CTC forced alignment</td></tr>
+      <tr><td><code>ctc_align.py</code></td><td>imported by repair.py</td><td>global CTC forced alignment, filler between lines, optional lines</td></tr>
+      <tr><td><code>lyrics_fill.py</code></td><td>imported by repair.py</td><td>lines whisper heard that the lyrics lack, offered for the alignment</td></tr>
+      <tr><td><code>held_notes.py</code></td><td>imported by repair.py</td><td><code>~</code> notes where a held syllable changes pitch</td></tr>
+      <tr><td><code>song_header.py</code></td><td>imported by repair.py, orchestrator</td><td><code>#VERSION:1.2.0</code> for repaired songs (unversionable songs left as they are)</td></tr>
+      <tr><td><code>song_style.py</code></td><td>imported by orchestrator</td><td>genre / trait columns of the song list and <code>broken.csv</code></td></tr>
       <tr><td><code>outro.py</code></td><td>imported by repair.py</td><td>outro detection, <code>song_end.txt</code></td></tr>
       <tr><td><code>anchors.py</code></td><td>imported by repair.py</td><td><code>anchors.txt</code> reading and matching</td></tr>
-      <tr><td><code>pitch_normalise.py</code></td><td>imported by repair.py</td><td>unsure notes, octave folding</td></tr>
+      <tr><td><code>pitch_normalise.py</code></td><td>imported by repair.py</td><td>unsure notes, octave folding, harsh_vocals pull</td></tr>
       <tr><td><code>usdb_lookup.py</code>, <code>usdb_eu_lookup.py</code></td><td>imported by orchestrator</td><td>USDB search and txt download (usdb_syncer submodule for animux)</td></tr>
       <tr><td><code>broken_report.py</code></td><td>imported by orchestrator</td><td>reads <code>broken.csv</code></td></tr>
       <tr><td><code>recording_length.py</code></td><td>imported by orchestrator</td><td>MusicBrainz length of the list's <code>musicbrainz_id</code></td></tr>
       <tr><td><code>lyrics_divergence.py</code></td><td>imported by orchestrator</td><td>lyrics review rule and note</td></tr>
       <tr><td><code>compare_reference.py</code></td><td>imported + command line</td><td>word times from a txt; regression check against <code>stack/reference/</code></td></tr>
       <tr><td><code>resource_profile.py</code>, <code>resource_monitor.py</code></td><td>imported by orchestrator</td><td>model choice from <code>STACK_*</code>; CPU/RAM/VRAM in the progress view</td></tr>
-      <tr><td><code>work/bench/*.py</code></td><td>by hand</td><td>benchmarks on the known-working songs, not part of the pipeline</td></tr>
+      <tr><td><code>work/bench/*.py</code></td><td>by hand</td><td>benchmarks (known-working songs, the library check, real online lyrics), not part of the pipeline</td></tr>
     </tbody>
   </table></div>
 </section>
 
+<!-- ============================ ROADMAP ============================ -->
+<section>
+  <h2>8. Built and planned: the road to 0.9 and 1.0</h2>
+  <p>Version 0.9 makes the default profile reliable for generating and repairing songs; 1.0 adds duets; after that each further profile (harsh vocals and metal, then operatic and symphonic) gets its own measurements. Steps 1 to 3 of the 0.9 plan were built in October 2026; dashed boxes are planned.</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1100 560" role="img" aria-label="Roadmap: 0.9 default profile with plan steps 1 to 3 built (mismatch benchmark, plausibility checks, alignment repairs) and steps 4 to 7 planned (windows per section, dashboard data, USDB checks, listening rounds), then 1.0 duets, then the harsh vocals / metal profile and the operatic / symphonic profile.">
+      <defs><marker id="m8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs>
+      <rect class="box-new" x="20" y="20" width="250" height="74" rx="4"/>
+      <text class="tt" x="32" y="42">0.9  default profile</text>
+      <text class="tx" x="32" y="62">reliable generation + repair</text>
+      <text class="tm" x="32" y="80">(current work)</text>
+      <line class="ln" x1="270" y1="57" x2="293" y2="57" marker-end="url(#m8)"/>
+      <rect class="box-plan" x="295" y="20" width="250" height="74" rx="4"/>
+      <text class="tt" x="307" y="42">1.0  duets</text>
+      <text class="tx" x="307" y="62">P1/P2 generation and repair</text>
+      <text class="tm" x="307" y="80">(research done, backlog)</text>
+      <line class="ln" x1="545" y1="57" x2="568" y2="57" marker-end="url(#m8)"/>
+      <rect class="box-plan" x="570" y="20" width="250" height="74" rx="4"/>
+      <text class="tt" x="582" y="42">profile: harsh vocals, metal</text>
+      <text class="tx" x="582" y="62">trait-tuned per window</text>
+      <text class="tm" x="582" y="80">(after 1.0)</text>
+      <line class="ln" x1="820" y1="57" x2="843" y2="57" marker-end="url(#m8)"/>
+      <rect class="box-plan" x="845" y="20" width="250" height="74" rx="4"/>
+      <text class="tt" x="857" y="42">profile: operatic, symphonic</text>
+      <text class="tx" x="857" y="62">own measurements</text>
+      <text class="tm" x="857" y="80">(after metal)</text>
+      <line class="ln" x1="145" y1="94" x2="145" y2="118" marker-end="url(#m8)"/>
+      <text class="tg" x="20" y="124">0.9 PLAN STEPS</text>
+      <rect class="box-done" x="20" y="132" width="560" height="46" rx="4"/>
+      <text class="tt" x="32" y="151">1. mismatch benchmark</text>
+      <text class="tx" x="32" y="169">lyrics changed on purpose; cause of the &quot;slow word&quot; found</text>
+      <text class="tnet" x="568" y="151" text-anchor="end">built</text>
+      <rect class="box-done" x="20" y="190" width="560" height="46" rx="4"/>
+      <text class="tt" x="32" y="209">2. plausibility checks</text>
+      <text class="tx" x="32" y="227">measured; filled / skipped-over spots in the report</text>
+      <text class="tnet" x="568" y="209" text-anchor="end">built</text>
+      <rect class="box-done" x="20" y="248" width="560" height="46" rx="4"/>
+      <text class="tt" x="32" y="267">3. alignment repairs</text>
+      <text class="tx" x="32" y="285">filler (on), filling from whisper (on), line skips (off)</text>
+      <text class="tnet" x="568" y="267" text-anchor="end">built</text>
+      <rect class="box-plan" x="20" y="306" width="560" height="46" rx="4"/>
+      <text class="tt" x="32" y="325">4. windows per song section</text>
+      <text class="tx" x="32" y="343">traits, language, spoken parts per passage, one alignment</text>
+      <text class="tplan" x="568" y="325" text-anchor="end">planned</text>
+      <rect class="box-plan" x="20" y="364" width="560" height="46" rx="4"/>
+      <text class="tt" x="32" y="383">5. more input from the dashboard</text>
+      <text class="tx" x="32" y="401">vocals begin, song end, sections with traits</text>
+      <text class="tplan" x="568" y="383" text-anchor="end">planned</text>
+      <rect class="box-plan" x="20" y="422" width="560" height="46" rx="4"/>
+      <text class="tt" x="32" y="441">6. USDB uploads checked</text>
+      <text class="tx" x="32" y="459">against their audio; #GAP / timing corrected</text>
+      <text class="tplan" x="568" y="441" text-anchor="end">planned</text>
+      <rect class="box-plan" x="20" y="480" width="560" height="46" rx="4"/>
+      <text class="tt" x="32" y="499">7. listening rounds</text>
+      <text class="tx" x="32" y="517">default songs only, structured notes per spot</text>
+      <text class="tplan" x="568" y="499" text-anchor="end">planned</text>
+      <text class="tg" x="620" y="124">MEASURED ON (stack/work/bench)</text>
+      <rect class="box-store" x="620" y="132" width="460" height="112" rx="4"/>
+      <text class="tx" x="632" y="154">known-working set: 93 clean songs of 110 (17 with a</text>
+      <text class="tx" x="632" y="173">wrong #GAP, drift or an unclear file are left out)</text>
+      <text class="tx" x="632" y="192">library check: 130 good songs of 212 (read-only)</text>
+      <text class="tx" x="632" y="211">real online lyrics as a new song gets them: 93 songs</text>
+      <text class="tx" x="632" y="230">full production pipeline: 109 hand-synced songs</text>
+      <text class="tg" x="620" y="274">RESULT OF STEPS 1-3 (words within 1 s)</text>
+      <rect class="box-done" x="620" y="282" width="460" height="112" rx="4"/>
+      <text class="tx" x="632" y="304">four lyric lines missing: 90.5% -> 93.2% (library),</text>
+      <text class="tx" x="632" y="323">word before the gap 3.7 s -> 0.1 s late</text>
+      <text class="tx" x="632" y="342">correct lyrics: 94.4% -> 95.0% (library)</text>
+      <text class="tx" x="632" y="361">real online lyrics: 85.4% -> 86.1% (filler) -> 86.3% (filling)</text>
+      <text class="tx" x="632" y="380">first word > 1 s early: 13.8% -> 9.2% of songs</text>
+      <text class="tg" x="620" y="424">OPEN DECISIONS</text>
+      <rect class="box-plan" x="620" y="432" width="460" height="86" rx="4"/>
+      <text class="tx" x="632" y="454">line skips for lyric lines (measured: no gain on real lyrics)</text>
+      <text class="tx" x="632" y="473">spoken video intros: not filled / fill / spoken notes</text>
+      <text class="tx" x="632" y="492">&quot;please check&quot; notes for words spread over > 6 s</text>
+    </svg>
+    </div>
+    <figcaption>Steps 4 to 7 build on the same single alignment: windows only change settings inside a passage (trait-tuned vocal and instrument detection, language, spoken lines as rap notes), they do not cut the song into separate runs. The later profiles reuse the windows and get their own truth sets.</figcaption>
+  </figure>
+</section>
+
 <!-- ============================ BUILD ============================ -->
 <section>
-  <h2>8. Building the images</h2>
+  <h2>9. Building the images</h2>
   <p>Rebuild after changes to <code>src/</code>, <code>pyproject.toml</code>, <code>stack/Dockerfile</code> or the <code>usdb_syncer</code> submodule; <code>stack/orchestrator/</code> is mounted and needs none. From inside <code>stack/</code>:</p>
 <pre>docker compose build ultrasinger                        # CPU image  ultrasinger-stack:cpu
 docker compose --profile rocm build ultrasinger-rocm    # ROCm image ultrasinger-stack:rocm

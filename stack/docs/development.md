@@ -15,6 +15,9 @@ Notes for changing the stack itself.
   the song ends inside a video (outro cut, `song_end.txt`, `anchors.txt`).
 * `stack/orchestrator/lyrics_divergence.py` - the lyrics review (does the
   lyrics text match what is sung?).
+* `stack/orchestrator/lyrics_fill.py` - lines whisper heard that the lyrics
+  text lacks (a chorus repeat written once too few), proposed for the
+  lyrics step.
 * `src/` - UltraSinger itself (transcription, pitch detection, txt writing),
   lightly patched.
 
@@ -89,6 +92,7 @@ python3 test_outro.py
 python3 test_recording_length.py
 python3 test_anchors.py
 python3 test_lyrics_divergence.py
+python3 test_lyrics_fill.py
 python3 test_song_header.py
 
 # container (from stack/): tests that need the heavy dependencies

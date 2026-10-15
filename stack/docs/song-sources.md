@@ -108,7 +108,20 @@ song folder is used as it is.
 
 When a source is found, its text is force-aligned to the separated vocals in
 one pass over the whole song and REPLACES the transcription; the notes are
-rebuilt from it and their pitches re-detected. When nothing is found, the song
+rebuilt from it and their pitches re-detected. Lyrics sources often write a
+repeated chorus only once; singing that is not in the text is skipped over
+instead of stretching the word before it over the extra singing, and the
+lyrics log names it ("singing not in the lyrics: 2:28.7-2:38.2 before line
+51 ..."). For a new song the stack also compares the lyrics with whisper's
+own transcript: a line whisper heard that the lyrics lack is filled in - a
+copy of the lyric line it matches (the third "Technik, Chemie, Atomkraft,
+Physik" the source wrote only twice), else whisper's own words - and kept
+only where the alignment finds it in the singing. Whisper's own words are
+never filled in before the first or after the last lyric line: there they
+are usually a video's spoken intro or outro. The log lists every
+filled line ("lyrics filled at 3:09.4: ... (repeat of line 62)"); singing
+the lyrics lack but whisper heard too little of is listed with "please
+check:". Switch off with `LYRICS_FILL=0`. When nothing is found, the song
 keeps whisper's transcription - `output/report.md` flags these with a warning
 mark so you know which songs are more likely to have mis-heard words. Disable the lookup
 with `LYRICS_ENABLED=0`.

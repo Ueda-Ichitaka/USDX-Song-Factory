@@ -47,7 +47,8 @@ after a successful job (set ROMANIZE=0 to disable) - see romanize.py.
 Every new song also tries a real online lyrics lookup (syncedlyrics, then
 Genius if GENIUS_API_KEY is set) before trusting whisper's own
 transcription - see run_lyrics_step()/lyrics_fetch.py (set LYRICS_ENABLED=0
-to disable); a lyrics_url in the song list (a link, or a lyrics file under
+to disable); lines whisper heard that the online lyrics lack are filled in
+(repair.py --fill-from-input, LYRICS_FILL); a lyrics_url in the song list (a link, or a lyrics file under
 input/) is used instead of the search. Before any of that, a new song first checks whether a
 matching upload already exists on USDB - usdb.animux.de (when
 USDB_USERNAME/USDB_PASSWORD are set), then usdb.eu (when USDB_EU_EMAIL/
@@ -184,6 +185,9 @@ ROMANIZE_PY = "/app/orchestrator/romanize.py"
 ROMANIZE_ENABLED = os.environ.get("ROMANIZE", "1") not in ("0", "false", "no")
 LYRICS_FETCH_PY = "/app/orchestrator/lyrics_fetch.py"
 LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "1") not in ("0", "false", "no")
+# lines whisper heard that the online lyrics lack are filled in (repair.py
+# --fill-from-input, lyrics_fill.py)
+LYRICS_FILL = os.environ.get("LYRICS_FILL", "1") not in ("0", "false", "no")
 GENIUS_API_KEY = os.environ.get("GENIUS_API_KEY", "") or None
 
 # USDB (usdb.animux.de) requires a login for search/download - the whole
@@ -1327,6 +1331,22 @@ def render_report(state_data, active_ids=None) -> str:
         for j in sorted(not_checkable, key=by_label):
             lines.append(f"| {j['label']} | {j['lyrics_review']['note'].replace('|', '/')} |")
 
+    noted = [j for j in new_done if j.get("lyrics_notes")]
+    if noted:
+        lines.append("")
+        lines.append(f"## Lyrics filled or skipped over ({len(noted)})")
+        lines.append("")
+        lines.append("_Lines whisper heard that the online lyrics lack were filled in "
+                     "(a copy of the lyric line it matches, else whisper's words); "
+                     "singing the lyrics lack was skipped over instead of stretching "
+                     "a word over it. Check these spots by ear - \"please check\" "
+                     "marks singing that could not be filled._")
+        lines.append("")
+        lines.append("| Song | Notes |")
+        lines.append("|---|---|")
+        for j in sorted(noted, key=by_label):
+            lines.append(f"| {j['label']} | {'; '.join(j['lyrics_notes']).replace('|', '/')} |")
+
     gap_kept = [j for j in state_data["jobs"].values()
                 if j.get("status") == "done" and (j.get("gap_check") or {}).get("kept")]
     if gap_kept:
@@ -1451,6 +1471,8 @@ def run_lyrics_step(job: dict, output_path: str) -> str:
                 "--song-dir", song_dir, "--out", NEW_SONGS_DIR,
                 "--mode", "lyrics", "--lyrics-file", lyrics_json,
                 "--device", DEVICE] + traits_args(job.get("traits"))
+    if LYRICS_FILL:
+        align_cmd.append("--fill-from-input")  # the new song's txt is whisper's transcript
     # the official recording length lets repair.py cut off a video outro
     # (only from the list's own musicbrainz_id - see recording_length.py)
     mbid = (job.get("musicbrainz_id") or "").strip()
@@ -1478,7 +1500,28 @@ def run_lyrics_step(job: dict, output_path: str) -> str:
         return "transcribed"
 
     out(f"  .. lyrics replaced from {source}")
+    job["lyrics_notes"] = lyrics_notes_from_log(align_text)
+    for note in job["lyrics_notes"]:
+        out(f"  .. {note}")
     return f"online:{source}"
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+LYRICS_NOTE_STARTS = ("singing not in the lyrics:", "please check:", "lyrics filled")
+
+
+def lyrics_notes_from_log(text: str) -> list:
+    """The lyrics step's notes for the report, from repair.py's log: lines
+    filled in from the transcript, singing the lyrics lack that the
+    alignment skipped over, and spans to check by ear."""
+    notes = []
+    for line in text.splitlines():
+        line = _ANSI_RE.sub("", line).strip()
+        if line.startswith("[UltraSinger]"):
+            line = line[len("[UltraSinger]"):].strip()
+        if line.startswith(LYRICS_NOTE_STARTS):
+            notes.append(line)
+    return notes
 
 
 def finalize_new_job_lyrics(job: dict, output_path: str, usdb_song_id: str = None) -> str:

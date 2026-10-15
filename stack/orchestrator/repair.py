@@ -11,7 +11,13 @@ Fixes two common defects of existing UltraStar songs:
 A third mode, "lyrics", force-aligns trusted lyrics from a file and rebuilds
 the notes: one note per syllable, plus `~` notes where a held syllable
 changes pitch (held_notes.py). Lyrics at the end that are never sung are
-left out (drop_unsung_tail()). `--traits` (the song's traits from the song list) switches single
+left out (drop_unsung_tail()); singing between two lines that the lyrics
+do not have goes to a filler instead of stretching a word over it, and is
+logged as "singing not in the lyrics" (LYRICS_FILLER_ENTER, filler_notes()).
+With --fill-from-input (a new song: the input txt is whisper's transcript)
+lines whisper heard that the lyrics lack are put in as optional lines
+(lyrics_fill.py, fill_units(), drop_unused_fill()).
+`--traits` (the song's traits from the song list) switches single
 steps: loud_high_instruments lets word ends follow held notes further down
 (word_end_drop_db()), harsh_vocals pulls unsure notes towards the melody
 (pitch_normalise.normalise_harsh_pitches()).
@@ -65,7 +71,9 @@ sys.path.insert(0, "/app/UltraSinger/src")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import anchors as anchors_file  # noqa: E402
+import compare_reference  # noqa: E402
 import ctc_align  # noqa: E402
+import lyrics_fill  # noqa: E402
 import held_notes  # noqa: E402
 import outro  # noqa: E402
 import pitch_normalise  # noqa: E402
@@ -133,6 +141,24 @@ WORD_START_LEAD_S = float(os.environ.get("WORD_START_LEAD_S", "0.04"))
 # on 110 hand-synced songs, stack/work/bench/bench26_tail.py: 3 loses sung
 # words, 5-6 leaves most unsung words in). 0 = always place every word.
 LYRICS_END_SKIP_PENALTY = float(os.environ.get("LYRICS_END_SKIP_PENALTY", "4.0"))
+# singing between two lyric lines that the lyrics do not have (a chorus the
+# source writes once) goes to a filler instead of stretching the word
+# before it: entering the filler costs LYRICS_FILLER_ENTER once, each letter
+# frame in it LYRICS_FILLER_BETA (ctc_align.ctc_viterbi(); measured on 93
+# hand-synced songs, stack/work/bench/v09_mismatch.py: 4 lines left out of
+# the lyrics - the word before the gap 4.6 s -> 0.2 s late, words within 1 s
+# 88.1% -> 90.6%; complete lyrics 93.6% -> 94.0%). 0 = no filler.
+LYRICS_FILLER_ENTER = float(os.environ.get("LYRICS_FILLER_ENTER", "5.0"))
+LYRICS_FILLER_BETA = float(os.environ.get("LYRICS_FILLER_BETA", "1.0"))
+# fillers at least this long are logged as "singing not in the lyrics"
+LYRICS_FILLER_NOTE_S = float(os.environ.get("LYRICS_FILLER_NOTE_S", "2.0"))
+# lines proposed from whisper's transcript (lyrics_fill.py, --fill-from-input)
+# are optional: leaving one out costs this much per letter in the global
+# alignment (93 hand-synced songs, stack/work/bench/v09_fillbench.py: 0.5
+# keeps too few - no gain, and Die Physiker's missing repeat is left out;
+# 2 is best in every scenario; 4 keeps too many - words within 1 s -3.7
+# points)
+LYRICS_FILL_OPTIONAL_COST = float(os.environ.get("LYRICS_FILL_OPTIONAL_COST", "2.0"))
 # a note's pitch is picked from at least this much audio around its centre -
 # the pitch detector fails most on short notes. Read PITCH_READ_DELAY_S
 # after the note: notes are placed like hand-made ones, which sit ~0.1 s
@@ -2339,12 +2365,13 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
     return out_path
 
 
-def _anchored_timings(units, emission, meta, anchors):
+def _anchored_timings(units, emission, meta, anchors, fillers_out=None):
     """Word timings like ctc_align.align_words_globally(), but aligned piece
     by piece: the lines before the first anchor on the audio before it,
     every anchored line and the lines up to the next anchor on the audio
     between the two anchor times. A piece whose audio is too short for its
-    words leaves them untimed (interpolated later)."""
+    words leaves them untimed (interpolated later). Fillers (see
+    align_units_globally()) are appended to `fillers_out` in song time."""
     frame = ctc_align.FRAME_SECONDS
     n_frames = emission.shape[0]
     bounds = [(0, 0.0)] + [(ui, t) for ui, t in anchors]
@@ -2356,11 +2383,17 @@ def _anchored_timings(units, emission, meta, anchors):
         if not words:
             continue
         f0, f1 = int(round(start_s / frame)), min(n_frames, int(round(end_s / frame)))
+        offset = f0 * frame
+        piece_fillers = []
         try:
-            piece = ctc_align.align_words_globally(words, emission[f0:f1], meta)
+            piece = ctc_align.align_words_globally(
+                words, emission[f0:f1], meta,
+                **_filler_options(units[first_unit:last_unit], piece_fillers))
         except ValueError:
             piece = [None] * len(words)
-        offset = f0 * frame
+        if fillers_out is not None:
+            fillers_out.extend((a + offset, b + offset, first_unit + ui)
+                               for a, b, ui in piece_fillers)
         for timing in piece:
             if timing is None:
                 timings.append(None)
@@ -2387,32 +2420,83 @@ def pin_anchor_words(aligned_units, units, anchors) -> None:
 
 
 def drop_unsung_tail(units: list, aligned_units: list):
-    """Cut the lyrics after the last sung word: every word from the first
-    ctc_align.NOT_SUNG on is left out (the path only leaves out an end, so
-    they all follow it). Returns (units, aligned_units, words left out);
-    a line sung only in part keeps its sung words."""
-    for ui, aligned in enumerate(aligned_units):
-        if ctc_align.NOT_SUNG not in aligned["words"]:
+    """Leave out the lyrics the alignment did not find in the audio
+    (ctc_align.NOT_SUNG): a whole line left out in the middle (a line the
+    path skipped) goes alone; at the end every word from the first
+    NOT_SUNG on is left out (the end penalty only leaves out an end). A
+    line sung only in part keeps its sung words. Returns (units,
+    aligned_units, words left out)."""
+    def unsung(aligned):
+        return bool(aligned["words"]) and all(w == ctc_align.NOT_SUNG for w in aligned["words"])
+
+    last_sung = max((ui for ui, a in enumerate(aligned_units) if not unsung(a)), default=-1)
+    left_out = 0
+    kept_units, kept_aligned = [], []
+    for ui in range(last_sung + 1):
+        if unsung(aligned_units[ui]):
+            left_out += len(units[ui]["words"])
             continue
+        kept_units.append(units[ui])
+        kept_aligned.append(aligned_units[ui])
+    left_out += sum(len(u["words"]) for u in units[last_sung + 1:])
+    if kept_aligned and ctc_align.NOT_SUNG in kept_aligned[-1]["words"]:
+        aligned = kept_aligned[-1]
         wi = aligned["words"].index(ctc_align.NOT_SUNG)
-        left_out = sum(len(u["words"]) for u in units[ui:]) - wi
-        kept_units, kept_aligned = list(units[:ui]), list(aligned_units[:ui])
-        if wi:
-            words = units[ui]["words"][:wi]
-            kept_units.append(dict(units[ui], words=words, text=" ".join(words)))
-            timed = aligned["words"][:wi]
-            scores = [w["score"] for w in timed if w]
-            kept_aligned.append(dict(
-                aligned, words=timed, text=" ".join(words),
-                score=sum(scores) / len(scores) if scores else None,
-                word_orig_starts=aligned["word_orig_starts"][:wi],
-                word_orig_ends=aligned["word_orig_ends"][:wi]))
-        return kept_units, kept_aligned, left_out
-    return units, aligned_units, 0
+        unit = kept_units[-1]
+        left_out += len(unit["words"]) - wi
+        words = unit["words"][:wi]
+        timed = aligned["words"][:wi]
+        scores = [w["score"] for w in timed if w]
+        kept_units[-1] = dict(unit, words=words, text=" ".join(words))
+        kept_aligned[-1] = dict(
+            aligned, words=timed, text=" ".join(words),
+            score=sum(scores) / len(scores) if scores else None,
+            word_orig_starts=aligned["word_orig_starts"][:wi],
+            word_orig_ends=aligned["word_orig_ends"][:wi])
+    if not left_out:
+        return units, aligned_units, 0
+    return kept_units, kept_aligned, left_out
+
+
+def _clock(seconds: float) -> str:
+    return f"{int(seconds // 60)}:{seconds % 60:04.1f}"
+
+
+def filler_notes(fillers: list, units: list, min_s: float) -> list:
+    """One line per filler (start_s, end_s, unit index it precedes) of at
+    least `min_s` seconds: its time and the lyric line after it."""
+    notes = []
+    for start, end, ui in fillers:
+        if end - start < min_s:
+            continue
+        if ui >= len(units):
+            where = "after the last line"
+        else:
+            words = units[ui]["words"]
+            text = " ".join(words[:5]) + ("..." if len(words) > 5 else "")
+            where = f'before line {ui + 1} "{text}"'
+        notes.append(f"{_clock(start)}-{_clock(end)} {where}")
+    return notes
+
+
+def _filler_options(units, fillers_out=None, line_skip=None) -> dict:
+    """align_words_globally() keyword arguments for the filler between
+    lyric lines (none when LYRICS_FILLER_ENTER is 0) and for optional lines
+    (`line_skip`, per unit a cost per letter or None)."""
+    opts = {}
+    if LYRICS_FILLER_ENTER > 0:
+        opts.update(filler_beta=LYRICS_FILLER_BETA, filler_enter=LYRICS_FILLER_ENTER,
+                    fillers_out=fillers_out)
+    if line_skip and any(cost is not None for cost in line_skip):
+        opts["line_skip"] = line_skip
+    if opts:
+        opts["line_lengths"] = [len(u["words"]) for u in units]
+    return opts
 
 
 def align_units_globally(units, model, meta, audio16k, device: str = "cpu",
-                         anchors: list = None):
+                         anchors: list = None, fillers_out: list = None,
+                         line_skip: list = None):
     """Force-align EVERY lyric word in one global, monotonic CTC pass (see
     ctc_align.py) and return (aligned_units, n_aligned) in the per-unit
     structure build_syllables_from_lyric_units() consumes:
@@ -2433,7 +2517,13 @@ def align_units_globally(units, model, meta, audio16k, device: str = "cpu",
     and pins each anchored line's first word to its time. Without anchors
     the words at the end that are never sung are left out
     (LYRICS_END_SKIP_PENALTY) and marked ctc_align.NOT_SUNG - see
-    drop_unsung_tail()."""
+    drop_unsung_tail().
+
+    Singing between two lines that the lyrics do not have goes to a filler
+    (LYRICS_FILLER_ENTER); each is appended to `fillers_out` as (start_s,
+    end_s, index of the unit it precedes - len(units) after the last).
+    `line_skip` (without anchors) makes units optional: per unit a cost per
+    letter for leaving it out, or None; left-out words are NOT_SUNG."""
     words = [w for u in units for w in u["words"]]
     try:
         emission = ctc_align.emissions_for_audio(model, meta, audio16k, device)
@@ -2444,11 +2534,12 @@ def align_units_globally(units, model, meta, audio16k, device: str = "cpu",
               f"{device} ({exc}) - retrying on cpu")
         emission = ctc_align.emissions_for_audio(model, meta, audio16k, "cpu")
     if anchors:
-        timings = _anchored_timings(units, emission, meta, anchors)
+        timings = _anchored_timings(units, emission, meta, anchors, fillers_out)
     else:
         timings = ctc_align.align_words_globally(
             words, emission, meta,
-            end_penalty=LYRICS_END_SKIP_PENALTY if LYRICS_END_SKIP_PENALTY > 0 else None)
+            end_penalty=LYRICS_END_SKIP_PENALTY if LYRICS_END_SKIP_PENALTY > 0 else None,
+            **_filler_options(units, fillers_out, line_skip))
 
     aligned_units, n_aligned, k = [], 0, 0
     for unit in units:
@@ -2688,10 +2779,51 @@ def determine_song_end(song_dir: str, vocals_path: str, audio16k,
     return None, None
 
 
+def transcript_of(txt) -> list:
+    """[(start_s, end_s, word), ...] of the song file itself - for a new
+    song fresh out of UltraSinger this is whisper's transcript. Held-note
+    markers (`~`) are not part of the words."""
+    with open(txt.path, encoding="utf-8", errors="replace") as f:
+        words = [(start, end, word.replace("~", "")) for word, start, end in
+                 compare_reference.word_timings(f.read())]
+    return [w for w in words if w[2].strip()]
+
+
+def fill_units(lyrics_units: list, transcript: list):
+    """The lyric units with the lines lyrics_fill.candidate_lines() proposes
+    from `transcript` put in. Returns (units, origin per unit as
+    candidate_lines() gives it, line_skip per unit: None for a lyric line,
+    LYRICS_FILL_OPTIONAL_COST for a proposed one, review spans)."""
+    lines, origin, review = lyrics_fill.candidate_lines(
+        [u["words"] for u in lyrics_units], transcript)
+    units, kept_origin = [], []
+    for words, org in zip(lines, origin):
+        if isinstance(org, int):
+            units.append(lyrics_units[org])
+            kept_origin.append(org)
+            continue
+        parsed = parse_lyrics_lines([{"text": " ".join(words), "start": None}])
+        if parsed:
+            units.append(parsed[0])
+            kept_origin.append(org)
+    skip = [None if isinstance(org, int) else LYRICS_FILL_OPTIONAL_COST for org in kept_origin]
+    return units, kept_origin, skip, review
+
+
+def drop_unused_fill(units: list, aligned_units: list, origin: list):
+    """Leave out the proposed lines (origin not an int) the alignment left
+    out entirely. Returns (units, aligned_units, origin)."""
+    keep = [k for k, (a, org) in enumerate(zip(aligned_units, origin))
+            if isinstance(org, int) or not a["words"]
+            or any(w != ctc_align.NOT_SUNG for w in a["words"])]
+    return ([units[k] for k in keep], [aligned_units[k] for k in keep],
+            [origin[k] for k in keep])
+
+
 def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir: str,
                            device: str, work_dir: str, language: str = None,
                            align_model: str = None, recording_seconds: float = None,
-                           traits=None):
+                           traits=None, fill_transcript: list = None):
     print(f"{ULTRASINGER_HEAD} {gold_highlighted('Lyrics rebuild')} "
           f"{blue_highlighted(txt.path)} ({len(lyrics_units)} supplied lines)")
 
@@ -2756,8 +2888,35 @@ def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir:
             print(f"{ULTRASINGER_HEAD} {red_highlighted('warning:')} {exc} - "
                   "anchors ignored")
             anchored = None
+    # lines whisper heard that the lyrics lack go in as optional lines;
+    # anchored lines are matched by their position, so no filling with anchors
+    origin, line_skip = None, None
+    if fill_transcript and anchored:
+        print(f"{ULTRASINGER_HEAD} lyrics not filled from the transcript: "
+              f"{anchors_file.ANCHORS_FILE} pins lines")
+    elif fill_transcript:
+        lyrics_units, origin, line_skip, review = fill_units(lyrics_units, fill_transcript)
+        for start, end in review:
+            print(f"{ULTRASINGER_HEAD} {red_highlighted('please check:')} singing the "
+                  f"lyrics lack, too little heard to fill it: {_clock(start)}-{_clock(end)}")
+    fillers = []
     aligned_units, n_aligned = align_units_globally(
-        lyrics_units, model, meta, audio16k, device, anchors=anchored)
+        lyrics_units, model, meta, audio16k, device, anchors=anchored,
+        fillers_out=fillers, line_skip=line_skip)
+    if origin:
+        lyrics_units, aligned_units, origin = drop_unused_fill(
+            lyrics_units, aligned_units, origin)
+        for unit, aligned, org in zip(lyrics_units, aligned_units, origin):
+            if isinstance(org, int):
+                continue
+            start = next((w["start"] for w in aligned["words"] if isinstance(w, dict)), None)
+            what = (f"repeat of line {org[1] + 1}" if org[0] == "repeat"
+                    else "heard by whisper, not in the lyrics")
+            print(f"{ULTRASINGER_HEAD} lyrics filled"
+                  f"{' at ' + _clock(start) if start is not None else ''}: "
+                  f"\"{unit['text']}\" ({what})")
+    for note in filler_notes(fillers, lyrics_units, LYRICS_FILLER_NOTE_S):
+        print(f"{ULTRASINGER_HEAD} singing not in the lyrics: {note}")
     n_total = sum(len(u["words"]) for u in lyrics_units)
     confident = sum(1 for a in aligned_units
                     if a["score"] is not None and a["score"] >= GLOBAL_CONFIDENT_LINE_SCORE)
@@ -2828,6 +2987,10 @@ def main():
                              "(MusicBrainz); a video that runs longer gets its "
                              "outro cut off at a pause near that length "
                              "(see outro.py; a song_end.txt in the song folder wins)")
+    parser.add_argument("--fill-from-input", action="store_true",
+                        help="lyrics mode: the input txt is whisper's transcript of the "
+                             "song (a new song); lines it heard that the lyrics lack are "
+                             "filled in (lyrics_fill.py)")
     parser.add_argument("--traits", default=None,
                         help="the song's vocal/instrument traits from the song "
                              "list, comma-joined (harsh_vocals, operatic_vocals, "
@@ -2865,7 +3028,8 @@ def main():
                 result = repair_txt_with_lyrics(
                     txt, lyrics_units, song_dir, args.out, args.device,
                     work_dir, args.language, args.align_model,
-                    recording_seconds=args.recording_seconds, traits=traits)
+                    recording_seconds=args.recording_seconds, traits=traits,
+                    fill_transcript=transcript_of(txt) if args.fill_from_input else None)
                 if result is not None:
                     result["lyrics_source"] = lyrics_source
             else:

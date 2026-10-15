@@ -29,3 +29,6 @@ stack/logs/
 stack/state/
 stack/cookies/
 stack/reference/
+
+# analysis of the user's own UltraStar library (not for git)
+library analysis/

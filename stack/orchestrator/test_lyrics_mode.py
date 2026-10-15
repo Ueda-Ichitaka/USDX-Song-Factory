@@ -497,6 +497,40 @@ check("align_units_globally: a word's duration is capped at "
 check("align_units_globally: the cap keeps the word's START",
       abs(_long_word["start"] - 0.20) < 1e-9)
 
+# filler: singing between two lines that the lyrics do not have ("d d d d d d")
+# goes to a filler, reported with the number of the line it precedes
+_f_units = [{"text": "ab", "words": ["ab"], "start": None},
+            {"text": "c", "words": ["c"], "start": None}]
+_f_plan = [(2, 2), (4, 3), (6, 1), (10, 5), (12, 5), (14, 5), (16, 5), (18, 5),
+           (20, 5), (30, 1), (34, 4)]
+_f_fillers = []
+_f_aligned, _ = repair.align_units_globally(
+    _f_units, _PlannedModel(_planned_logits(40, _f_plan)), _GMETA, [0.0] * (320 * 40),
+    fillers_out=_f_fillers)
+check(f"align_units_globally: singing not in the lyrics is reported as a filler (got {_f_fillers})",
+      len(_f_fillers) == 1 and _f_fillers[0][2] == 1
+      and _f_fillers[0][0] <= 0.20 + 1e-9 and _f_fillers[0][1] >= 0.42 - 1e-9)
+check("align_units_globally: the filler leaves the lyric words in place",
+      abs(_f_aligned[0]["words"][0]["start"] - 0.04) < 1e-9
+      and abs(_f_aligned[1]["words"][0]["start"] - 0.68) < 1e-9)
+_f_saved = repair.LYRICS_FILLER_ENTER
+repair.LYRICS_FILLER_ENTER = 0.0
+_f_fillers = []
+repair.align_units_globally(
+    _f_units, _PlannedModel(_planned_logits(40, _f_plan)), _GMETA, [0.0] * (320 * 40),
+    fillers_out=_f_fillers)
+repair.LYRICS_FILLER_ENTER = _f_saved
+check(f"align_units_globally: LYRICS_FILLER_ENTER=0 switches the filler off (got {_f_fillers})",
+      _f_fillers == [])
+
+# filler_notes(): long fillers become readable log lines, short ones are dropped
+_fn_units = [{"text": "one two", "words": ["one", "two"]},
+             {"text": "three four five six seven eight", "words": "three four five six seven eight".split()}]
+_fn = repair.filler_notes([(10.0, 11.0, 1), (148.7, 158.2, 1), (200.0, 205.5, 2)], _fn_units, 2.0)
+check(f"filler_notes: long fillers named with time and the following line (got {_fn})",
+      _fn == ['2:28.7-2:38.2 before line 2 "three four five six seven..."',
+              '3:20.0-3:25.5 after the last line'])
+
 # anchors: the song is aligned piece by piece between anchored lines, and an
 # anchored line's first word starts exactly at its anchor time
 _a_units = [{"text": "a b", "words": ["a", "b"], "start": None},
@@ -923,7 +957,8 @@ _saved = {n: getattr(repair, n) for n in (
     "build_syllables_from_lyric_units", "write_lyrics_result")}
 
 
-def _fake_align(units, model, meta, audio16k, device="cpu", anchors=None):
+def _fake_align(units, model, meta, audio16k, device="cpu", anchors=None, fillers_out=None,
+                line_skip=None):
     _wiring["align"] = (units, model, meta, len(audio16k), device)
     _wiring["anchors"] = anchors
     return [{"words": [{"start": 0.0, "end": 1.0}] * len(u["words"]),
@@ -990,6 +1025,84 @@ check("repair_txt_with_lyrics: returns output path and word counts",
       _wiring_result == {"output": "/out/song.txt", "aligned_words": 5, "total_words": 2})
 
 # --------------------------------------------------------------------------
+# lyrics filled from whisper's transcript (lyrics_fill.py): proposed lines go
+# in as OPTIONAL lines; the ones the alignment leaves out are dropped
+# --------------------------------------------------------------------------
+
+def _fill_run(keep_candidate):
+    seen = {}
+
+    def fake_align(units, model, meta, audio16k, device="cpu", anchors=None,
+                   fillers_out=None, line_skip=None):
+        seen["units"] = [u["text"] for u in units]
+        seen["line_skip"] = line_skip
+        out = []
+        for u, cost in zip(units, line_skip or [None] * len(units)):
+            sung = cost is None or keep_candidate
+            out.append({"words": [{"start": 0.0, "end": 1.0, "score": 0.5} if sung
+                                  else repair.ctc_align.NOT_SUNG] * len(u["words"]),
+                        "text": u["text"], "score": 0.5 if sung else None,
+                        "word_orig_starts": [0.0] * len(u["words"]),
+                        "word_orig_ends": [1.0] * len(u["words"])})
+        return out, 6
+
+    def fake_refine(aligned, units, audio16k, silence_sections, traits=()):
+        seen["refined_units"] = [u["text"] for u in units]
+
+    saved = {n: getattr(repair, n) for n in (
+        "locate_audio", "prepare_processing_audio", "get_silence_sections", "load_audio_16k",
+        "resolve_language", "load_aligner", "align_units_globally", "refine_global_alignment",
+        "build_syllables_from_lyric_units", "write_lyrics_result")}
+    try:
+        repair.locate_audio = lambda song_dir, txt, work_dir: ("/a.wav", None)
+        repair.prepare_processing_audio = lambda audio, work, device: ("/v.wav", "/p.wav")
+        repair.get_silence_sections = lambda path, min_silence_len=0: []
+        repair.load_audio_16k = lambda path: [0.0] * (16000 * 3)
+        repair.resolve_language = lambda *a, **k: "de"
+        repair.load_aligner = lambda lang, device: ("MODEL", "META", "de")
+        repair.align_units_globally = fake_align
+        repair.refine_global_alignment = fake_refine
+        repair.build_syllables_from_lyric_units = lambda units, aligned, lang, **k: [[("w ", 0.0, 1.0)]] * len(units)
+        repair.write_lyrics_result = lambda *a, **k: "/out/song.txt"
+        heard = [(k * 0.5, k * 0.5 + 0.4, w) for k, w in enumerate(
+            "eins zwei drei vier fuenf sechs sieben acht neun".split())]
+        repair.repair_txt_with_lyrics(
+            _WiringTxt(), repair.parse_lyrics_lines([{"text": "eins zwei drei"},
+                                                    {"text": "sieben acht neun"}]),
+            "/s", "/o", "cuda", tempfile.mkdtemp(), fill_transcript=heard)
+    finally:
+        for n, f in saved.items():
+            setattr(repair, n, f)
+    return seen
+
+
+_fill_kept = _fill_run(True)
+check(f"lyrics fill: the proposed line goes in at its place (got {_fill_kept.get('units')})",
+      _fill_kept.get("units") == ["eins zwei drei", "vier fuenf sechs", "sieben acht neun"])
+check(f"lyrics fill: only the proposed line may be left out (got {_fill_kept.get('line_skip')})",
+      _fill_kept.get("line_skip") == [None, repair.LYRICS_FILL_OPTIONAL_COST, None])
+check("lyrics fill: a proposed line that is sung stays",
+      _fill_kept.get("refined_units") == ["eins zwei drei", "vier fuenf sechs", "sieben acht neun"])
+_fill_skipped = _fill_run(False)
+check(f"lyrics fill: a proposed line the alignment left out is dropped (got {_fill_skipped.get('refined_units')})",
+      _fill_skipped.get("refined_units") == ["eins zwei drei", "sieben acht neun"])
+
+# align_units_globally() hands line skips to the aligner
+_ls_seen = {}
+_saved_em2, _saved_awg2 = repair.ctc_align.emissions_for_audio, repair.ctc_align.align_words_globally
+try:
+    repair.ctc_align.emissions_for_audio = lambda *a, **k: "EM"
+    repair.ctc_align.align_words_globally = (
+        lambda words, em, meta, end_penalty=None, **kw:
+        _ls_seen.update(kw) or [(1.0, 1.5, 0.9)] * len(words))
+    repair.align_units_globally(repair.parse_lyrics_lines([{"text": "a"}, {"text": "b"}]),
+                                "M", {}, [0.0] * 16000, line_skip=[None, 0.5])
+finally:
+    repair.ctc_align.emissions_for_audio, repair.ctc_align.align_words_globally = _saved_em2, _saved_awg2
+check(f"align_units_globally: passes line skips to the aligner (got {_ls_seen.get('line_skip')})",
+      _ls_seen.get("line_skip") == [None, 0.5] and _ls_seen.get("line_lengths") == [1, 1])
+
+# --------------------------------------------------------------------------
 # lyrics never sung at the end (ctc_align end_penalty): left out before the
 # precision pass and the notes, never squeezed into the audio
 # --------------------------------------------------------------------------
@@ -1017,6 +1130,22 @@ _keep_u, _keep_a, _keep_n = repair.drop_unsung_tail(_du_units[:1], _du_aligned[:
 check("drop_unsung_tail: everything sung - unchanged",
       _keep_n == 0 and _keep_u == _du_units[:1] and _keep_a == _du_aligned[:1])
 
+# a whole line left out in the MIDDLE (an optional line the path skipped)
+# goes alone - the lines after it stay
+_mid_units = repair.parse_lyrics_lines([{"text": "a b"}, {"text": "x y"}, {"text": "c d"}])
+_mid_aligned = [
+    {"words": [_t, _t], "text": "a b", "score": 0.8,
+     "word_orig_starts": [1.0, 1.0], "word_orig_ends": [1.5, 1.5]},
+    {"words": [_NS, _NS], "text": "x y", "score": None,
+     "word_orig_starts": [0.0, 0.0], "word_orig_ends": [0.3, 0.3]},
+    {"words": [{"start": 3.0, "end": 3.5, "score": 0.7}] * 2, "text": "c d", "score": 0.7,
+     "word_orig_starts": [3.0, 3.0], "word_orig_ends": [3.5, 3.5]},
+]
+_mu, _ma, _mn = repair.drop_unsung_tail(_mid_units, _mid_aligned)
+check(f"drop_unsung_tail: a line left out in the middle goes alone (got {[u['text'] for u in _mu]}, {_mn})",
+      [u["text"] for u in _mu] == ["a b", "c d"] and len(_ma) == 2 and _ma[1]["text"] == "c d"
+      and _mn == 2)
+
 # align_units_globally(): the end may stay unsung without anchors; with
 # anchors (set by an admin) the alignment stays forced
 _ag_calls = []
@@ -1024,7 +1153,7 @@ _saved_em, _saved_awg = repair.ctc_align.emissions_for_audio, repair.ctc_align.a
 try:
     repair.ctc_align.emissions_for_audio = lambda *a, **k: "EM"
     repair.ctc_align.align_words_globally = (
-        lambda words, em, meta, end_penalty=None:
+        lambda words, em, meta, end_penalty=None, **filler:
         _ag_calls.append(end_penalty) or [(1.0, 1.5, 0.9), _NS])
     _ag_aligned, _ag_n = repair.align_units_globally(
         repair.parse_lyrics_lines([{"text": "a b"}]), "M", {}, [0.0] * 16000)
@@ -1045,7 +1174,8 @@ _saved = {n: getattr(repair, n) for n in (
     "build_syllables_from_lyric_units", "write_lyrics_result")}
 
 
-def _fake_align_tail(units, model, meta, audio16k, device="cpu", anchors=None):
+def _fake_align_tail(units, model, meta, audio16k, device="cpu", anchors=None, fillers_out=None,
+                     line_skip=None):
     return [{"words": [_t] * len(u["words"]) if i == 0 else [_NS] * len(u["words"]),
              "text": u["text"], "score": 0.8 if i == 0 else None,
              "word_orig_starts": [1.0] * len(u["words"]),
@@ -1271,6 +1401,48 @@ finally:
         setattr(repair, _n, _f)
 check(f"main: --recording-seconds is passed to the lyrics rebuild (got {_main_calls})",
       _main_calls.get("recording_seconds") == 279.2)
+
+# main(): --fill-from-input hands the input txt's words (whisper's transcript
+# for a new song) to the lyrics rebuild; without it nothing is filled
+_fill_txt_dir = tempfile.mkdtemp()
+_fill_txt_path = os.path.join(_fill_txt_dir, "song.txt")
+with open(_fill_txt_path, "w", encoding="utf-8") as _f:
+    _f.write("#TITLE:x\n#ARTIST:y\n#BPM:150\n#GAP:1000\n: 0 4 0 Hal\n: 4 4 0 lo \n- 10\n"
+             ": 10 4 0 Welt\n: 14 4 2 ~ \nE\n")
+
+
+class _PathTxt:
+    path = _fill_txt_path
+
+
+for _flag in (True, False):
+    _main_calls = {}
+    _saved_main = {n: getattr(repair, n) for n in (
+        "find_ultrastar_txts", "load_lyrics_file", "repair_txt_with_lyrics")}
+    _saved_argv = sys.argv
+    try:
+        repair.find_ultrastar_txts = lambda song_dir: [_PathTxt()]
+        repair.load_lyrics_file = lambda path: ("file", [{"text": "a b", "start": None}])
+        repair.repair_txt_with_lyrics = lambda *a, **k: _main_calls.update(k) or {
+            "output": "/o/x.txt", "aligned_words": 2, "total_words": 2}
+        sys.argv = ["repair.py", "--song-dir", "/s", "--out", "/o", "--mode", "lyrics",
+                    "--lyrics-file", "/l.json"] + (["--fill-from-input"] if _flag else [])
+        try:
+            repair.main()
+        except SystemExit:
+            pass
+    finally:
+        sys.argv = _saved_argv
+        for _n, _f in _saved_main.items():
+            setattr(repair, _n, _f)
+    if _flag:
+        _ft = _main_calls.get("fill_transcript") or []
+        check(f"main: --fill-from-input passes the input txt's words (got {_ft})",
+              [w for _, _, w in _ft] == ["Hallo", "Welt"] and abs(_ft[0][0] - 1.0) < 1e-9
+              and abs(_ft[1][0] - (1.0 + 10 * 0.1)) < 1e-9)
+    else:
+        check(f"main: without --fill-from-input nothing is filled (got {_main_calls.get('fill_transcript')})",
+              _main_calls.get("fill_transcript") is None)
 
 print()
 if failures:

@@ -4,7 +4,9 @@
 About me: plain assert-based regression checks for orchestrator.py (no
 pytest dependency - the image only installs runtime deps). Run directly
 with `python3 test_orchestrator.py` on the host (stdlib only, no docker
-needed) or inside the container.
+needed) or inside the container; every data path (song list, output,
+state, logs, work, cookies) is set to a temp folder first, and the run
+stops before the first check if one is not.
 """
 
 import os
@@ -13,14 +15,32 @@ import shutil
 import tempfile
 
 TMP_DATA = tempfile.mkdtemp(prefix="ultrasinger-test-")
-os.environ.setdefault("LOGS_DIR", os.path.join(TMP_DATA, "logs"))
-os.environ.setdefault("WORK_DIR", os.path.join(TMP_DATA, "work"))
-os.environ.setdefault("OUTPUT_DIR", os.path.join(TMP_DATA, "output"))
-os.environ.setdefault("STATE_DIR", os.path.join(TMP_DATA, "state"))
+# set, not setdefault: inside the container the compose file points these
+# at the real song list, output, state and logs
+for _name, _rel in (("INPUT_DIR", "input"), ("SONGS_FILE", "input/song-requests.csv"),
+                    ("BROKEN_CSV", "input/broken.csv"), ("OUTPUT_DIR", "output"),
+                    ("NEW_SONGS_DIR", "output/new"), ("REPAIRED_DIR", "output/repaired"),
+                    ("FAILED_DIR", "output/failed"), ("REPORT_FILE", "output/report.md"),
+                    ("STATE_DIR", "state"), ("LOGS_DIR", "logs"), ("WORK_DIR", "work"),
+                    ("COOKIES_FILE", "cookies/cookies.txt")):
+    os.environ[_name] = os.path.join(TMP_DATA, _rel)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import orchestrator as orch  # noqa: E402
+
+# every data path must point into TMP_DATA before any check runs: in the
+# container the compose file sets them to the real /data folders
+_DATA_PATHS = ("SONGS_FILE", "INPUT_DIR", "BROKEN_CSV", "OUTPUT_DIR", "NEW_SONGS_DIR",
+               "REPAIRED_DIR", "FAILED_DIR", "REPORT_FILE", "STATE_DIR", "LOGS_DIR",
+               "WORK_DIR", "COOKIES_FILE")
+_outside = [n for n in _DATA_PATHS
+            if not os.path.realpath(getattr(orch, n)).startswith(os.path.realpath(TMP_DATA))]
+if _outside:
+    print(f"[FAIL] test data paths outside the temp folder {TMP_DATA}: "
+          + ", ".join(f"{n}={getattr(orch, n)}" for n in _outside) + " - aborted before writing")
+    sys.exit(1)
+print("[PASS] all data paths point into the temp folder")
 
 failures = []
 
@@ -682,6 +702,16 @@ try:
     check("run_lyrics_step passes the song's traits to repair.py",
           "--traits" in align_call
           and align_call[align_call.index("--traits") + 1] == "choir,operatic_vocals")
+    check("run_lyrics_step lets repair.py fill lyrics from the new song's transcript",
+          "--fill-from-input" in align_call)
+    rec_calls.clear()
+    _saved_fill = orch.LYRICS_FILL
+    orch.LYRICS_FILL = False
+    orch.run_lyrics_step({"id": "new|r5", "band": "Band", "title": "Song"}, lyrics_txt)
+    orch.LYRICS_FILL = _saved_fill
+    align_call = next(c for c in rec_calls if c[1] == orch.REPAIR_PY)
+    check("run_lyrics_step: LYRICS_FILL=0 switches the filling off",
+          "--fill-from-input" not in align_call)
 finally:
     orch.subprocess.run = orig_subprocess_rec
     orch.recording_length.recording_seconds = orig_rec_seconds
@@ -2556,6 +2586,60 @@ check("render_report: songs whose lyrics cannot be checked are listed separately
       "| Eluveitie - Omnos | whisper cannot transcribe the language 'Gaulish' |" in _rv_report)
 check("render_report: unflagged songs do not appear in the review sections",
       _rv_report.count("Bella ciao") == 1)
+
+# --------------------------------------------------------------------------
+# lyrics notes of the lyrics step (filled lines, singing the lyrics lack,
+# spans to check): read from repair.py's log, listed in the report
+# --------------------------------------------------------------------------
+
+_ln_log = ("\x1b[92m[UltraSinger]\x1b[0m separating vocals\n"
+           "\x1b[92m[UltraSinger]\x1b[0m singing not in the lyrics: 2:28.7-2:38.2 before line 51 \"Taken\"\n"
+           "\x1b[92m[UltraSinger]\x1b[0m \x1b[91mplease check:\x1b[0m singing the lyrics lack, too little heard to fill it: 0:12.0-0:14.5\n"
+           "\x1b[92m[UltraSinger]\x1b[0m lyrics filled at 3:09.3: \"Technik, Chemie, Atomkraft, Physik\" (repeat of line 2)\n"
+           "REPAIR_DONE output=/x.txt mode=lyrics lyrics_source=genius\n")
+_ln = orch.lyrics_notes_from_log(_ln_log)
+check(f"lyrics_notes_from_log: the three kinds of notes, without colours and prefix (got {_ln})",
+      _ln == ['singing not in the lyrics: 2:28.7-2:38.2 before line 51 "Taken"',
+              "please check: singing the lyrics lack, too little heard to fill it: 0:12.0-0:14.5",
+              'lyrics filled at 3:09.3: "Technik, Chemie, Atomkraft, Physik" (repeat of line 2)'])
+check("lyrics_notes_from_log: nothing to note", orch.lyrics_notes_from_log("REPAIR_DONE x=1\n") == [])
+
+_ln_saved_run = orch.subprocess.run
+
+
+def _ln_fake_run(cmd, **kwargs):
+    if cmd[1] == orch.LYRICS_FETCH_PY:
+        with open(cmd[cmd.index("--out") + 1], "w", encoding="utf-8") as f:
+            f.write('{"source": "genius", "lines": [{"text": "hi", "start": null}]}')
+    elif cmd[1] == orch.REPAIR_PY:
+        kwargs["stdout"].write(_ln_log.encode("utf-8"))
+    return _FakeCompleted(0)
+
+
+orch.subprocess.run = _ln_fake_run
+try:
+    _ln_job = {"id": "new|ln", "band": "Band", "title": "Song"}
+    _ln_src = orch.run_lyrics_step(_ln_job, lyrics_txt)
+finally:
+    orch.subprocess.run = _ln_saved_run
+check(f"run_lyrics_step: keeps the lyrics notes of the realignment on the job (got {_ln_job.get('lyrics_notes')})",
+      _ln_src == "online:genius" and _ln_job.get("lyrics_notes") == _ln)
+
+_ln_state = {"jobs": {
+    "new|a": {"kind": "new", "status": "done", "label": "Funkhausgruppe - Die Physiker",
+              "output_path": "/o/a/x.txt", "duration_s": 1, "lyrics_source": "online:genius",
+              "lyrics_notes": ['lyrics filled at 3:09.3: "Technik" (repeat of line 2)',
+                               "singing not in the lyrics: 2:28.7-2:38.2 before line 51"]},
+    "new|b": {"kind": "new", "status": "done", "label": "Hannes Wader - Bella ciao",
+              "output_path": "/o/b/x.txt", "duration_s": 1, "lyrics_source": "online:genius",
+              "lyrics_notes": []},
+}}
+_ln_report = orch.render_report(_ln_state)
+check("render_report: a 'Lyrics filled or skipped over' section lists each song's notes",
+      "## Lyrics filled or skipped over (1)" in _ln_report and
+      '| Funkhausgruppe - Die Physiker | lyrics filled at 3:09.3: "Technik" (repeat of line 2); '
+      "singing not in the lyrics: 2:28.7-2:38.2 before line 51 |" in _ln_report
+      and _ln_report.count("Bella ciao") == 1)
 
 # --------------------------------------------------------------------------
 # gap check verdict: read from repair.py's REPAIR_DONE line, listed in the

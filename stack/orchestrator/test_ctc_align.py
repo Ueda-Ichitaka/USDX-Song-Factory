@@ -262,6 +262,102 @@ check("align_words_globally: without end_penalty nothing is NOT_SUNG",
       ctc_align.NOT_SUNG not in ctc_align.align_words_globally(
           ["ab", "c", "d"], _tail_em, {"dictionary": DICT}))
 
+# --------------------------------------------------------------------------
+# filler: singing between two lyric lines that the lyrics do not have
+# --------------------------------------------------------------------------
+
+# "ab" | sung "d d d d d d" (not in the lyrics) | "c"
+_fill_em = make_emission(40, 6, [(2, 2), (4, 3), (6, 1), (10, 5), (12, 5), (14, 5),
+                                 (16, 5), (18, 5), (20, 5), (30, 1), (34, 4)])
+_spans = []
+_words = ctc_align.align_words_globally(["ab", "c"], _fill_em, {"dictionary": DICT},
+                                        line_lengths=[1, 1], filler_beta=1.0,
+                                        filler_enter=5.0, fillers_out=_spans)
+check(f"filler: the unknown singing goes to the filler before line 2 (got {_spans})",
+      len(_spans) == 1 and _spans[0][2] == 1
+      and _spans[0][0] <= 10 * 0.02 + 1e-9 and _spans[0][1] >= 21 * 0.02 - 1e-9)
+check(f"filler: the lyric words keep their own places (got {_words})",
+      abs(_words[0][0] - 2 * 0.02) < 1e-9 and abs(_words[0][1] - 5 * 0.02) < 1e-9
+      and abs(_words[1][0] - 34 * 0.02) < 1e-9)
+_spans = []
+ctc_align.align_words_globally(["ab", "c"], _fill_em, {"dictionary": DICT},
+                               line_lengths=[1, 1], filler_beta=1.0,
+                               filler_enter=100.0, fillers_out=_spans)
+check(f"filler: not used when entering costs more than it saves (got {_spans})", _spans == [])
+
+# "ab" sung, then "d d d d" (not in the lyrics) after the last line
+_trail_em = make_emission(30, 6, [(2, 2), (4, 3), (12, 5), (14, 5), (16, 5), (18, 5)])
+_spans = []
+_words = ctc_align.align_words_globally(["ab"], _trail_em, {"dictionary": DICT},
+                                        line_lengths=[1], filler_beta=1.0,
+                                        filler_enter=5.0, fillers_out=_spans)
+check(f"filler: singing after the last line goes to a trailing filler (got {_words}, {_spans})",
+      abs(_words[0][0] - 2 * 0.02) < 1e-9 and abs(_words[0][1] - 5 * 0.02) < 1e-9
+      and len(_spans) == 1 and _spans[0][2] == 1 and _spans[0][0] <= 12 * 0.02 + 1e-9)
+
+_plain_em = make_emission(20, 6, [(2, 2), (4, 3), (6, 1), (10, 4)])
+_spans = []
+_with = ctc_align.align_words_globally(["ab", "c"], _plain_em, {"dictionary": DICT},
+                                       line_lengths=[1, 1], filler_beta=1.0,
+                                       filler_enter=5.0, fillers_out=_spans)
+_without = ctc_align.align_words_globally(["ab", "c"], _plain_em, {"dictionary": DICT})
+check(f"filler: nothing unknown sung -> no filler, same timing (got {_spans}, {_with}, {_without})",
+      _spans == [] and _with == _without)
+
+_spans = []
+_words = ctc_align.align_words_globally(["ab", "!!", "c"], _fill_em, {"dictionary": DICT},
+                                        line_lengths=[1, 1, 1], filler_beta=1.0,
+                                        filler_enter=5.0, fillers_out=_spans)
+check(f"filler: a line without letters is passed over (got {_words}, {_spans})",
+      _words[1] is None and abs(_words[2][0] - 34 * 0.02) < 1e-9 and len(_spans) == 1
+      and _spans[0][2] == 2)
+
+_spans = []
+_free = ctc_align.align_words_globally(["ab", "c", "d"], _tail_em, {"dictionary": DICT},
+                                       end_penalty=4.0, line_lengths=[1, 1, 1],
+                                       filler_beta=1.0, filler_enter=5.0, fillers_out=_spans)
+check(f"filler: works together with the end penalty (got {_free})",
+      _free[0] is not None and _free[0] != ctc_align.NOT_SUNG
+      and _free[1] == ctc_align.NOT_SUNG and _free[2] == ctc_align.NOT_SUNG)
+
+# --------------------------------------------------------------------------
+# line skips: a line may be left out at a cost per letter (optional lines)
+# --------------------------------------------------------------------------
+
+# lyrics a | b, plus the candidate line "c d" between them
+_opt_sung = make_emission(20, 6, [(2, 2), (4, 1), (6, 4), (8, 1), (10, 5), (12, 1), (15, 3)])
+_opt_unsung = make_emission(20, 6, [(2, 2), (4, 1), (15, 3)])
+_w = ctc_align.align_words_globally(["a", "c", "d", "b"], _opt_sung, {"dictionary": DICT},
+                                    line_lengths=[1, 2, 1], filler_beta=1.0, filler_enter=5.0,
+                                    line_skip=[None, 0.5, None])
+check(f"line skip: an optional line that is sung is placed (got {_w})",
+      _w[1] is not None and _w[1] != ctc_align.NOT_SUNG and abs(_w[1][0] - 6 * 0.02) < 1e-9)
+_w = ctc_align.align_words_globally(["a", "c", "d", "b"], _opt_unsung, {"dictionary": DICT},
+                                    line_lengths=[1, 2, 1], filler_beta=1.0, filler_enter=5.0,
+                                    line_skip=[None, 0.5, None])
+check(f"line skip: an optional line that is not sung is left out as NOT_SUNG (got {_w})",
+      _w[1] == ctc_align.NOT_SUNG and _w[2] == ctc_align.NOT_SUNG
+      and abs(_w[0][0] - 2 * 0.02) < 1e-9 and abs(_w[3][0] - 15 * 0.02) < 1e-9)
+_w = ctc_align.align_words_globally(["a", "c", "d", "b"], _opt_unsung, {"dictionary": DICT},
+                                    line_lengths=[1, 2, 1], filler_beta=1.0, filler_enter=5.0,
+                                    line_skip=[None, None, None])
+check(f"line skip: None = the line must be placed (got {_w})",
+      all(x is not None and x != ctc_align.NOT_SUNG for x in _w))
+_w = ctc_align.align_words_globally(["c", "d", "a", "b"], make_emission(20, 6, [(4, 2), (6, 1), (12, 3)]),
+                                    {"dictionary": DICT}, line_lengths=[2, 1, 1],
+                                    filler_beta=1.0, filler_enter=5.0, line_skip=[0.5, None, None])
+check(f"line skip: also the first line can be left out (got {_w})",
+      _w[0] == ctc_align.NOT_SUNG and _w[1] == ctc_align.NOT_SUNG and abs(_w[2][0] - 4 * 0.02) < 1e-9)
+
+# an optional line that is left out must not change the other words: the
+# jump over it still passes one word separator, like the path without it
+_sep_em = make_emission(12, 6, [(2, 2), (3, 3)])  # "a" then "b" right after, no separator sung
+_alone = ctc_align.align_words_globally(["a", "b"], _sep_em, {"dictionary": DICT})
+_with = ctc_align.align_words_globally(["a", "c", "b"], _sep_em, {"dictionary": DICT},
+                                       line_lengths=[1, 1, 1], line_skip=[None, 2.0, None])
+check(f"line skip: a left-out line leaves the others as without it (got {_with} vs {_alone})",
+      _with[1] == ctc_align.NOT_SUNG and _with[0] == _alone[0] and _with[2] == _alone[1])
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")

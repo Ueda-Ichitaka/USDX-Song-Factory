@@ -58,6 +58,11 @@ them are variables.
 | `LYRICS_LINE_OUTLIER_GAP_S` | `3.0` | a word further than this from the rest of its line is placed back next to it |
 | `WORD_END_EXTEND_DROP_DB` | `6.0` | word ends follow a held note while the vocals stay within this many dB of the word's level |
 | `LYRICS_END_SKIP_PENALTY` | `4.0` | lyrics at the end that are never sung (a video that fades out before the lyrics end) are left out; higher = more is placed anyway, `0` = always place every word |
+| `LYRICS_FILLER_ENTER` | `5.0` | singing between two lyric lines that the lyrics do not have (a chorus the source writes once) is skipped over instead of stretching the word before it; this is the cost of skipping over such singing once - higher = used less, `0` = off |
+| `LYRICS_FILLER_BETA` | `1.0` | cost per sung frame inside such a skipped part |
+| `LYRICS_FILL` | `1` | lines a new song's whisper transcript has but the online lyrics lack (a repeated chorus line written too few times) are filled in - as a copy of the matching lyric line, else with whisper's words; `0` = off |
+| `LYRICS_FILL_OPTIONAL_COST` | `2.0` | a filled-in line is only kept where the alignment finds it in the singing; this is the cost per letter of leaving it out - higher = kept more often |
+| `LYRICS_FILLER_NOTE_S` | `2.0` | skipped singing at least this long is logged as "singing not in the lyrics" with its time |
 | `LOUD_INSTRUMENTS_WORD_END_DROP_DB` | `9.0` | the same, for songs with the trait `loud_high_instruments` |
 | `WORD_END_EXTEND_MAX_S` | `3.0` | maximum extension of a word end |
 | `WORD_START_LEAD_S` | `0.04` | word starts are moved this much earlier |
