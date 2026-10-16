@@ -13,6 +13,18 @@ song's lyrics are looked up online:
   Genius      only when GENIUS_API_KEY is set (environment or stack/.env)
               and lrclib.net has nothing: the API search, same name rules;
               the song page URL.
+  lrclib.net  free text, when both find nothing (the artist is often named
+              differently there: "Der König der Löwen" for "Disney's Der
+              König der Löwen"): the search by "artist title", then by the
+              title alone; a hit counts when its title matches closely, its
+              length is within MAX_LEN_DIFF_S of the song's own audio and a
+              word of the band (not a filler like "the", "and", "feat") is
+              in the hit's artist or title ("Ich will keinen Mann
+              (Hercules)" for "Disney's Hercules"); without the audio length
+              nothing is taken.
+
+lrclib.net answers 429/503 when it is overloaded: each request is tried up
+to RETRY_WAITS more times, waiting in between.
 
 Rows that already have a link are never touched. The requests name the
 stack and its GitHub page (User-Agent, as lrclib.net asks for) and wait
@@ -39,6 +51,8 @@ import songfile  # noqa: E402
 MAX_LEN_DIFF_S = 4.0
 MIN_ARTIST = 0.7
 MIN_TITLE = 0.85
+RETRY_WAITS = (5, 10, 20)
+FILLER_WORDS = {"the", "and", "feat", "featuring", "with", "und", "der", "die", "das", "von", "los", "las"}
 HEADER = ["band", "song name", "category", "description", "lyrics_url", "language",
           "cover_url", "genre", "trait"]
 
@@ -80,6 +94,33 @@ def pick_lrclib(hits: list, band: str, title: str, seconds):
     return min(good)[2] if good else None
 
 
+def words(text: str) -> set:
+    return set(re.findall(r"\w+", (text or "").lower()))
+
+
+def band_words(band: str) -> set:
+    """The words of a band name that identify it (no fillers, 3+ letters)."""
+    return {w for w in words(clean(band)) if len(w) >= 3 and w not in FILLER_WORDS}
+
+
+def pick_by_title(hits: list, band: str, title: str, seconds):
+    """The id of the free-text hit with this title, the song's length
+    (within MAX_LEN_DIFF_S) and a word of the band in its artist or title,
+    synced lyrics first; None without a length."""
+    if not seconds:
+        return None
+    wanted, good = band_words(band), []
+    for hit in hits or []:
+        if hit.get("instrumental") or similar(hit.get("trackName", ""), title) < MIN_TITLE:
+            continue
+        if not wanted & words(f"{hit.get('artistName', '')} {hit.get('trackName', '')}"):
+            continue
+        diff = abs((hit.get("duration") or 0) - seconds)
+        if diff <= MAX_LEN_DIFF_S:
+            good.append((not hit.get("syncedLyrics"), diff, hit["id"]))
+    return min(good)[2] if good else None
+
+
 def pick_genius(hits: list, band: str, title: str):
     """The URL of the Genius search hit with that artist and title, or None."""
     for hit in hits or []:
@@ -90,13 +131,30 @@ def pick_genius(hits: list, band: str, title: str):
     return None
 
 
+def get_json(url: str, params: dict, headers: dict, get=None, sleep=time.sleep):
+    """The JSON answer of a GET request, or [] on an error; 429/503 are
+    tried again after each of RETRY_WAITS."""
+    if get is None:
+        import requests
+        get = requests.get
+    for wait in (*RETRY_WAITS, None):
+        response = get(url, params=params, headers=headers, timeout=20)
+        if response.ok:
+            return response.json()
+        if response.status_code not in (429, 503) or wait is None:
+            return []
+        sleep(wait)
+    return []
+
+
 def lrclib_search(band: str, title: str) -> list:
-    import requests
-    response = requests.get("https://lrclib.net/api/search",
-                            params={"artist_name": clean(band) or band,
-                                    "track_name": clean(title) or title},
-                            headers={"User-Agent": user_agent()}, timeout=20)
-    return response.json() if response.ok else []
+    return get_json("https://lrclib.net/api/search",
+                    {"artist_name": clean(band) or band, "track_name": clean(title) or title},
+                    {"User-Agent": user_agent()})
+
+
+def lrclib_free_search(query: str) -> list:
+    return get_json("https://lrclib.net/api/search", {"q": query}, {"User-Agent": user_agent()})
 
 
 def genius_key():
@@ -163,7 +221,7 @@ def write_csv(path: str, header: list, rows: list):
 
 
 def fill(csv_path: str, input_dir: str, lrclib_search=lrclib_search, genius_search=genius_search,
-         apply: bool = False, pause: float = 1.0) -> dict:
+         lrclib_free_search=lrclib_free_search, apply: bool = False, pause: float = 1.0) -> dict:
     """Look up a link for every row without one; returns {"filled", "not_found"}."""
     header, rows = read_csv(csv_path)
     i_band, i_title, i_url = header.index("band"), header.index("song name"), header.index("lyrics_url")
@@ -180,6 +238,12 @@ def fill(csv_path: str, input_dir: str, lrclib_search=lrclib_search, genius_sear
             url = f"https://lrclib.net/tracks/{track}" if track else None
             if not url:
                 url = pick_genius(genius_search(band, title), band, title)
+            if not url and seconds:
+                for query in (f"{clean(band)} {clean(title)}".strip(), clean(title)):
+                    track = pick_by_title(lrclib_free_search(query), band, title, seconds)
+                    if track:
+                        url = f"https://lrclib.net/tracks/{track}"
+                        break
         except Exception as exc:  # noqa: BLE001 - one failed lookup must not stop the rest
             print(f"  {band} - {title}: lookup failed ({exc})")
         if url:

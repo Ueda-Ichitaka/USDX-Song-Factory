@@ -1,10 +1,14 @@
 """Read the header of an UltraStar song file, and the dashboard codes for it.
 
 About me: shared by the library utilities (library_check.py,
-import_broken_songs.py, fill_lyrics_links.py). read() gives the header tags
-(first value of each tag), the number of notes and whether the file is a
-duet (P1/P2) or uses relative line breaks ("- 12 14"); song files in other
-encodings than UTF-8 (cp1252 is common in old libraries) are read too.
+import_broken_songs.py, fill_lyrics_links.py, copy_reported_songs.py).
+read() gives the header tags (first value of each tag), the number of notes
+and whether the file is a duet (P1/P2) or uses relative timing - the same
+rule as USDX (USong.pas): only #RELATIVE:yes, the second number of a line
+break ("- 30 31") is ignored without it. Song files in other encodings than
+UTF-8 (cp1252 is common in old libraries) are read too. song_txts() counts
+a .txt file as a song file only with #TITLE and #ARTIST, which USDX needs
+too - license.txt, README.txt and notes files are left out.
 language_code() and genre_code() turn the free text of #LANGUAGE and #GENRE
 into the karaoke-dashboard's codes (its app/languages.py and app/genres.py).
 
@@ -25,7 +29,6 @@ LANGUAGES = {"english": "en", "englisch": "en", "german": "de", "deutsch": "de",
 GENRES = ("metal", "medieval", "folk", "gothic", "symphonic", "punk", "pop", "rap",
           "kpop", "jpop", "rock", "industrial", "ebm")
 NOTE_RE = re.compile(r"^[:*FRG]\s")
-RELATIVE_BREAK_RE = re.compile(r"^-\s*-?\d+\s+-?\d+")
 
 
 @dataclass
@@ -59,8 +62,6 @@ def read(path: str) -> SongFile:
             song.notes += 1
         elif re.match(r"^P\s*\d", line):
             song.duet = True
-        elif RELATIVE_BREAK_RE.match(line):
-            song.relative = True
     if "DUETSINGERP1" in song.tags or "P1" in song.tags:
         song.duet = True
     if song.tags.get("RELATIVE", "").lower() == "yes":
@@ -87,6 +88,14 @@ def generated_by_stack(text: str) -> bool:
 
 
 def song_txts(folder: str) -> list:
-    """The song files of a folder (sorted), admin files left out."""
-    return sorted(os.path.join(folder, name) for name in os.listdir(folder)
-                  if name.lower().endswith(".txt") and name.lower() not in ADMIN_FILES)
+    """The song files of a folder (sorted): .txt files with #TITLE and
+    #ARTIST, admin files left out."""
+    out = []
+    for name in sorted(os.listdir(folder)):
+        path = os.path.join(folder, name)
+        if not name.lower().endswith(".txt") or name.lower() in ADMIN_FILES or not os.path.isfile(path):
+            continue
+        tags = read(path).tags
+        if tags.get("TITLE") and tags.get("ARTIST"):
+            out.append(path)
+    return out

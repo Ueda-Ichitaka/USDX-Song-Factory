@@ -41,10 +41,16 @@ check(f"read: header tags (got {info.tags})",
 check(f"read: note count, no duet, absolute timing (got {info.notes}, {info.duet}, {info.relative})",
       info.notes == 3 and not info.duet and not info.relative)
 
-_cp = write("b.txt", "#TITLE:Café\n#ARTIST:X\nP1\n: 0 4 0 a\n- 4 6\nE\n", encoding="cp1252")
+_cp = write("b.txt", "#TITLE:Café\n#ARTIST:X\n#RELATIVE:yes\nP1\n: 0 4 0 a\n- 4 6\nE\n", encoding="cp1252")
 info = songfile.read(_cp)
-check(f"read: a cp1252 file, duet and relative line breaks (got {info.tags.get('TITLE')})",
+check(f"read: a cp1252 file, duet, #RELATIVE:yes (got {info.tags.get('TITLE')})",
       info.tags["TITLE"] == "Café" and info.duet and info.relative)
+
+# USDX reads the second number of a line break only with #RELATIVE:yes
+# (USong.pas, TSong.LoadSong); without the tag the song plays as absolute
+_abs = write("c.txt", "#TITLE:T\n#ARTIST:A\n: 0 4 0 a\n- 30 31\n: 32 4 0 b\nE\n")
+check("read: '- 30 31' line breaks without #RELATIVE:yes are absolute timing",
+      not songfile.read(_abs).relative)
 
 check("language_code: dashboard codes from #LANGUAGE",
       songfile.language_code("German") == "de" and songfile.language_code("Englisch") == "en"
@@ -60,8 +66,11 @@ check("generated_by_stack: #CREATOR UltraSinger",
       songfile.generated_by_stack("#CREATOR:UltraSinger [GitHub]\n") and not songfile.generated_by_stack("#CREATOR:deeba\n"))
 write("lyrics.txt", "eins\n")
 write("language.txt", "de\n")
-check("song_txts: lyrics.txt / language.txt are not song files",
-      [os.path.basename(p) for p in songfile.song_txts(_dir)] == ["a.txt", "b.txt"])
+# USDX needs #TITLE and #ARTIST in a song file ("not Ultrastar txt" otherwise)
+write("license.txt", "Creative Commons Attribution 3.0\n")
+write("README.txt", "#TITLE:only a title\n")
+check("song_txts: admin files and .txt files without #TITLE and #ARTIST are not song files",
+      [os.path.basename(p) for p in songfile.song_txts(_dir)] == ["a.txt", "b.txt", "c.txt"])
 
 print()
 if failures:

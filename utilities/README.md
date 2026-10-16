@@ -2,13 +2,15 @@
 
 Tools to find songs with a wrong `#GAP` or drifting timing in an UltraStar
 library and hand them to the stack for repair. Three steps, each its own
-tool - run them one after another or only the ones you need.
+tool - run them one after another or only the ones you need - plus a tool
+that copies the songs of a dashboard export into the stack input.
 
 | Step | Tool | Runs on | Changes |
 |---|---|---|---|
 | 1. Scan | `run_library_check.sh` (starts `library_check.py`) | the stack's container | nothing in the library; writes results + report |
 | 2. Import | `import_broken_songs.py` | host | copies song folders into the stack input, adds `broken.csv` rows |
 | 3. Lyrics links | `fill_lyrics_links.py` | host | fills empty `lyrics_url` cells of `broken.csv` |
+| Dashboard export | `copy_reported_songs.py` | host | copies the reported song folders into the stack input, merges the rows into `broken.csv` |
 
 Requirements: the stack's image (`ultrasinger-rocm`, see
 `stack/docs/development.md`), Docker, Python 3 with `requests`, `ffprobe`.
@@ -23,9 +25,12 @@ Every usable song file is checked the way the stack's gap/sync repair
 measures a song: its own lyrics are aligned to its separated vocals, which
 gives how far the lyrics are off at the first line, how much that grows
 over the song (drift), how many lines agree, and the `#GAP` (and `#BPM`)
-that would fix it. Left out: duets, relative timing, songs without audio or
-with fewer than 50 notes, songs this stack generated, audio longer than 15
-minutes.
+that would fix it. Song files are `.txt` files with `#TITLE` and `#ARTIST`
+(as in USDX; `license.txt`, `README.txt` and notes are not songs). Left out:
+duets, relative timing (`#RELATIVE:yes` - as in USDX, a line break like
+`- 30 31` alone is absolute timing), song files without `#BPM` (USDX does
+not load them), songs without audio or with fewer than 50 notes, songs this
+stack generated, audio longer than 15 minutes.
 
 - The library is mounted read-only - nothing in it is changed.
 - Output folder (default `library analysis/` in the repository):
@@ -35,7 +40,9 @@ minutes.
 - About 20-45 s per song; a whole library takes many hours. Songs are
   checked in a random order, so a partial run is already a fair sample.
 - Stop with `docker stop library-check`, continue by running the same
-  command again (finished songs are skipped). The script refuses to start
+  command again (finished songs are skipped; a result that no longer fits
+  the song file - e.g. a song left out for a reason that no longer holds -
+  is redone, and the report only lists the library's current song files). The script refuses to start
   while a check is running.
 - Follow the progress: `docker logs -f library-check`.
 
@@ -64,6 +71,8 @@ Verdicts in the report:
   is another version; the given `#GAP` and `#BPM` fix it.
 - **unclear** - fewer than 60% of the lines fit: a different audio version,
   or singing the aligner cannot follow. Listen before changing anything.
+- **damaged audio** - the audio decodes to less than half of its stated
+  length (a zero-filled or broken file); replace the file.
 
 ## 2. Import the songs into the stack
 
@@ -116,6 +125,26 @@ Options: `--csv FILE` (default `stack/input/broken.csv`), `--input DIR`
 (the stack input folder, default: next to the csv). The requests identify
 the stack (User-Agent) and wait 1 s between songs.
 
+## Songs reported in the dashboard
+
+```sh
+python3 utilities/copy_reported_songs.py --library /path/to/library --csv ~/Downloads/broken.csv            # dry run
+python3 utilities/copy_reported_songs.py --library /path/to/library --csv ~/Downloads/broken.csv --apply
+```
+
+For every row of a karaoke-dashboard export ("Reported" page, `broken.csv`,
+with or without the header line; `--csv` can be given more than once):
+
+- the song folder is found in the library the way the dashboard names it:
+  `<band> - <song name>` (just `<song name>` without a band), ignoring case;
+- the folder is copied into `stack/input/` (a folder already there, in any
+  case, is left as it is); rows without a library folder are listed;
+- the row is merged into `stack/input/broken.csv` (dashboard format, a
+  backup `broken.csv.bak-<time>` is kept); a song that already has a row
+  gets no second one.
+
+Option: `--input DIR` (default `stack/input`).
+
 ## Tests
 
 ```sh
@@ -124,4 +153,5 @@ python3 test_songfile.py
 python3 test_library_check.py
 python3 test_import_broken_songs.py
 python3 test_fill_lyrics_links.py
+python3 test_copy_reported_songs.py
 ```
