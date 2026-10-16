@@ -96,6 +96,45 @@ check(f"mark_dead_worker: an old plain-text marker becomes an error row (got {_r
       len(_rows) == 1 and _rows[0]["name"] == "Some Artist - Some Song"
       and _rows[0]["skip"].startswith("error") and not os.path.exists(library_check.current_path()))
 
+# RETRY_ERRORS: every song marked as an error before this run gets one new
+# try; an error written during the run counts as done (a song that fails
+# again must not block the rest - the run used to stop with "no progress")
+_lib = tempfile.mkdtemp()
+for _band in ("Old", "Again", "Fine"):
+    song(_lib, f"{_band} - Song", f"{_band} - Song.txt", f"#TITLE:Song\n#ARTIST:{_band}\n#MP3:a.mp3\n")
+library_check.LIBRARY_DIR = _lib
+library_check.ANALYSIS_DIR = tempfile.mkdtemp()
+library_check.append_row({"name": "Old - Song", "skip": "error: cannot import"})
+library_check.append_row({"name": "Again - Song", "skip": "error: cannot import"})
+library_check.append_row({"name": "Fine - Song", "verdict": "good"})
+_start = library_check.result_lines()
+library_check.append_row({"name": "Again - Song", "skip": "error: frames"})  # failed again in this run
+library_check.RETRY_ERRORS = True
+_, _todo = library_check.todo_list(retry_from=_start)
+check(f"todo_list: an old error is retried, an error from this run is not (got {[t['name'] for t in _todo]})",
+      [t["name"] for t in _todo] == ["Old - Song"])
+_, _todo = library_check.todo_list(retry_from=None)
+check(f"todo_list: without a start line every error is retried (got {sorted(t['name'] for t in _todo)})",
+      sorted(t["name"] for t in _todo) == ["Again - Song", "Old - Song"])
+library_check.RETRY_ERRORS = False
+_, _todo = library_check.todo_list(retry_from=_start)
+check("todo_list: without RETRY_ERRORS errors count as done", _todo == [])
+
+# songs with audio longer than MAX_AUDIO_MIN (15) minutes are left out - a
+# 44-minute live recording needed more than the 10 GB cap and took the whole
+# check down with it
+_entry = library_check.candidates(lib)
+_good = [e for e in _entry if e["name"] == "Good - Song"][0]
+check(f"candidates: a usable song names its audio file (got {_good.get('audio')})",
+      _good.get("audio") == os.path.join(lib, "Good - Song", "a.mp3"))
+check("length_skip: the default limit is 15 minutes", library_check.MAX_AUDIO_MIN == 15)
+check("length_skip: a 44-minute recording is left out with its length",
+      library_check.length_skip(_good, audio_minutes=lambda p: 44.1) == "audio longer than 15 min (44 min)")
+check("length_skip: a 14-minute song is checked",
+      library_check.length_skip(_good, audio_minutes=lambda p: 14.0) is None)
+check("length_skip: an unknown length is checked",
+      library_check.length_skip(_good, audio_minutes=lambda p: None) is None)
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")

@@ -31,6 +31,48 @@ class TestForceArtistTitleFlags(unittest.TestCase):
         self.assertIsNone(settings.forced_title)
 
 
+class TestQuantizeToKeyFlags(unittest.TestCase):
+    """Key snapping: on by default, --quantize_to_key switches it on,
+    --disable_quantize_to_key off (the --disable_* convention of the other
+    on/off options); the value is a real bool, never a string."""
+
+    def setUp(self):
+        ultrasinger_module.settings.quantize_to_key = True
+
+    def test_on_by_default(self):
+        settings = init_settings(["-i", "https://example.com/watch?v=abc", "-o", "/tmp/out"])
+        self.assertIs(settings.quantize_to_key, True)
+
+    def test_quantize_to_key_switches_it_on(self):
+        ultrasinger_module.settings.quantize_to_key = False
+        settings = init_settings(["-i", "https://example.com/watch?v=abc", "-o", "/tmp/out",
+                                  "--quantize_to_key"])
+        self.assertIs(settings.quantize_to_key, True)
+
+    def test_disable_quantize_to_key_switches_it_off(self):
+        settings = init_settings(["-i", "https://example.com/watch?v=abc", "-o", "/tmp/out",
+                                  "--disable_quantize_to_key", "--force_title", "X"])
+        self.assertIs(settings.quantize_to_key, False)
+        self.assertEqual(settings.forced_title, "X")
+
+
+class TestTraitsFlag(unittest.TestCase):
+    """--traits a,b: the song's profile (karaoke-dashboard trait codes),
+    which sets how strongly the note pitches are folded."""
+
+    def setUp(self):
+        ultrasinger_module.settings.traits = []
+
+    def test_no_traits_by_default(self):
+        settings = init_settings(["-i", "https://example.com/watch?v=abc", "-o", "/tmp/out"])
+        self.assertEqual(settings.traits, [])
+
+    def test_comma_joined_traits_are_parsed(self):
+        settings = init_settings(["-i", "https://example.com/watch?v=abc", "-o", "/tmp/out",
+                                  "--traits", "harsh_vocals, choir"])
+        self.assertEqual(settings.traits, ["harsh_vocals", "choir"])
+
+
 class TestLanguageFilePersistence(unittest.TestCase):
     """UltraSinger.py's own new-song whisper path applies the identical
     language.txt precedence as repair.py's realignment path (see

@@ -24,7 +24,8 @@ measures a song: its own lyrics are aligned to its separated vocals, which
 gives how far the lyrics are off at the first line, how much that grows
 over the song (drift), how many lines agree, and the `#GAP` (and `#BPM`)
 that would fix it. Left out: duets, relative timing, songs without audio or
-with fewer than 50 notes, songs this stack generated.
+with fewer than 50 notes, songs this stack generated, audio longer than 15
+minutes.
 
 - The library is mounted read-only - nothing in it is changed.
 - Output folder (default `library analysis/` in the repository):
@@ -50,7 +51,8 @@ no settings file):
 | `MIN_AVAIL_GB` | `8` | before each song, wait until this much RAM is free |
 | `MAX_LOAD` | `14` | ... and the 1-minute load is below this |
 | `WORKER_SONGS` | `10` | songs per fresh worker process (memory is given back after each) |
-| `RETRY_ERRORS` | unset | `1`: check songs marked as errors again |
+| `MAX_AUDIO_MIN` | `15` | leave out songs with longer audio (live sets, medleys need more memory than the cap) |
+| `RETRY_ERRORS` | unset | `1`: check songs marked as errors again (each once per run; a song that fails again stays marked) |
 | `CHECK_NAME` | `library-check` | container name (for a second check at the same time) |
 
 Example: `MEMORY=8g CPUS=6 utilities/run_library_check.sh /music/ultrastar`

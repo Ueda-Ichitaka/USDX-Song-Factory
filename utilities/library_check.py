@@ -18,8 +18,10 @@ less reliable); without #LANGUAGE whisper tiny detects it.
 Every WORKER_SONGS songs run in a fresh worker process (one long process
 grew to 10 GB after 140 songs); a worker that dies gets its song marked as
 an error and the next worker goes on. Before each song the run waits until
-MIN_AVAIL_GB of RAM are free and the load is below MAX_LOAD. The audio
-cache of a song is deleted once it is checked.
+MIN_AVAIL_GB of RAM are free and the load is below MAX_LOAD. Audio longer
+than MAX_AUDIO_MIN minutes (live sets, medleys) is left out: it needs more
+memory than the container cap. The audio cache of a song is deleted once
+it is checked.
 
 Output in ANALYSIS_DIR: results.jsonl (one JSON line per song file, the
 newest line per song counts; resumable) and library-check.txt (the report,
@@ -29,8 +31,8 @@ so a partial run is already a fair sample.
 Settings (environment): LIBRARY_DIR (required, mounted at the same path as
 on the host), ANALYSIS_DIR (default /data/analysis), WORK_DIR (default
 /data/work/library-check), MIN_AVAIL_GB (8), MAX_LOAD (14), THREADS (4),
-WORKER_SONGS (10), ONLY (only songs whose name contains this - tests),
-RETRY_ERRORS=1 (check songs marked as errors again).
+WORKER_SONGS (10), MAX_AUDIO_MIN (15), ONLY (only songs whose name contains this - tests),
+RETRY_ERRORS=1 (check songs marked as errors again, each once per run).
 """
 import hashlib
 import json
@@ -57,6 +59,8 @@ ONLY = os.environ.get("ONLY", "")
 RETRY_ERRORS = os.environ.get("RETRY_ERRORS") == "1"
 ROMANIZED = ("japanese (romanized)", "korean (romanized)")
 MIN_NOTES = 50
+# longer audio (live sets, medleys) needs more memory than the container cap
+MAX_AUDIO_MIN = float(os.environ.get("MAX_AUDIO_MIN", "15"))
 
 
 def log(msg):
@@ -104,6 +108,8 @@ def candidates(library: str) -> list:
                 entry["skip"] = "no audio file"
             elif song.notes < MIN_NOTES:
                 entry["skip"] = f"fewer than {MIN_NOTES} notes"
+            if not entry["skip"]:
+                entry["audio"] = os.path.join(d, audio)
             raw = song.tags.get("LANGUAGE", "").split(",")[0].strip().lower()
             if raw in ROMANIZED:
                 entry["lang"], entry["note"] = "en", "romanized lyrics, English aligner - less reliable"
@@ -177,10 +183,27 @@ def append_row(row: dict):
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def todo_list():
-    rows = load_rows(results_path())
-    done = {r["name"] for r in rows
-            if not (RETRY_ERRORS and r.get("skip", "").startswith("error"))}
+def result_lines() -> int:
+    """Number of lines in results.jsonl."""
+    if not os.path.isfile(results_path()):
+        return 0
+    with open(results_path(), encoding="utf-8") as f:
+        return sum(1 for _ in f)
+
+
+def todo_list(retry_from=None):
+    """(all candidates, the ones still to check) in the seeded order. With
+    RETRY_ERRORS a song whose newest result is an error is checked again -
+    only an error from before line `retry_from` of results.jsonl (the run's
+    start), so a song failing again in this run does not come back."""
+    newest = {}
+    if os.path.isfile(results_path()):
+        for i, line in enumerate(open(results_path(), encoding="utf-8")):
+            row = json.loads(line)
+            newest[row["name"]] = (i, row)
+    done = {name for name, (i, r) in newest.items()
+            if not (RETRY_ERRORS and r.get("skip", "").startswith("error")
+                    and (retry_from is None or i < retry_from))}
     songs = candidates(LIBRARY_DIR)
     random.Random(20261015).shuffle(songs)
     todo = [s for s in songs if s["name"] not in done]
@@ -239,6 +262,31 @@ def write_report(rows: list, path: str, library: str):
     os.replace(tmp, path)
 
 
+def audio_minutes(path: str):
+    """Length of an audio file in minutes (ffprobe), or None."""
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                              "-of", "csv=p=0", path], capture_output=True, text=True, timeout=60).stdout
+        return float(out.strip()) / 60
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def length_skip(entry: dict, audio_minutes=audio_minutes):
+    """The reason to leave a song out for its audio length, or None."""
+    minutes = audio_minutes(entry["audio"]) if entry.get("audio") else None
+    if minutes is not None and minutes > MAX_AUDIO_MIN:
+        return f"audio longer than {MAX_AUDIO_MIN:g} min ({minutes:.0f} min)"
+    return None
+
+
+def retry_from():
+    """The run's start line in results.jsonl (main() sets it for its
+    workers), or None outside a run."""
+    value = os.environ.get("RETRY_FROM_LINE")
+    return int(value) if value else None
+
+
 def worker():
     """Check up to WORKER_SONGS songs, then exit (a fresh process gives all
     memory back)."""
@@ -249,14 +297,15 @@ def worker():
     except OSError:
         pass
     torch.set_num_threads(THREADS)
-    _, todo = todo_list()
+    _, todo = todo_list(retry_from())
     models, checked = {}, 0
     for entry in todo:
         if checked >= WORKER_SONGS:
             break
         base = {"name": entry["name"], "folder": entry["folder"], "txt": entry["txt"]}
-        if entry["skip"]:
-            append_row(dict(base, skip=entry["skip"]))
+        skip = entry["skip"] or length_skip(entry)
+        if skip:
+            append_row(dict(base, skip=skip))
             continue
         wait_for_resources()
         with open(current_path(), "w", encoding="utf-8") as f:
@@ -310,14 +359,15 @@ def main():
     os.makedirs(ANALYSIS_DIR, exist_ok=True)
     os.makedirs(WORK_DIR, exist_ok=True)
     mark_dead_worker("before a restart")
-    songs, todo = todo_list()
+    os.environ["RETRY_FROM_LINE"] = str(result_lines())  # the workers' start line
+    songs, todo = todo_list(retry_from())
     log(f"{len(songs)} song files, {len(load_rows(results_path()))} have a result, {len(todo)} to go")
     while todo:
         before = len(todo)
         proc = subprocess.run([sys.executable, os.path.abspath(__file__), "--worker"])
         mark_dead_worker(proc.returncode)
         write_report(load_rows(results_path()), report_path(), LIBRARY_DIR)
-        _, todo = todo_list()
+        _, todo = todo_list(retry_from())
         log(f"{len(songs) - len(todo)} of {len(songs)} done")
         if len(todo) >= before:
             log("no progress - stopping")

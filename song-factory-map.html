@@ -579,7 +579,7 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
     <thead><tr><th>File</th><th>Runs as</th><th>Job</th></tr></thead>
     <tbody>
       <tr><td><code>orchestrator/orchestrator.py</code></td><td>container command</td><td>plans and runs jobs, state, progress, report, lyrics review</td></tr>
-      <tr><td><code>src/UltraSinger.py</code> + <code>src/modules/</code></td><td>subprocess per new song</td><td>generation (download, demucs, whisperX, hyphenation, SwiftF0, txt writer)</td></tr>
+      <tr><td><code>src/UltraSinger.py</code> + <code>src/modules/</code></td><td>subprocess per new song</td><td>generation (download, demucs, whisperX, hyphenation, SwiftF0, octave folding, txt writer; no key snapping)</td></tr>
       <tr><td><code>orchestrator/repair.py</code></td><td>subprocess</td><td>gap, sync and lyrics modes</td></tr>
       <tr><td><code>orchestrator/lyrics_fetch.py</code></td><td>subprocess</td><td>online lyrics, section tags resolved</td></tr>
       <tr><td><code>orchestrator/romanize.py</code></td><td>subprocess</td><td>Latin script for Cyrillic, Korean, Japanese</td></tr>
@@ -591,7 +591,7 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <tr><td><code>song_style.py</code></td><td>imported by orchestrator</td><td>genre / trait columns of the song list and <code>broken.csv</code></td></tr>
       <tr><td><code>outro.py</code></td><td>imported by repair.py</td><td>outro detection, <code>song_end.txt</code></td></tr>
       <tr><td><code>anchors.py</code></td><td>imported by repair.py</td><td><code>anchors.txt</code> reading and matching</td></tr>
-      <tr><td><code>pitch_normalise.py</code></td><td>imported by repair.py</td><td>unsure notes, octave folding, harsh_vocals pull</td></tr>
+      <tr><td><code>src/modules/Pitcher/pitch_normalise.py</code></td><td>imported by repair.py and UltraSinger</td><td>octave folding per profile (song-wide limit 18, <code>harsh_vocals</code> 12), harsh_vocals pull</td></tr>
       <tr><td><code>usdb_lookup.py</code>, <code>usdb_eu_lookup.py</code></td><td>imported by orchestrator</td><td>USDB search and txt download (usdb_syncer submodule for animux)</td></tr>
       <tr><td><code>broken_report.py</code></td><td>imported by orchestrator</td><td>reads <code>broken.csv</code></td></tr>
       <tr><td><code>recording_length.py</code></td><td>imported by orchestrator</td><td>MusicBrainz length of the list's <code>musicbrainz_id</code></td></tr>

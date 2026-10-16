@@ -8,16 +8,24 @@ fix that without touching what USDX scores:
 
 1. fold_octaves(): a note more than `tolerance` semitones away from the
    rolling median of its neighbours moves by whole octaves towards it.
-2. fold_to_song_range(): a note still more than an octave away from the
-   song's median moves by whole octaves towards it.
+2. fold_to_song_range(): a note still more than PITCH_SONG_TOLERANCE
+   semitones (18) away from the song's median moves by whole octaves
+   towards it.
 
 Every note keeps its own pitch class, also where the detector was unsure -
 a note is never replaced by the level of its neighbours, which would put
 whole growled lines on one pitch (stack/work/bench/bench16_flat_out.py).
 
-Songs with the trait harsh_vocals get one step more
-(normalise_harsh_pitches()): an unsure note moves halfway towards the
-rolling median of its neighbours, at most 3 semitones from it. Octave
+The strength follows the song's profile (normalise_for_traits()). Default
+songs keep a wide song-wide limit: hand-made non-metal songs have 1.8% of
+their notes more than an octave from the song's middle (a chorus sung
+higher), a limit of 12 squashed that to 0.1%, 18 leaves 2.4% and matches
+the hand-made intervals slightly better (+-1 semitone 56.8% vs 56.3%,
+2026-10-16, knowledge/03-PROGRESS.md "Octave folding per profile").
+Songs with the trait harsh_vocals get the tight limit of 12
+(PITCH_SONG_TOLERANCE_HARSH) and one step more (normalise_harsh_pitches()):
+an unsure note moves halfway towards the rolling median of its neighbours,
+at most 3 semitones from it. Octave
 folding alone left 16.5% of neighbouring notes in the generated harsh songs
 more than 5 semitones apart (hand-made: 4-5%); with the pull 7.2%, while
 neighbours on the same pitch stay below the hand-made share
@@ -27,10 +35,12 @@ notes by semitones, so it changes what USDX scores.
 USDX moves the singer's tone into the note's octave before comparing
 (UNote.pas: "move players tone to proper octave"), so whole-octave moves
 never change scoring - only where the note bars are drawn. Measured on 110
-hand-made songs (stack/work/bench/an9.py): range 28 -> 13 semitones, jumps
-> 12 semitones 15.2% -> 0.2%, notes > 12 semitones from the song median
-13.4% -> 0.3%.
+hand-made songs (stack/work/bench/an9.py, limit 12): range 28 -> 13
+semitones, jumps > 12 semitones 15.2% -> 0.2%, notes > 12 semitones from
+the song median 13.4% -> 0.3%.
 
+Used by UltraSinger for its own notes (UltraSinger.py, profile from
+--traits) and by the stack's lyrics step (stack/orchestrator/repair.py).
 Pure standard library (host-testable).
 """
 
@@ -39,7 +49,8 @@ import statistics
 
 PITCH_FOLD_WINDOW = int(os.environ.get("PITCH_FOLD_WINDOW", "5"))
 PITCH_FOLD_TOLERANCE = float(os.environ.get("PITCH_FOLD_TOLERANCE", "7"))
-PITCH_SONG_TOLERANCE = float(os.environ.get("PITCH_SONG_TOLERANCE", "12"))
+PITCH_SONG_TOLERANCE = float(os.environ.get("PITCH_SONG_TOLERANCE", "18"))
+PITCH_SONG_TOLERANCE_HARSH = float(os.environ.get("PITCH_SONG_TOLERANCE_HARSH", "12"))
 FOLD_ITERATIONS = 3
 # profile harsh_vocals: an unsure note (fewer confident pitch frames than
 # this share) moves halfway towards the local melody, ending at most
@@ -84,9 +95,10 @@ def fold_to_song_range(pitches: list, tolerance: float = None) -> list:
             for p in pitches]
 
 
-def normalise_pitches(pitches: list) -> list:
-    """fold_octaves(), fold_to_song_range(), as whole semitones."""
-    return [int(round(p)) for p in fold_to_song_range(fold_octaves(pitches))]
+def normalise_pitches(pitches: list, song_tolerance: float = None) -> list:
+    """fold_octaves(), fold_to_song_range() with `song_tolerance`
+    (default PITCH_SONG_TOLERANCE), as whole semitones."""
+    return [int(round(p)) for p in fold_to_song_range(fold_octaves(pitches), song_tolerance)]
 
 
 def pull_unsure_notes(pitches: list, sure: list, max_distance: float = None,
@@ -109,7 +121,18 @@ def pull_unsure_notes(pitches: list, sure: list, max_distance: float = None,
 
 
 def normalise_harsh_pitches(pitches: list, sure: list) -> list:
-    """normalise_pitches() for songs with harsh vocals: octaves folded, then
-    unsure (growled, screamed) notes pulled towards the melody
-    (pull_unsure_notes()), then folded again."""
-    return normalise_pitches(pull_unsure_notes(normalise_pitches(pitches), sure))
+    """normalise_pitches() for songs with harsh vocals: octaves folded with
+    the song-wide limit PITCH_SONG_TOLERANCE_HARSH, then unsure (growled,
+    screamed) notes pulled towards the melody (pull_unsure_notes()), then
+    folded again."""
+    tight = PITCH_SONG_TOLERANCE_HARSH
+    return normalise_pitches(pull_unsure_notes(normalise_pitches(pitches, tight), sure), tight)
+
+
+def normalise_for_traits(pitches: list, sure: list, traits) -> list:
+    """The song's pitches normalised for its profile: the trait
+    harsh_vocals -> normalise_harsh_pitches(), every other song ->
+    normalise_pitches(). `sure` is each note's confident-frame share."""
+    if "harsh_vocals" in (traits or ()):
+        return normalise_harsh_pitches(pitches, sure)
+    return normalise_pitches(pitches)

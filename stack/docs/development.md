@@ -7,8 +7,9 @@ Notes for changing the stack itself.
 * `stack/orchestrator/orchestrator.py` - job planning, queue, state, progress,
   report ([orchestrator-manual.md](orchestrator-manual.md)).
 * `stack/orchestrator/repair.py` - repairs and the lyrics alignment used for
-  new songs (global CTC alignment in `ctc_align.py`, note pitch normalisation
-  in `pitch_normalise.py`).
+  new songs (global CTC alignment in `ctc_align.py`; note pitch
+  normalisation in `src/modules/Pitcher/pitch_normalise.py`, shared with
+  UltraSinger's own notes, strength from the song's traits).
 * `stack/orchestrator/lyrics_fetch.py`, `usdb_lookup.py`,
   `usdb_eu_lookup.py`, `romanize.py` - lyrics and USDB sources.
 * `stack/orchestrator/outro.py`, `recording_length.py`, `anchors.py` - where
@@ -88,7 +89,6 @@ diff /tmp/host.md5 /tmp/image.md5 && echo "image src identical"
 # host (from stack/orchestrator/): pure-Python orchestrator tests
 python3 test_orchestrator.py
 python3 test_lyrics_fetch.py
-python3 test_pitch_normalise.py
 python3 test_compare_reference.py
 python3 test_outro.py
 python3 test_recording_length.py

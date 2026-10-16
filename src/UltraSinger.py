@@ -41,6 +41,7 @@ from modules.Midi.midi_creator import (
     create_midi_segments_from_transcribed_data,
     create_repitched_midi_segments_from_ultrastar_txt,
     create_midi_file,
+    normalise_midi_segments,
 )
 from modules.Midi.MidiSegment import MidiSegment
 from modules.Midi.note_length_calculator import get_thirtytwo_note_second, get_sixteenth_note_second
@@ -222,6 +223,11 @@ def run() -> tuple[str, Score, Score]:
         process_data.midi_segments, process_data.transcribed_data = merge_syllable_segments(process_data.midi_segments,
                                                                                         process_data.transcribed_data,
                                                                                         process_data.media_info.bpm)
+
+    # Fold octave errors of the detected pitches (strength from the profile)
+    process_data.midi_segments = normalise_midi_segments(process_data.midi_segments,
+                                                         process_data.pitched_data,
+                                                         settings.traits)
 
     # Create plot
     if settings.create_plot:
@@ -878,7 +884,11 @@ def init_settings(argv: list[str]) -> Settings:
         elif opt in ("--interactive"):
             settings.interactive_mode = True
         elif opt in ("--quantize_to_key"):
-            settings.quantize_to_key = arg
+            settings.quantize_to_key = True
+        elif opt in ("--disable_quantize_to_key"):
+            settings.quantize_to_key = False
+        elif opt in ("--traits"):
+            settings.traits = [t.strip() for t in arg.split(",") if t.strip()]
         elif opt in ("--ffmpeg"):
             settings.user_ffmpeg_path = arg
     if settings.output_folder_path == "":
@@ -920,6 +930,8 @@ def arg_options():
         "musescore_path=",
         "keep_numbers",
         "quantize_to_key",
+        "disable_quantize_to_key",
+        "traits=",
         "interactive",
         "cookiefile=",
         "ffmpeg=",

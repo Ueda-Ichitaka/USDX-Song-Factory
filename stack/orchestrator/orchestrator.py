@@ -2072,8 +2072,14 @@ def remove_quarantined_outputs(job: dict) -> list:
 
 
 def ultrasinger_command(url: str, band: str = None, title: str = None,
-                        language: str = None, musicbrainz_id: str = None) -> list:
+                        language: str = None, musicbrainz_id: str = None,
+                        traits=None) -> list:
     cmd = [sys.executable, ULTRASINGER_PY, "-i", resolve_song_input(url), "-o", NEW_SONGS_DIR]
+    # UltraSinger snaps notes to the detected key by default; measured on the
+    # hand-made songs (stack/work/bench/an10.py, knowledge/03-PROGRESS.md
+    # "Key snapping") it lowers the within-1-semitone (USDX Medium) match
+    # even with the right key - pitches stay as detected
+    cmd += ["--disable_quantize_to_key"]
     if WHISPER_MODEL:
         cmd += ["--whisper", WHISPER_MODEL]
     if WHISPER_BATCH_SIZE:
@@ -2103,6 +2109,9 @@ def ultrasinger_command(url: str, band: str = None, title: str = None,
     # affect naming, --force_artist/--force_title above still win
     if musicbrainz_id and musicbrainz_id.strip():
         cmd += ["--musicbrainz_id", musicbrainz_id.strip()]
+    # the song's profile sets how strongly UltraSinger folds octave errors
+    # of its note pitches (pitch_normalise.py in src/modules/Pitcher)
+    cmd += traits_args(traits)
     if EXTRA_ARGS:
         cmd += shlex.split(EXTRA_ARGS)
     return cmd
@@ -2267,7 +2276,8 @@ class JobRunner:
                     language=self.job.get("language"), traits=self.job.get("traits"))
             return ultrasinger_command(
                 self.job["url"], self.job.get("band"), self.job.get("title"),
-                self.job.get("language"), self.job.get("musicbrainz_id"))
+                self.job.get("language"), self.job.get("musicbrainz_id"),
+                traits=self.job.get("traits"))
         if self._repair_prep:
             return repair_command(
                 self._repair_prep["song_dir"], self._repair_prep["mode"],

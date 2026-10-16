@@ -27,6 +27,7 @@ class Settings:
     interactive_mode = False
     user_ffmpeg_path = ""
     quantize_to_key = True  # Quantize notes to the detected key of the song
+    traits = []  # the song's profile (harsh_vocals, ...): how strongly note pitches are folded
 
     # Process data Paths
     input_file_path = ""

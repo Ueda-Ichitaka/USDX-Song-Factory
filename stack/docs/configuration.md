@@ -76,7 +76,8 @@ them are variables.
 | `HARSH_MAX_DISTANCE` | `3` | songs with the trait `harsh_vocals`: an unsure note ends at most this many semitones from the melody around it |
 | `HARSH_UNSURE_BELOW` | `0.3` | the same: a note counts as unsure below this share of confident pitch frames |
 | `PITCH_FOLD_TOLERANCE` | `7` | a note further (semitones) from its neighbours moves by octaves towards them |
-| `PITCH_SONG_TOLERANCE` | `12` | a note further (semitones) from the song's median moves by octaves towards it |
+| `PITCH_SONG_TOLERANCE` | `18` | a note further (semitones) from the song's median moves by octaves towards it (songs without the trait `harsh_vocals`) |
+| `PITCH_SONG_TOLERANCE_HARSH` | `12` | the same for songs with the trait `harsh_vocals` (tighter: screams and growls are detected octaves off more often) |
 
 ## Resource budget and model choice
 

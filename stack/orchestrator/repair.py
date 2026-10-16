@@ -19,8 +19,9 @@ lines whisper heard that the lyrics lack are put in as optional lines
 (lyrics_fill.py, fill_units(), drop_unused_fill()).
 `--traits` (the song's traits from the song list) switches single
 steps: loud_high_instruments lets word ends follow held notes further down
-(word_end_drop_db()), harsh_vocals pulls unsure notes towards the melody
-(pitch_normalise.normalise_harsh_pitches()).
+(word_end_drop_db()), harsh_vocals folds note octaves tighter and pulls
+unsure notes towards the melody (src/modules/Pitcher/pitch_normalise.py,
+normalise_for_traits()).
 
 "gap" and "sync" keep the ORIGINAL lyrics/syllables of the song. Nothing is
 re-transcribed; instead the known lyrics are force-aligned to the vocals
@@ -83,16 +84,15 @@ import lyrics_fill  # noqa: E402
 import timing_fit  # noqa: E402
 import held_notes  # noqa: E402
 import outro  # noqa: E402
-import pitch_normalise  # noqa: E402
 from modules.Audio.convert_audio import convert_audio_to_mono_wav  # noqa: E402
 from modules.Audio.denoise import denoise_vocal_audio  # noqa: E402
 from modules.Audio.separation import DemucsModel  # noqa: E402
 from modules.Audio.separation import separate_vocal_from_audio  # noqa: E402
 from modules.Audio.silence_processing import get_silence_sections, mute_no_singing_parts  # noqa: E402
 from modules.language_file import resolve_language_with_file  # noqa: E402
-from modules.Midi.midi_creator import create_midi_note_from_pitched_data, find_nearest_index  # noqa: E402
+from modules.Midi.midi_creator import create_midi_note_from_pitched_data, sure_pitch_fraction  # noqa: E402
+from modules.Pitcher import pitch_normalise  # noqa: E402
 from modules.Pitcher.pitcher import get_pitch_with_file  # noqa: E402
-from modules.Pitcher.pitched_data_helper import CONFIDENCE_THRESHOLD  # noqa: E402
 from modules.console_colors import (  # noqa: E402
     ULTRASINGER_HEAD,
     blue_highlighted,
@@ -2308,20 +2308,6 @@ def tilde_word_field(word_field: str, is_tilde: bool, is_last: bool) -> str:
     return text
 
 
-def sure_pitch_fraction(start: float, end: float, pitched,
-                        threshold: float = CONFIDENCE_THRESHOLD) -> float:
-    """Share of the pitch frames of [start, end] whose confidence is above
-    `threshold` - the same frames and threshold
-    create_midi_note_from_pitched_data() picks the note from."""
-    first = find_nearest_index(pitched.times, start)
-    last = find_nearest_index(pitched.times, end)
-    confidences = (pitched.confidence[first:last] if last > first
-                   else [pitched.confidence[first]])
-    if len(confidences) == 0:
-        return 0.0
-    return sum(1 for c in confidences if c > threshold) / len(confidences)
-
-
 def clamp_beat_to_max(beat: int, dur: int, prev_end_beat, max_beat: int = None):
     """Apply write_lyrics_result()'s monotonic-forward clamp (a note can
     never start before the previous note's own end, so notes render in
@@ -2361,8 +2347,9 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
     (held_notes.py). Pitches are read PITCH_READ_DELAY_S after the note, a
     short note's from at least PITCH_MIN_WINDOW_S around it, and the
     detected pitches are normalised for the whole song (octave errors
-    folded back by whole octaves - see pitch_normalise.py; with the trait
-    harsh_vocals unsure notes are also pulled towards the melody). BPM
+    folded back by whole octaves, strength from the song's profile - see
+    src/modules/Pitcher/pitch_normalise.py; with the trait harsh_vocals
+    unsure notes are also pulled towards the melody). BPM
     is kept from the scaffold (audio-only, lyrics don't change it);
     header tags are kept verbatim except #GAP."""
     per_unit_syllables = split_long_lyric_units(per_unit_syllables)
@@ -2439,10 +2426,7 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
                 notes.append((ui, tilde_word_field(word_field, is_tilde,
                                                    part_end == end),
                               part_start, part_end))
-    if "harsh_vocals" in (traits or ()):
-        pitches = pitch_normalise.normalise_harsh_pitches(pitches, sure)
-    else:
-        pitches = pitch_normalise.normalise_pitches(pitches)
+    pitches = pitch_normalise.normalise_for_traits(pitches, sure, traits)
 
     prev_end_beat = None
     current_unit = None

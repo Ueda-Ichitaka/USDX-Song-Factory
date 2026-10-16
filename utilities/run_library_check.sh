@@ -14,6 +14,7 @@
 #   MIN_AVAIL_GB (8)       wait before a song until this much RAM is free
 #   MAX_LOAD (14)          ... and the 1-minute load is below this
 #   WORKER_SONGS (10)      songs per fresh worker process
+#   MAX_AUDIO_MIN (15)     leave out songs with longer audio
 #   RETRY_ERRORS (unset)   1: check songs marked as errors again
 #   CHECK_NAME (library-check)   container name
 #   follow:  docker logs -f library-check      stop: docker stop library-check
@@ -25,7 +26,7 @@ OUT="${2:-$REPO/library analysis}"
 NAME="${CHECK_NAME:-library-check}"
 MEMORY="${MEMORY:-10g}"; MEMORY_SWAP="${MEMORY_SWAP:-12g}"; CPUS="${CPUS:-12}"
 THREADS="${THREADS:-4}"; MIN_AVAIL_GB="${MIN_AVAIL_GB:-8}"; MAX_LOAD="${MAX_LOAD:-14}"
-WORKER_SONGS="${WORKER_SONGS:-10}"
+WORKER_SONGS="${WORKER_SONGS:-10}"; MAX_AUDIO_MIN="${MAX_AUDIO_MIN:-15}"
 if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; then
   echo "a check named $NAME is running - stop it first (docker stop $NAME) or set CHECK_NAME"
   exit 1
@@ -36,7 +37,7 @@ cd "$REPO/stack"
 docker rm "$NAME" >/dev/null 2>&1 || true
 docker compose run -d --no-deps --name "$NAME" \
   -e LIBRARY_DIR="$LIB" -e OMP_NUM_THREADS="$THREADS" -e THREADS="$THREADS" \
-  -e MIN_AVAIL_GB="$MIN_AVAIL_GB" -e MAX_LOAD="$MAX_LOAD" -e WORKER_SONGS="$WORKER_SONGS" \
+  -e MIN_AVAIL_GB="$MIN_AVAIL_GB" -e MAX_LOAD="$MAX_LOAD" -e WORKER_SONGS="$WORKER_SONGS" -e MAX_AUDIO_MIN="$MAX_AUDIO_MIN" \
   ${RETRY_ERRORS:+-e RETRY_ERRORS=1} \
   -v "$LIB:$LIB:ro" -v "$REPO/utilities:/data/utilities:ro" -v "$OUT:/data/analysis" \
   ultrasinger-rocm sh -c 'until python /data/utilities/library_check.py; do echo "check restarted"; sleep 30; done' >/dev/null

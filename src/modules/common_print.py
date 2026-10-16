@@ -54,7 +54,9 @@ def print_help() -> None:
     --create_audio_chunks   Enable creation of audio chunks. Audio chunks are disabled by default.
     --keep_cache            Keep cache folder after creation. Cache folder is removed by default.
     --plot                  Enable creation of plots. Plots are disabled by default.
-    --quantize_to_key       Quantize notes to the detected musical key. This removes slides and out-of-key notes.
+    --quantize_to_key       Quantize notes to the detected musical key (default). This removes slides and out-of-key notes.
+    --disable_quantize_to_key   Keep the detected pitches as they are (no key quantization)
+    --traits a,b            The song's profile (e.g. harsh_vocals): screamed/growled songs get stronger octave folding
     --format_version        0.3.0|1.0.0|1.1.0|1.2.0 >> ((default) is 1.2.0)
     --musescore_path        path to MuseScore executable
     --keep_numbers          Transcribe numbers as digits and not words

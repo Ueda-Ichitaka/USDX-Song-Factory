@@ -1,4 +1,8 @@
-"""Midi creator module"""
+"""Midi creator module
+
+About me: turns transcribed syllables and the pitch track into note
+segments (MidiSegment), folds their octave errors for the song's profile
+(normalise_midi_segments(), pitch_normalise.py) and writes MIDI files."""
 
 import math
 import os
@@ -16,7 +20,8 @@ from modules.console_colors import (
 )
 from modules.Ultrastar.ultrastar_txt import UltrastarTxtValue
 from modules.Pitcher.pitched_data import PitchedData
-from modules.Pitcher.pitched_data_helper import get_frequencies_with_high_confidence
+from modules.Pitcher.pitched_data_helper import CONFIDENCE_THRESHOLD, get_frequencies_with_high_confidence
+from modules.Pitcher.pitch_normalise import normalise_for_traits
 from modules.Audio.key_detector import quantize_note_to_key
 
 def create_midi_instrument(midi_segments: list[MidiSegment]) -> object:
@@ -210,3 +215,32 @@ def create_midi_file(
 
     midi_output = os.path.join(song_output, f"{basename_without_ext}.mid")
     __create_midi(voice_instrument, real_bpm, midi_output, midi_segments)
+
+
+def sure_pitch_fraction(start: float, end: float, pitched_data: PitchedData,
+                        threshold: float = CONFIDENCE_THRESHOLD) -> float:
+    """Share of the pitch frames of [start, end] whose confidence is above
+    `threshold` - the same frames and threshold
+    create_midi_note_from_pitched_data() picks the note from."""
+    first = find_nearest_index(pitched_data.times, start)
+    last = find_nearest_index(pitched_data.times, end)
+    confidences = (pitched_data.confidence[first:last] if last > first
+                   else [pitched_data.confidence[first]])
+    if len(confidences) == 0:
+        return 0.0
+    return sum(1 for c in confidences if c > threshold) / len(confidences)
+
+
+def normalise_midi_segments(midi_segments: list[MidiSegment], pitched_data: PitchedData,
+                            traits=()) -> list[MidiSegment]:
+    """The finished notes with their pitches normalised for the song's
+    profile (pitch_normalise.normalise_for_traits(): octave errors folded
+    back; with the trait harsh_vocals unsure notes also pulled towards the
+    melody). Timing and words stay; returns new segments."""
+    if not midi_segments:
+        return []
+    pitches = [int(librosa.note_to_midi(s.note)) for s in midi_segments]
+    sure = [sure_pitch_fraction(s.start, s.end, pitched_data) for s in midi_segments]
+    normalised = normalise_for_traits(pitches, sure, traits)
+    return [MidiSegment(librosa.midi_to_note(p), s.start, s.end, s.word)
+            for s, p in zip(midi_segments, normalised)]

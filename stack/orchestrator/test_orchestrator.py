@@ -225,6 +225,8 @@ check("ultrasinger_command passes --force_artist",
 check("ultrasinger_command passes --force_title",
       "--force_title" in cmd and
       cmd[cmd.index("--force_title") + 1] == "Die Allianz schlägt zurück")
+check("ultrasinger_command switches UltraSinger's key snapping off (measured: no gain)",
+      "--disable_quantize_to_key" in cmd)
 check("ultrasinger_command writes into NEW_SONGS_DIR, not OUTPUT_DIR root",
       "-o" in cmd and cmd[cmd.index("-o") + 1] == orch.NEW_SONGS_DIR)
 check("NEW_SONGS_DIR defaults to <OUTPUT_DIR>/new",
@@ -257,6 +259,17 @@ built_cmd_mbid = orch.JobRunner(fake_new_job_mbid).command()
 check("JobRunner.command() passes the job's musicbrainz_id through",
       "--musicbrainz_id" in built_cmd_mbid and
       built_cmd_mbid[built_cmd_mbid.index("--musicbrainz_id") + 1] == "abc-123-mbid")
+
+# the song's traits set UltraSinger's octave folding strength (--traits)
+cmd_traits = orch.ultrasinger_command(url, traits=["choir", "harsh_vocals"])
+check("ultrasinger_command passes the traits comma-joined",
+      "--traits" in cmd_traits and cmd_traits[cmd_traits.index("--traits") + 1] == "choir,harsh_vocals")
+check("ultrasinger_command omits --traits for a song without traits",
+      "--traits" not in orch.ultrasinger_command(url, traits=[]))
+built_cmd_traits = orch.JobRunner(dict(fake_new_job_mbid, traits=["harsh_vocals"])).command()
+check("JobRunner.command() passes the job's traits to UltraSinger",
+      "--traits" in built_cmd_traits
+      and built_cmd_traits[built_cmd_traits.index("--traits") + 1] == "harsh_vocals")
 
 # --------------------------------------------------------------------------
 # resource-budget config: WHISPER_MODEL/DEMUCS_MODEL/WHISPER_BATCH_SIZE fall
