@@ -116,12 +116,14 @@ Detach with `Ctrl-P Ctrl-Q` - **not** Ctrl-C, which stops the container.
 ```
 stack/output/
 ├── new/<Artist - Title>/     created songs (txt, audio, video, vocals, instrumental, cover, midi, lyrics.txt)
-├── repaired/<song folder>/   repaired songs (full copy + fixed txt)
+├── repaired/<repair>/<song folder>/
+│                             repaired songs (full copy + fixed txt), by the repair done:
+│                             gap/, sync/, recreated/, lyrics/, media/, cover/
 ├── failed/<new|repair>/      partial output of failed jobs
 └── report.md                 finishing report
 ```
 
-Copy the song folders from `output/new/` and `output/repaired/` into your
+Copy the song folders from `output/new/` and `output/repaired/<repair>/` into your
 UltraStar Deluxe song folder.
 
 ### Finishing report

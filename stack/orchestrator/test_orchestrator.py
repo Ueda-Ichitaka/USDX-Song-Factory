@@ -2958,6 +2958,195 @@ try:
 finally:
     shutil.rmtree(_scan_dir)
 
+# repaired songs are sorted into one folder per repair actually done:
+# gap/, sync/, recreated/, lyrics/, media/, cover/
+check("repaired_subfolder: the repair repair.py reports decides",
+      orch.repaired_subfolder({"mode": "gap"}, "gap") == "gap"
+      and orch.repaired_subfolder({"mode": "sync"}, "sync") == "sync"
+      and orch.repaired_subfolder({"mode": "sync"}, "recreated") == "recreated"
+      and orch.repaired_subfolder({"mode": "lyrics"}, "lyrics") == "lyrics")
+check("repaired_subfolder: a media/cover repair keeps its own folder "
+      "(the media repair runs repair.py in gap mode)",
+      orch.repaired_subfolder({"mode": "media"}, "gap") == "media"
+      and orch.repaired_subfolder({"mode": "cover"}, "cover") == "cover")
+check("repaired_subfolder: no reported result -> the job's mode",
+      orch.repaired_subfolder({"mode": "sync"}, None) == "sync")
+
+_saved_repaired = orch.REPAIRED_DIR
+orch.REPAIRED_DIR = tempfile.mkdtemp()
+try:
+    _flat = os.path.join(orch.REPAIRED_DIR, "Toto - Africa")
+    os.makedirs(_flat)
+    for _name, _text in (("Toto - Africa.txt", "new txt"), ("a.mp3", "new mp3")):
+        with open(os.path.join(_flat, _name), "w") as f:
+            f.write(_text)
+    # an older output of the same song in the category folder
+    _old = os.path.join(orch.REPAIRED_DIR, "gap", "Toto - Africa")
+    os.makedirs(_old)
+    for _name, _text in (("Toto - Africa.txt", "old txt"), ("cover.jpg", "old cover")):
+        with open(os.path.join(_old, _name), "w") as f:
+            f.write(_text)
+    _moved = orch.file_repaired_output(
+        {"kind": "repair", "mode": "gap"},
+        {"status": "done", "repair_mode_result": "gap",
+         "output_path": os.path.join(_flat, "Toto - Africa.txt")})
+    check(f"file_repaired_output: moved into the category folder (got {_moved})",
+          _moved == os.path.join(_old, "Toto - Africa.txt") and not os.path.exists(_flat))
+    check("file_repaired_output: merged - new files overwrite, other old files stay",
+          open(_moved).read() == "new txt"
+          and open(os.path.join(_old, "a.mp3")).read() == "new mp3"
+          and open(os.path.join(_old, "cover.jpg")).read() == "old cover")
+    _new_song = os.path.join(orch.NEW_SONGS_DIR, "X - Y", "X - Y.txt")
+    check("file_repaired_output: a new song is not moved",
+          orch.file_repaired_output({"kind": "new"}, {"status": "done", "output_path": _new_song})
+          == _new_song)
+    _failed = os.path.join(orch.FAILED_DIR, "repair", "A - B", "A - B.txt")
+    check("file_repaired_output: a failed repair is not moved",
+          orch.file_repaired_output({"kind": "repair", "mode": "gap"},
+                                    {"status": "failed", "repair_mode_result": None,
+                                     "output_path": _failed}) == _failed)
+    check("file_repaired_output: an output already in a category folder stays",
+          orch.file_repaired_output({"kind": "repair", "mode": "gap"},
+                                    {"status": "done", "repair_mode_result": "gap",
+                                     "output_path": _moved}) == _moved)
+finally:
+    shutil.rmtree(orch.REPAIRED_DIR)
+    orch.REPAIRED_DIR = _saved_repaired
+
+# cmd_run(): a finished repair is filed into its category folder and the
+# state records the new path
+_run_dir = tempfile.mkdtemp()
+_saved = (orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV, orch.REPAIRED_DIR,
+          orch.JobRunner, orch.finish_done_job, orch.stdin_listener)
+
+
+class _FakeRepairRunner:
+    def __init__(self, job, control=None):
+        self.job = job
+
+    def run(self):
+        song = os.path.join(orch.REPAIRED_DIR, self.job["label"])
+        os.makedirs(song, exist_ok=True)
+        with open(os.path.join(song, "Fix Me.txt"), "w") as f:
+            f.write("#TITLE:x\n")
+        return {"status": "done", "error": None, "duration_s": 1.0,
+                "output_path": os.path.join(song, "Fix Me.txt"),
+                "quarantined_output": None, "repair_mode_result": "recreated"}
+
+
+try:
+    os.makedirs(os.path.join(_run_dir, "input", "Fix Me"))
+    with open(os.path.join(_run_dir, "input", "Fix Me", "Fix Me.txt"), "w", encoding="utf-8") as f:
+        f.write("#TITLE:x\n#ARTIST:y\n#BPM:100\n: 0 4 0 la\nE\n")
+    orch.SONGS_FILE = os.path.join(_run_dir, "songs.csv")
+    orch.INPUT_DIR = os.path.join(_run_dir, "input")
+    orch.BROKEN_CSV = os.path.join(_run_dir, "input", "broken.csv")
+    orch.REPAIRED_DIR = os.path.join(_run_dir, "repaired")
+    orch.JobRunner = _FakeRepairRunner
+    orch.finish_done_job = lambda job, result: None
+    orch.stdin_listener = lambda *args: None
+    _run_state = orch.State()
+    orch.cmd_run(_run_state, control=orch.Control())
+    _want = os.path.join(_run_dir, "repaired", "recreated", "Fix Me", "Fix Me.txt")
+    _job = _run_state.data["jobs"]["repair|Fix Me"]
+    check(f"cmd_run: the repaired song is filed into its category folder (got {_job['output_path']})",
+          _job["output_path"] == _want and os.path.isfile(_want)
+          and not os.path.exists(os.path.join(_run_dir, "repaired", "Fix Me")))
+    shutil.rmtree(orch.REPAIRED_DIR)
+    try:
+        orch.cmd_repair_one(os.path.join(_run_dir, "input", "Fix Me"))
+    except SystemExit:
+        pass
+    check("cmd_repair_one: the repaired song is filed into its category folder too",
+          os.path.isfile(_want) and not os.path.exists(os.path.join(_run_dir, "repaired", "Fix Me")))
+finally:
+    (orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV, orch.REPAIRED_DIR,
+     orch.JobRunner, orch.finish_done_job, orch.stdin_listener) = _saved
+    shutil.rmtree(_run_dir)
+
+# duets: a repair folder whose song files are all duets fails at once,
+# without running repair.py
+_duet_dir = tempfile.mkdtemp()
+_saved_popen = orch.subprocess.Popen
+try:
+    os.makedirs(os.path.join(_duet_dir, "A - Duet"))
+    with open(os.path.join(_duet_dir, "A - Duet", "A - Duet [DUET].txt"), "w", encoding="utf-8") as f:
+        f.write("#TITLE:Duet\n#ARTIST:A\n#BPM:300\nP1\n: 0 4 0 la\nP2\n: 8 4 0 lu\nE\n")
+
+    def _no_popen(*args, **kwargs):
+        raise AssertionError("repair.py must not run for a duet")
+
+    orch.subprocess.Popen = _no_popen
+    _duet_job = {"id": "repair|A - Duet", "kind": "repair", "label": "A - Duet", "mode": "gap",
+                 "song_dir": os.path.join(_duet_dir, "A - Duet"), "attempts": 1}
+    _duet_result = orch.JobRunner(_duet_job, orch.Control()).run()
+    check(f"JobRunner: a folder with only duet song files fails at once (got {_duet_result})",
+          _duet_result["status"] == "failed" and _duet_result["error"] == "duets are not supported yet")
+    check("only_duets: only duet song files", orch.only_duets(os.path.join(_duet_dir, "A - Duet")))
+    with open(os.path.join(_duet_dir, "A - Duet", "A - Duet.txt"), "w", encoding="utf-8") as f:
+        f.write("#TITLE:Duet\n#ARTIST:A\n#BPM:300\n: 0 4 0 la\nE\n")
+    check("only_duets: a folder that also has a solo song file is repaired",
+          orch.only_duets(os.path.join(_duet_dir, "A - Duet")) is False)
+finally:
+    orch.subprocess.Popen = _saved_popen
+    shutil.rmtree(_duet_dir)
+
+# a repair that changed nothing (repair.py: REPAIR_UNCHANGED, no song file
+# written) is marked for review with the reason; one changed song file in
+# the folder makes the job done
+_unch_job = {"id": "repair|Unchanged", "kind": "repair", "label": "Unchanged", "mode": "gap",
+             "song_dir": os.path.join(TMP_DATA, "no-such-folder"), "attempts": 1}
+orch.ULTRASINGER_CWD = os.getcwd()
+_unch_runner = orch.JobRunner(_unch_job, orch.Control())
+_unch_runner.command = lambda: [sys.executable, "-c", "print('REPAIR_UNCHANGED reason=gap check unsure "
+                                "(the words disagree, spread 3.17 s) - #GAP 25660 ms kept')"]
+_unch = _unch_runner.run()
+check(f"JobRunner: nothing changed -> needs review with the reason (got {_unch})",
+      _unch["status"] == "needs_review" and _unch["output_path"] is None
+      and _unch["error"] == "nothing changed: gap check unsure (the words disagree, spread 3.17 s) - #GAP 25660 ms kept")
+_unch_runner = orch.JobRunner(dict(_unch_job), orch.Control())
+_unch_runner.command = lambda: [sys.executable, "-c", "print('REPAIR_UNCHANGED reason=gap check unsure'); "
+                                "print('REPAIR_DONE output=/o/A - B/b.txt gap_old_ms=1 gap_new_ms=2 mode=gap')"]
+_unch = _unch_runner.run()
+orch.ULTRASINGER_CWD = orig_cwd
+check(f"JobRunner: one song file changed -> done (got {_unch})",
+      _unch["status"] == "done" and _unch["output_path"] == "/o/A - B/b.txt")
+_review_report = orch.render_report({"jobs": {"repair|Unchanged": {
+    "id": "repair|Unchanged", "kind": "repair", "label": "Unchanged", "status": "needs_review",
+    "category": "gap", "description": "lyrics 5.3 s too early",
+    "error": "nothing changed: gap check unsure (spread 3.17 s)"}}})
+check("render_report: a needs-review repair shows the reported defect and the reason",
+      "| Unchanged | gap | lyrics 5.3 s too early | nothing changed: gap check unsure (spread 3.17 s) |"
+      in _review_report)
+
+# #VIDEOGAP: every song file of a finished repair gets the measured value
+# when video_gap.new_videogap() says so
+_vg_dir = tempfile.mkdtemp()
+try:
+    for _name, _tags in (("A.txt", "#VIDEO:a.mp4\n#MP3:a.mp3\n#VIDEOGAP:15\n"),
+                         ("B.txt", "#VIDEO:a.mp4\n#MP3:a.mp3\n"),
+                         ("C.txt", "#MP3:a.mp3\n")):
+        with open(os.path.join(_vg_dir, _name), "w", encoding="utf-8") as f:
+            f.write(f"#TITLE:x\n#ARTIST:y\n{_tags}#BPM:300\n: 0 4 0 la\nE\n")
+    for _media in ("a.mp4", "a.mp3"):
+        open(os.path.join(_vg_dir, _media), "w").close()
+    _measured = []
+
+    def _fake_measure(audio_path, video_path):
+        _measured.append((os.path.basename(audio_path), os.path.basename(video_path)))
+        return {"videogap_s": 0.0, "score": 0.99}
+
+    _changed = orch.apply_video_gaps(os.path.join(_vg_dir, "A.txt"), measure=_fake_measure)
+    _a = open(os.path.join(_vg_dir, "A.txt"), encoding="utf-8").read()
+    _b = open(os.path.join(_vg_dir, "B.txt"), encoding="utf-8").read()
+    check(f"apply_video_gaps: a wrong #VIDEOGAP is replaced, a matching song file is left alone (got {_changed})",
+          "#VIDEOGAP:0\n" in _a and "#VIDEOGAP:15" not in _a and "VIDEOGAP" not in _b
+          and _changed == {"A.txt": "0"})
+    check(f"apply_video_gaps: media shared by song files are measured once, none without #VIDEO (got {_measured})",
+          _measured == [("a.mp3", "a.mp4")])
+finally:
+    shutil.rmtree(_vg_dir)
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")

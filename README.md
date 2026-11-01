@@ -137,10 +137,48 @@ Adding songs later: append rows to `input/song-requests.csv` and start again -
 finished songs are skipped. Every command and option:
 [stack/docs/orchestrator-manual.md](stack/docs/orchestrator-manual.md).
 
+## Library utilities
+
+`utilities/` has tools that find broken songs in an existing UltraStar
+library and hand them to the stack for repair. They run from the repository
+root (not from `stack/`); the library is only read, never changed.
+
+| Tool | What it does |
+|---|---|
+| `run_library_check.sh` | scans a library for songs with a wrong `#GAP` or drifting timing; writes a report |
+| `import_broken_songs.py` | copies the songs the scan found into `stack/input/` and adds their `broken.csv` rows |
+| `fill_lyrics_links.py` | fills empty `lyrics_url` cells of `broken.csv` (lrclib.net, Genius) |
+| `copy_reported_songs.py` | copies the songs of a karaoke-dashboard `broken.csv` export into `stack/input/` |
+
+```bash
+# 1. Scan the library (runs in the stack's container, takes many hours)
+utilities/run_library_check.sh /path/to/library    # report: "library analysis/library-check.txt"
+docker logs -f library-check                       # follow it; `docker stop library-check` stops, the same command resumes
+
+# 2. Hand the songs with a wrong #GAP (gap) and/or drifting timing (drift) to the stack
+python3 utilities/import_broken_songs.py --library /path/to/library --categories gap          # dry run
+python3 utilities/import_broken_songs.py --library /path/to/library --categories gap --apply
+
+# 3. Optional: look up lyrics links again for rows that still have none
+python3 utilities/fill_lyrics_links.py --apply
+
+# Songs reported in the dashboard instead: copy their folders from the library
+python3 utilities/copy_reported_songs.py --library /path/to/library --csv ~/Downloads/broken.csv --apply
+
+# Then repair them (from stack/)
+docker compose up -d   # or only the repairs: docker compose run -d ultrasinger python /app/orchestrator/orchestrator.py run --only repairs
+```
+
+Without `--apply` the Python tools only show what they would do. Each
+rewrite of `broken.csv` keeps a backup `broken.csv.bak-<time>` next to it.
+Options, settings, verdicts and the tests:
+[utilities/README.md](utilities/README.md).
+
 ## Documentation
 
 | Topic | File |
 |---|---|
+| Library utilities: scan a library, import broken songs, lyrics links | [utilities/README.md](utilities/README.md) |
 | Running the stack: commands, progress view, report, output | [stack/docs/running.md](stack/docs/running.md) |
 | The song list: format, optional columns, choosing which jobs run | [stack/docs/new-songs.md](stack/docs/new-songs.md) |
 | Repairing existing songs, `broken.csv`, trusted lyrics | [stack/docs/repairs.md](stack/docs/repairs.md) |

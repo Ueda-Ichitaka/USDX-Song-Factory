@@ -58,7 +58,14 @@ prepare_usdb_job()/find_usdb_match()/usdb_lookup.py/usdb_eu_lookup.py.
 A repair job whose input folder has a lyrics.txt runs in "lyrics" mode
 instead (see repair.py): force-aligns that trusted text, replacing the
 existing lyrics rather than just re-timing them. Every repaired song gets
-the format version of new songs (song_header.py).
+the format version of new songs (song_header.py) and is filed into
+output/repaired/<repair>/ by the repair actually done (gap, sync,
+recreated, lyrics, media, cover) - see file_repaired_output(). A repair
+folder whose song files are all duets fails at once ("duets are not
+supported yet", only_duets()); a repaired song's #VIDEOGAP is measured
+against its audio and corrected (apply_video_gaps(), video_gap.py). A
+repair that changed none of the folder's song files (repair.py's
+REPAIR_UNCHANGED) is marked needs_review with the reason.
 
 While a run is active you can attach to the container
 (`docker compose attach ultrasinger`) and use these interactive commands:
@@ -472,6 +479,8 @@ REPAIR_DONE_RE = re.compile(r"REPAIR_DONE\s+(.*)")
 # names always do) - value runs until the NEXT " key=" token or line end,
 # not just to the next whitespace (a plain line.split() truncates paths)
 KV_RE = re.compile(r"(\w+)=(.*?)(?=\s+\w+=|$)")
+# repair.py's line for a song file it left unchanged (nothing written)
+REPAIR_UNCHANGED_RE = re.compile(r"REPAIR_UNCHANGED\s+reason=(.*)")
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -686,6 +695,61 @@ def scan_repair_jobs(input_dir: str) -> list:
 
 
 TAG_VALUE_RE = re.compile(r"^#([A-Za-z0-9_]+):(.*)$")
+
+
+DUETS_UNSUPPORTED = "duets are not supported yet"
+
+
+def only_duets(folder: str) -> bool:
+    """True when every song file of a repair folder is a duet (P1/P2
+    voices, song_header.is_duet()) - the stack does not repair duets yet.
+    A folder that cannot be read is no duet folder (the repair reports it)."""
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return False
+    found = False
+    for entry in names:
+        path = os.path.join(folder, entry)
+        if entry.lower().endswith(".txt") and looks_like_ultrastar_txt(path):
+            found = True
+            with open(path, encoding="utf-8", errors="replace") as f:
+                if not song_header.is_duet(f.read()):
+                    return False
+    return found
+
+
+def apply_video_gaps(output_path: str, measure=None) -> dict:
+    """Measure the #VIDEOGAP of every song file in the folder of
+    `output_path` that names a video and an audio file there
+    (video_gap.measure(), once per pair of files) and write it where
+    video_gap.new_videogap() says so. Returns {song file name: new value}."""
+    import video_gap
+    measure = measure or video_gap.measure
+    folder = os.path.dirname(output_path)
+    measured, changed = {}, {}
+    for entry in sorted(os.listdir(folder)):
+        path = os.path.join(folder, entry)
+        if not entry.lower().endswith(".txt") or not looks_like_ultrastar_txt(path):
+            continue
+        tags = read_ultrastar_tags(path)
+        video, audio = tags.get("VIDEO"), tags.get("AUDIO") or tags.get("MP3")
+        if not video or not audio:
+            continue
+        pair = (os.path.join(folder, audio), os.path.join(folder, video))
+        if not (os.path.isfile(pair[0]) and os.path.isfile(pair[1])):
+            continue
+        if pair not in measured:
+            measured[pair] = measure(*pair)
+        value = video_gap.new_videogap(measured[pair], tags.get("VIDEOGAP"))
+        if value is None:
+            continue
+        with open(path, encoding="utf-8", errors="replace", newline="") as f:
+            text = f.read()
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(song_header.set_tag(text, "VIDEOGAP", value))
+        changed[entry] = value
+    return changed
 
 
 def read_ultrastar_tags(txt_path: str) -> dict:
@@ -1291,17 +1355,19 @@ def render_report(state_data, active_ids=None) -> str:
         lines.append("")
         lines.append(f"## Needs review ({len(needs_review)})")
         lines.append("")
-        lines.append("_Category is 'other', blank, or unrecognized (or the "
-                     "reported defect doesn't reproduce) - no automated repair "
-                     "was attempted. Fix the category/description in broken.csv "
-                     "(or resolve the underlying folder), then `reset` the job._")
+        lines.append("_No repaired song was written: the category is 'other', "
+                     "blank or unrecognized, the reported defect doesn't "
+                     "reproduce, or the repair found nothing it could change "
+                     "(Reason). Fix the category/description in broken.csv or "
+                     "the song folder, then `reset` the job._")
         lines.append("")
-        lines.append("| Song | Category | Description |")
-        lines.append("|---|---|---|")
+        lines.append("| Song | Category | Description | Reason |")
+        lines.append("|---|---|---|---|")
         for j in sorted(needs_review, key=by_label):
             category = j.get("category") or "-"
-            desc = (j.get("description") or j.get("error") or "-").replace("|", "\\|")
-            lines.append(f"| {j['label']} | {category} | {desc} |")
+            desc = (j.get("description") or "-").replace("|", "\\|")
+            reason = (j.get("error") or "-").replace("|", "\\|")
+            lines.append(f"| {j['label']} | {category} | {desc} | {reason} |")
 
     to_review = [j for j in new_done if (j.get("lyrics_review") or {}).get("kind") == "review"]
     not_checkable = [j for j in new_done
@@ -2051,6 +2117,40 @@ def track_quarantined(job: dict, result: dict) -> None:
             paths.append(path)
 
 
+def repaired_subfolder(job: dict, repair_mode_result) -> str:
+    """The folder under REPAIRED_DIR a repaired song goes to: the repair
+    actually done - gap, sync, recreated (sync re-created the song) or
+    lyrics as repair.py reports it; media and cover by the job's mode
+    (the media repair runs repair.py in gap mode after restoring the file)."""
+    mode = job.get("mode") or REPAIR_MODE
+    if mode in ("media", "cover"):
+        return mode
+    return repair_mode_result or mode
+
+
+def file_repaired_output(job: dict, result: dict):
+    """Move a finished repair's song folder from REPAIRED_DIR into its
+    category folder (repaired_subfolder()) and return the new path of the
+    song file. An older output of the song there is merged: files of the
+    same name are overwritten, the others stay. Anything else (new songs,
+    failed jobs, an output already in a category folder) is returned as is."""
+    path = result.get("output_path")
+    if job.get("kind") != "repair" or result.get("status") != "done" or not path:
+        return path
+    song_dir = os.path.dirname(path)
+    if os.path.realpath(os.path.dirname(song_dir)) != os.path.realpath(REPAIRED_DIR):
+        return path
+    target = os.path.join(REPAIRED_DIR, repaired_subfolder(job, result.get("repair_mode_result")),
+                          os.path.basename(song_dir))
+    for root, _dirs, files in os.walk(song_dir):
+        dest = os.path.join(target, os.path.relpath(root, song_dir))
+        os.makedirs(dest, exist_ok=True)
+        for name in files:
+            os.replace(os.path.join(root, name), os.path.join(dest, name))
+    shutil.rmtree(song_dir)
+    return os.path.join(target, os.path.basename(path))
+
+
 def remove_quarantined_outputs(job: dict) -> list:
     """Delete the folders the job's failed attempts left in FAILED_DIR (for
     a job that has succeeded) and forget them; returns the deleted paths.
@@ -2255,6 +2355,8 @@ class JobRunner:
         job is complete here: {"status": "done", "output_path": ...}."""
         if self.job["kind"] != "repair":
             return None
+        if only_duets(self.job["song_dir"]):
+            return {"status": "failed", "error": DUETS_UNSUPPORTED}
         mode = self.job.get("mode")
         if mode == "lyrics" and not self.job.get("lyrics_file"):
             return self._prepare_lyrics_repair()
@@ -2397,6 +2499,7 @@ class JobRunner:
             repair_mode_result = None
             lyrics_source_result = None
             gap_check_result = None
+            unchanged, changed = [], False
             try:
                 with open(self.log_path, encoding="utf-8", errors="replace") as f:
                     log_text = f.read()
@@ -2410,6 +2513,10 @@ class JobRunner:
                         if m:
                             output_path = m.group(1).strip()
                     kv = parse_repair_done_line(line)
+                    changed = changed or bool(kv)
+                    m = REPAIR_UNCHANGED_RE.search(line)
+                    if m:
+                        unchanged.append(m.group(1).strip())
                     if "output" in kv:
                         output_path = kv["output"]
                     if "mode" in kv:
@@ -2419,6 +2526,11 @@ class JobRunner:
                 gap_check_result = gap_check_from_log(log_text)
             except OSError:
                 pass
+            # every song file of the folder left unchanged: nothing was
+            # repaired, a human has to look
+            if status == "done" and unchanged and not changed:
+                status = "needs_review"
+                error = "nothing changed: " + "; ".join(unchanged)
 
         # a failed job must never leave partial/broken output in the live
         # tree - quarantine anything the job created before it died
@@ -2525,7 +2637,8 @@ def finish_done_job(job: dict, result: dict) -> None:
     new song's lyrics are replaced by a trusted online source when one is
     found (usdb songs keep theirs, see finalize_new_job_lyrics()) BEFORE
     romanization runs on whatever text ends up final; then a cover_url from
-    the song list / broken.csv replaces the cover. A new song with online
+    the song list / broken.csv replaces the cover, and a repaired song's
+    #VIDEOGAP is measured (apply_video_gaps()). A new song with online
     lyrics also gets its lyrics review (lyrics_review()). A "cover" repair
     is complete as it is (prepare_cover_repair()) and gets none of this."""
     output_path = result["output_path"]
@@ -2553,6 +2666,9 @@ def finish_done_job(job: dict, result: dict) -> None:
             out(f"  .. cover replaced from {cover_url}")
         else:
             out(f"  !! cover_url not used (not reachable or not an image): {cover_url}")
+    if job["kind"] == "repair" and output_path and os.path.isfile(output_path):
+        for name, value in apply_video_gaps(output_path).items():
+            out(f"  .. #VIDEOGAP of {name} set to {value} (measured against the audio)")
 
 
 def cmd_run(state, selection=None, control=None):
@@ -2619,6 +2735,7 @@ def cmd_run(state, selection=None, control=None):
 
         runner = JobRunner(job, control)
         result = runner.run()
+        result["output_path"] = file_repaired_output(job, result)
         job["status"] = result["status"]
         job["error"] = result["error"]
         job["output_path"] = result["output_path"]
@@ -2723,6 +2840,9 @@ def cmd_repair_one(folder):
             "label": os.path.basename(folder), "song_dir": folder, "attempts": 1}
     runner = JobRunner(fake)
     result = runner.run()
+    result["output_path"] = file_repaired_output(fake, result)
+    if result["output_path"]:
+        out(f"output: {result['output_path']}")
     out(f"result: {result['status']} ({result['error'] or 'ok'})")
     sys.exit(0 if result["status"] == "done" else 1)
 

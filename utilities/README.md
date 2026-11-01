@@ -3,17 +3,32 @@
 Tools to find songs with a wrong `#GAP` or drifting timing in an UltraStar
 library and hand them to the stack for repair. Three steps, each its own
 tool - run them one after another or only the ones you need - plus a tool
-that copies the songs of a dashboard export into the stack input.
+that copies the songs of a dashboard export into the stack input. The
+repair itself is a normal stack run; step 4 covers getting the repaired
+songs back into the library.
+
+All commands below run from the repository root (not from `stack/`).
 
 | Step | Tool | Runs on | Changes |
 |---|---|---|---|
 | 1. Scan | `run_library_check.sh` (starts `library_check.py`) | the stack's container | nothing in the library; writes results + report |
 | 2. Import | `import_broken_songs.py` | host | copies song folders into the stack input, adds `broken.csv` rows |
 | 3. Lyrics links | `fill_lyrics_links.py` | host | fills empty `lyrics_url` cells of `broken.csv` |
+| 4. Repair, copy back | the stack, a file manager | stack container, host | writes `stack/output/repaired/<repair>/`; you copy the songs into the library |
 | Dashboard export | `copy_reported_songs.py` | host | copies the reported song folders into the stack input, merges the rows into `broken.csv` |
 
-Requirements: the stack's image (`ultrasinger-rocm`, see
-`stack/docs/development.md`), Docker, Python 3 with `requests`, `ffprobe`.
+`songfile.py` is no tool of its own: the other tools use it to read song
+file headers (the same rules as USDX) and to turn `#LANGUAGE`/`#GENRE` into
+dashboard codes.
+
+Requirements:
+
+- the scan: the stack's ROCm image (`ultrasinger-rocm`, built as described
+  in `stack/docs/development.md`) and an AMD GPU - the check runs the vocal
+  separation and the aligner on the GPU (the service maps `/dev/kfd` and
+  `/dev/dri`); Docker with the Compose plugin
+- the host tools: Python 3 with `requests`, and `ffprobe` (ffmpeg) for the
+  audio length checks
 
 ## 1. Scan a library
 
@@ -45,6 +60,10 @@ stack generated, audio longer than 15 minutes.
   is redone, and the report only lists the library's current song files). The script refuses to start
   while a check is running.
 - Follow the progress: `docker logs -f library-check`.
+- Resources: the container is capped (`MEMORY`, `CPUS` below) and waits
+  before each song until enough RAM is free and the load is low enough
+  (`MIN_AVAIL_GB`, `MAX_LOAD`). Do not run it at the same time as a stack
+  batch: both use the GPU and the CPU-heavy aligner.
 
 Settings (environment variables set when calling the script - there is
 no settings file):
@@ -61,6 +80,7 @@ no settings file):
 | `MAX_AUDIO_MIN` | `15` | leave out songs with longer audio (live sets, medleys need more memory than the cap) |
 | `RETRY_ERRORS` | unset | `1`: check songs marked as errors again (each once per run; a song that fails again stays marked) |
 | `CHECK_NAME` | `library-check` | container name (for a second check at the same time) |
+| `ONLY` | unset | only songs whose name contains this text - for tests of `library_check.py` in the container; `run_library_check.sh` does not pass it on |
 
 Example: `MEMORY=8g CPUS=6 utilities/run_library_check.sh /music/ultrastar`
 
@@ -73,6 +93,20 @@ Verdicts in the report:
   or singing the aligner cannot follow. Listen before changing anything.
 - **damaged audio** - the audio decodes to less than half of its stated
   length (a zero-filled or broken file); replace the file.
+- **good** - the lyrics sit on the singing; nothing to do.
+
+A song is named by its folder; when the song file's name differs from the
+folder, it follows in brackets (`ABBA - Chiquitita [Chiquitita-402]`). The
+left-out list at the end of the report gives every left-out song with its
+reason - a song whose check crashed is listed there as `error: ...`
+(`RETRY_ERRORS=1` checks those again).
+
+`results.jsonl` has one JSON line per checked song file (the newest line
+per name counts). A checked song has `name`, `lang`, `lines`, `gap_ms`,
+`bpm`, `offset_s` (song file minus singing, negative = the lyrics come too
+late), `drift_s`, `agree`, `gap_fix_ms`, `bpm_fix`, `gap_fix_with_bpm_ms`
+and `verdict` (plus `note` when there is one); a left-out song has `name`
+and `skip` (the reason). Step 2 reads this file.
 
 ## 2. Import the songs into the stack
 
@@ -87,10 +121,14 @@ For every song with the verdict `#GAP off` (category `gap`) or `drifts`
 - its folder is copied from the library into `stack/input/` (a folder
   already there is left as it is);
 - a `broken.csv` row is added in the karaoke-dashboard's export format:
-  band and song name from the song file (the stack matches rows to folders
-  by them), the measured values and the fix as description, language and
-  genre as dashboard codes, trait `none` (set traits in the dashboard),
-  no `cover_url` (library songs have their cover). A song that already has
+  band and song name from the song file's `#ARTIST`/`#TITLE` (the stack
+  matches rows to folders by them), the measured values and the fix as
+  description (e.g. `library check: lyrics 9.76 s too late; fix #GAP 30270
+  -> 20513`), trait `none` (set traits in the dashboard), no `cover_url`
+  (library songs have their cover). Language: the dashboard code of the
+  first `#LANGUAGE` entry; empty for romanized lyrics ("Japanese
+  (romanized)") and unknown values, so the stack detects it. Genre: `#GENRE`
+  when it is exactly a dashboard genre code, else `default`. A song that already has
   a row gets no second one; an older `broken.csv` is rewritten in the
   current format (a backup `broken.csv.bak-<time>` is kept);
 - then step 3 runs for the rows without a lyrics link (`--no-lyrics` skips it).
@@ -120,10 +158,52 @@ Looks up a link for every `broken.csv` row with an empty `lyrics_url`
   environment variable `GENIUS_API_KEY`, else the same key in the stack's
   own `stack/.env` (the key its lyrics search uses, see
   `stack/.env.example`). The utilities have no settings file of their own.
+- **lrclib.net free-text search** when both find nothing (the artist is
+  often named differently there, e.g. "Der König der Löwen" for "Disney's
+  Der König der Löwen"): by artist and title, then by the title alone. A
+  hit counts when its title matches, its length is within 4 s of the song's
+  own audio and a word of the band (not "the", "and", "feat") is in the
+  hit's artist or title - so "Queen - Jealousy" is not taken for "Marina
+  And The Diamonds - Jealousy". Without the song's audio nothing is taken.
 
 Options: `--csv FILE` (default `stack/input/broken.csv`), `--input DIR`
 (the stack input folder, default: next to the csv). The requests identify
-the stack (User-Agent) and wait 1 s between songs.
+the stack (User-Agent) and wait 1 s between songs; when lrclib.net is
+overloaded (429/503) a request is tried again after 5, 10 and 20 s.
+
+## 4. Repair and copy back into the library
+
+Start the stack on the imported songs (from `stack/`, see
+`stack/docs/running.md`); to run only the repairs:
+
+```sh
+cd stack
+docker compose --profile rocm run -d --name repairs-run ultrasinger-rocm \
+  python /app/orchestrator/orchestrator.py run --only repairs
+docker exec -it repairs-run progress -w      # live progress
+```
+
+The repaired songs land in `stack/output/repaired/<repair>/<song folder>/`,
+one folder per repair actually done: `gap/`, `sync/`, `recreated/` (a sync
+repair that had to re-create the song from the audio), `lyrics/`, `media/`,
+`cover/`. Each is a full copy of the song folder with the fixed song file.
+
+Copying them into the library (the library is not written by any tool
+here): the media files keep the modification time of the library's
+files (the copies into the input and the repair preserve it), the fixed
+song file is newer. Folders that came into the input another way may have
+newer media times; those files are copied again, which does no harm. In Dolphin (KDE), drop the song
+folders onto the library, choose "Write Into" for the folders, tick "Apply
+to All" and pick "Overwrite older files" from the Overwrite button's menu:
+only files newer than the library's are copied, the unchanged audio and
+video are skipped. Files the library does not have are copied anyway:
+
+- `language.txt` in every repaired folder (the language the repair used;
+  USDX ignores it);
+- in `recreated/`: `[Vocals].mp3`, `[Instrumental].mp3`, a `.mid`, and in
+  some folders a second song file next to the old one - USDX would list
+  that song twice, so check these folders by hand;
+- a folder whose name is not in the library is added as a new song.
 
 ## Songs reported in the dashboard
 
@@ -141,7 +221,9 @@ with or without the header line; `--csv` can be given more than once):
   case, is left as it is); rows without a library folder are listed;
 - the row is merged into `stack/input/broken.csv` (dashboard format, a
   backup `broken.csv.bak-<time>` is kept); a song that already has a row
-  gets no second one.
+  gets no second one. Rows without a library folder are merged too (the
+  stack ignores a row without a folder). Empty genre and trait cells become
+  `default` and `none`.
 
 Option: `--input DIR` (default `stack/input`).
 

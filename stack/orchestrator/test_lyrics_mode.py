@@ -1379,13 +1379,19 @@ check("repair_txt_with_lyrics: an anchors.txt line that is not in the lyrics mea
       "no anchors (the song is still aligned)",
       _wiring.get("anchors") is None and _wiring["align"][3] == 16000 * 3)
 
+class _SoloTxt:
+    """A stand-in for the song file main() repairs (find_ultrastar_txts() mocked)."""
+    path = "TXT"
+    duet = False
+
+
 # main(): --recording-seconds reaches the lyrics rebuild
 _main_calls = {}
 _saved_main = {n: getattr(repair, n) for n in (
     "find_ultrastar_txts", "load_lyrics_file", "repair_txt_with_lyrics")}
 _saved_argv = sys.argv
 try:
-    repair.find_ultrastar_txts = lambda song_dir: ["TXT"]
+    repair.find_ultrastar_txts = lambda song_dir: [_SoloTxt()]
     repair.load_lyrics_file = lambda path: ("file", [{"text": "a b", "start": None}])
     repair.repair_txt_with_lyrics = lambda *a, **k: _main_calls.update(k) or {
         "output": "/o/x.txt", "aligned_words": 2, "total_words": 2}
@@ -1413,6 +1419,7 @@ with open(_fill_txt_path, "w", encoding="utf-8") as _f:
 
 class _PathTxt:
     path = _fill_txt_path
+    duet = False
 
 
 for _flag in (True, False):

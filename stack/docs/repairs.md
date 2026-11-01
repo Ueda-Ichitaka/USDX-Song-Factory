@@ -16,7 +16,12 @@ All commands on this page are run from inside `stack/`.
    ```
 
 2. Start the stack (`docker compose up -d`). Every folder in `input/` that
-   contains an UltraStar txt is repaired into `output/repaired/<song folder>/`.
+   contains an UltraStar txt is repaired into
+   `output/repaired/<repair>/<song folder>/`, one folder per repair actually
+   done: `gap/`, `sync/`, `recreated/` (a sync repair that had to re-create
+   the song from the audio), `lyrics/`, `media/`, `cover/`. A song repaired
+   again is merged into its older output there (files of the same name are
+   overwritten).
 3. Your originals in `input/` are never modified.
 4. Every repaired song file gets the format version new songs have
    (`#VERSION:1.2.0`, first line) unless it already has one. `#AUDIO` repeats
@@ -25,6 +30,29 @@ All commands on this page are run from inside `stack/`.
    `#RELATIVE:No`, which USDB downloads contain. A song using what version 1
    no longer has (`#RELATIVE:yes`, another `#ENCODING`, `#DUETSINGERP1/P2`,
    `#NOTESGAP`) is written without `#VERSION`, and the log says why.
+5. `#START` (where USDX begins playback, in seconds) and `#END` (where it
+   stops, in ms) move by the same amount as `#GAP`. `#START` is removed
+   when it would end up below 0 or later than 3 s before the first note -
+   USDX would play silence until `#START` while the lyrics already run -
+   and `#END` when it would stop before the last note.
+6. `#VIDEOGAP`: the video's own soundtrack is compared with the audio file
+   (cross-correlation of their onsets). When both are the same recording
+   (score at least 0.4) and the measured offset differs from the song's
+   `#VIDEOGAP` by more than 0.1 s, the measured value is written and the
+   log says so. Another recording (a live video, another edit) scores
+   lower; its `#VIDEOGAP` stays as it is. `#GAP` does not move the video:
+   USDX plays the video at audio time + `#VIDEOGAP`.
+7. Nothing to change: when the gap check is unsure (the words of the first
+   lines disagree), or a sync repair finds the whole song fitting but no
+   correction needed, no song file is written; the job is marked "needs
+   review" and the report gives the reason. A sync repair whose lines
+   cannot be aligned one by one gets the whole-song `#GAP`/`#BPM`
+   correction when the whole song fits (at least 80% of the lines); it is
+   re-created from the audio only when the whole song does not fit either.
+8. Duet song files (P1/P2 voices) are not repaired: "duets are not
+   supported yet". A folder with only duet song files fails at once; a
+   solo song file in the same folder is repaired, the duet file is left out
+   of the output (the log names it).
 
 ## Repair modes
 
@@ -92,7 +120,7 @@ The optional `genre` and `trait` columns work as in the song list (see
 | `async` | `sync` mode - full re-alignment, original lyrics kept. |
 | `lyrics` | Force-aligns trusted lyrics, same as a manual `lyrics.txt` (below). A `lyrics_url` column (genius.com, an lrclib.net track page, a direct `.txt`/`.lrc` link or a lyrics file under `stack/input/`) is tried first if given, otherwise an online lookup runs, as for new songs. Nothing found -> the job fails (it never falls back to a blind `sync`, which would only re-time the known-wrong lyrics). |
 | `video` / `audio` | Restores the missing file: an unambiguous matching file already in the folder is linked as-is; otherwise, if the folder has a `*.usdb` sync-meta file (written by `usdb_syncer` for songs pulled from USDB), the original YouTube source is re-downloaded. Either way a `gap` re-check runs afterwards. No source found, or two or more ambiguous candidates -> the job fails with a message naming what it found. |
-| `cover` | Replaces only the cover image with the one at `cover_url`; the song is copied to `output/repaired/` otherwise unchanged (no alignment, no romanisation). `cover_url` is mandatory here: without it the job is marked `needs_review`; a link that is not reachable or not an image fails the job. |
+| `cover` | Replaces only the cover image with the one at `cover_url`; the song is copied to `output/repaired/cover/` otherwise unchanged (no alignment, no romanisation). `cover_url` is mandatory here: without it the job is marked `needs_review`; a link that is not reachable or not an image fails the job. |
 | `other`, blank, or unknown | **Not run automatically.** Marked `needs_review` in the progress view and report instead - fix the category (or the folder) and `reset` to pick it up. |
 
 A folder with **no matching row** keeps the default behaviour (`REPAIR_MODE`,
@@ -128,8 +156,8 @@ re-transcription). Every song created or repaired this way also gets its final
 
 **Lyrics/audio mismatch fallback:** if the txt lyrics do not match the audio
 at all (wrong song version, txt much shorter or longer than the audio -
-detected via alignment quality), `sync` mode re-creates the song from its
-audio with UltraSinger. The log marks this with
+detected via alignment quality, and the whole-song fit does not agree
+either), `sync` mode re-creates the song from its audio with UltraSinger. The log marks this with
 `Re-creating song from audio with UltraSinger`. Disable with
 `REPAIR_FALLBACK=0` (the job then fails instead).
 
@@ -259,7 +287,7 @@ Set them in `stack/.env` (see [configuration.md](configuration.md)).
 ## Limits
 
 * `gap` and `sync` mode never change the lyrics - use `lyrics` mode for that.
-* `#VIDEOGAP` is not adjusted - if video and audio have different offsets,
-  fix it manually after the repair.
-* Duet songs (P1/P2 in one txt) are aligned as one continuous singer - line
-  breaks are preserved, but interleaved duet timing is not modelled.
+* `#VIDEOGAP` is only corrected when the video's soundtrack is the same
+  recording as the audio file (see "How it works"); for another recording
+  set it by hand.
+* Duet songs (P1/P2) are not repaired yet.

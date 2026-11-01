@@ -60,10 +60,17 @@ The repaired song folder (a full copy incl. audio/video/cover) is written to
 <out>/<song folder name>/. The original input folder is never modified.
 Every song file written gets the format version new songs have
 (song_header.py); one using headers that version lacks stays unversioned
-and the log says why.
+and the log says why. #START and #END move with a #GAP shift
+(song_header.shift_play_range()). Duet song files (P1/P2) are not
+repaired: "duets are not supported yet" (repair_targets()).
 
 For every processed txt a final line `REPAIR_DONE ...` is printed for the
-orchestrator to parse.
+orchestrator to parse - or `REPAIR_UNCHANGED reason=...` when there was
+nothing to change (gap check unsure; the whole song fits but its lines
+could not be aligned and no correction is needed): no song file is written
+then. A sync repair whose lines cannot be aligned is re-created from the
+audio only when the whole-song fit does not agree either; otherwise it
+gets the whole-song #GAP/#BPM correction.
 """
 
 import argparse
@@ -102,7 +109,7 @@ from modules.console_colors import (  # noqa: E402
     green_highlighted,
     red_highlighted,
 )
-from song_header import FORMAT_VERSION, versioned_header  # noqa: E402
+from song_header import FORMAT_VERSION, is_duet, shift_play_range, versioned_header  # noqa: E402
 
 NOTE_LINE_TYPES = (":", "F", "R", "G", "*")
 # type beat dur pitch [1 separator space] raw-word-field (verbatim)
@@ -276,6 +283,8 @@ class Txt:
         self.lines = []        # list of dicts describing every original line
         self.notes = []        # flat list of Note (in file order)
         self.gap_ms = 0.0      # a missing #GAP tag means gap 0
+        self.gap_ms_file = 0.0  # #GAP as written in the file
+        self.duet = False      # P1/P2 voices (song_header.is_duet())
         self.bpm_tag = None
         self.bpm_tag_file = None  # #BPM as written in the file
         self.audio_ref = None
@@ -287,12 +296,13 @@ class Txt:
         with open(self.path, encoding="utf-8", errors="replace") as f:
             raw = f.read().splitlines()
         self.lines = [{"raw": l} for l in raw]
+        self.duet = is_duet("\n".join(raw))
 
         for line in self.lines:
             stripped = line["raw"].strip()
             if stripped.startswith("#"):
                 if stripped.startswith("#GAP:"):
-                    self.gap_ms = _to_float(stripped[5:])
+                    self.gap_ms = self.gap_ms_file = _to_float(stripped[5:])
                 elif stripped.startswith("#BPM:"):
                     self.bpm_tag = self.bpm_tag_file = _to_float(stripped[5:])
                 elif stripped.startswith("#MP3:"):
@@ -354,6 +364,22 @@ class Txt:
         if current:
             result.append({"notes": current, "break_line": None})
         return result
+
+
+DUETS_UNSUPPORTED = "duets are not supported yet"
+
+
+def repair_targets(song_dir: str) -> list:
+    """find_ultrastar_txts() without the duet song files (P1/P2 voices):
+    the stack does not repair duets yet - each one left out is logged."""
+    targets = []
+    for txt in find_ultrastar_txts(song_dir):
+        if txt.duet:
+            print(f"{ULTRASINGER_HEAD} {red_highlighted('left out')} "
+                  f"{os.path.basename(txt.path)}: {DUETS_UNSUPPORTED}")
+        else:
+            targets.append(txt)
+    return targets
 
 
 def find_ultrastar_txts(song_dir: str) -> list:
@@ -1640,11 +1666,16 @@ def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
             # agreeing beat a few words near the old #GAP
             return whole_song_result()
         if decision["kept"]:
+            # nothing to change: no song file is written, the orchestrator
+            # marks the job for review
             spread = decision["spread_s"]
             why = (f"spread {spread:.2f} s" if spread is not None
                    else "too few aligned words")
             print(f"{ULTRASINGER_HEAD} {red_highlighted('gap check unsure')} "
                   f"(the words disagree, {why}) - keeping #GAP {txt.gap_ms} ms")
+            return {"output": None, "mode": mode,
+                    "unchanged": f"gap check unsure (the words disagree, {why}) - "
+                                 f"#GAP {_fmt_num(txt.gap_ms)} ms kept"}
         new_gap_ms = decision["gap_ms"]
         n_aligned = sum(1 for a in aligned for w in a["words"] if w)
         out_path = write_repaired(txt, song_dir, out_dir, gap_ms=new_gap_ms,
@@ -1699,6 +1730,25 @@ def repair_txt(txt: Txt, song_dir: str, out_dir: str, mode: str, device: str,
     # do the lyrics match the audio at all?
     mismatch, susp_frac, detail = detect_lyrics_mismatch(txt, units, aligned_units)
     print(f"{ULTRASINGER_HEAD} alignment quality: {detail}")
+    if mismatch and corr:
+        # the whole song fits the file's lyrics, only the line alignment is
+        # unsure: the whole-song #GAP/#BPM correction is all that is applied,
+        # the song is never re-created
+        if not precorrected:
+            reason = (f"the whole song fits ({corr['agree']:.0%} of the lines agree) "
+                      f"but the line alignment is unsure ({detail}) - nothing to correct")
+            print(f"{ULTRASINGER_HEAD} {red_highlighted('nothing changed:')} {reason}")
+            return {"output": None, "mode": "sync", "unchanged": reason}
+        new_gap_ms = int(round(txt.gap_ms))
+        out_path = write_repaired(txt, song_dir, out_dir, gap_ms=new_gap_ms,
+                                  note_times=None, pitches=None)
+        return {
+            "output": out_path,
+            "gap_old_ms": gap_from_file_ms, "gap_new_ms": new_gap_ms,
+            "aligned_words": 0, "total_words": 0, "repitched": 0, "mode": "sync",
+            "note": f"whole-song correction only, the line alignment is unsure "
+                    f"({detail}): {precorrected}",
+        }
     if mismatch:
         if os.environ.get("REPAIR_FALLBACK", "1") in ("0", "false", "no"):
             msg = f"lyrics do not match the audio ({detail}) - cannot repair"
@@ -1792,15 +1842,20 @@ def _versioned(header: list) -> list:
     return out
 
 
-def _with_header_tags(lines: list, tags: dict) -> list:
+def _with_header_tags(lines: list, tags: dict, play_range=None) -> list:
     """txt.lines-style dicts with set_header_tags() and versioning
     (versioned_header()) applied to the header block (the `#` lines before
-    the first note or line break)."""
+    the first note or line break); `play_range` (#GAP shift in ms, first
+    note and last note end in s) moves #START/#END along
+    (song_header.shift_play_range())."""
     end = 0
     while end < len(lines) and lines[end]["raw"].strip().startswith("#") \
             and "note" not in lines[end]:
         end += 1
-    header = _versioned(set_header_tags([l["raw"] for l in lines[:end]], tags))
+    header = set_header_tags([l["raw"] for l in lines[:end]], tags)
+    if play_range is not None:
+        header = shift_play_range(header, *play_range)
+    header = _versioned(header)
     return [{"raw": raw} for raw in header] + lines[end:]
 
 
@@ -1808,7 +1863,8 @@ def write_repaired(txt: Txt, song_dir: str, out_dir: str, gap_ms: int,
                    note_times, pitches):
     """Write the repaired song folder + txt (originals in input stay as-is).
     `#GAP` is set to `gap_ms` (added when the file has none); `#BPM` is
-    written when txt.bpm_tag was changed (whole-song timing correction)."""
+    written when txt.bpm_tag was changed (whole-song timing correction);
+    #START and #END move by the #GAP shift (shift_play_range())."""
     song_name = os.path.basename(song_dir.rstrip("/"))
     out_song_dir = os.path.join(out_dir, song_name)
     os.makedirs(out_song_dir, exist_ok=True)
@@ -1831,6 +1887,7 @@ def write_repaired(txt: Txt, song_dir: str, out_dir: str, gap_ms: int,
     lines = copy.deepcopy(txt.lines)
     prev_end_beat = None
     note_i = 0
+    first_beat = last_end_beat = None
 
     for line in lines:
         if "note" in line:
@@ -1849,6 +1906,8 @@ def write_repaired(txt: Txt, song_dir: str, out_dir: str, gap_ms: int,
                 prev_end_beat = new_beat + new_dur
             line["raw"] = (f"{note.type} {_fmt_num(new_beat)} {_fmt_num(new_dur)} "
                            f"{_fmt_num(new_pitch)} {note.word}")
+            first_beat = new_beat if first_beat is None else min(first_beat, new_beat)
+            last_end_beat = max(last_end_beat or 0, new_beat + new_dur)
             note_i += 1
         elif "break_beat" in line:
             if note_times is not None and prev_end_beat is not None:
@@ -1858,7 +1917,11 @@ def write_repaired(txt: Txt, song_dir: str, out_dir: str, gap_ms: int,
     tags = {"GAP": gap_ms}
     if getattr(txt, "bpm_tag_file", None) is not None and txt.bpm_tag != txt.bpm_tag_file:
         tags["BPM"] = f"{txt.bpm_tag:.4f}".rstrip("0").rstrip(".")
-    lines = _with_header_tags(lines, tags)
+    play_range = None
+    if first_beat is not None:
+        play_range = (gap_ms - txt.gap_ms_file, gap_s + first_beat * 60.0 / real_bpm,
+                      gap_s + last_end_beat * 60.0 / real_bpm)
+    lines = _with_header_tags(lines, tags, play_range)
     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         for line in lines:
             f.write(line["raw"].rstrip("\r\n") + "\n")
@@ -3117,10 +3180,11 @@ def main():
               "--mode lyrics requires --lyrics-file")
         sys.exit(1)
 
-    txts = find_ultrastar_txts(song_dir)
+    txts = repair_targets(song_dir)
     if not txts:
-        print(f"{ULTRASINGER_HEAD} {red_highlighted('Error:')} no ultrastar txt "
-              f"found in {song_dir}")
+        reason = (DUETS_UNSUPPORTED if find_ultrastar_txts(song_dir)
+                  else f"no ultrastar txt found in {song_dir}")
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('Error:')} {reason}")
         sys.exit(1)
 
     overall_ok = True
@@ -3149,6 +3213,11 @@ def main():
             overall_ok = False
             continue
         song_name = os.path.basename(song_dir)
+        if result.get("output") is None and result.get("unchanged"):
+            print(f"{ULTRASINGER_HEAD} {bright_green_highlighted('Summary')} "
+                  f"{cyan_highlighted(song_name)}: nothing changed - {result['unchanged']}")
+            print(f"REPAIR_UNCHANGED reason={result['unchanged']}")
+            continue
         if args.mode == "lyrics":
             print(f"{ULTRASINGER_HEAD} {bright_green_highlighted('Summary')} "
                   f"{cyan_highlighted(song_name)}: lyrics rebuilt from "

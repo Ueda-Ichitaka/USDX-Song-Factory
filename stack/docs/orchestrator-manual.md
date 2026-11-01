@@ -106,7 +106,8 @@ FILES
     input/broken.csv          reports describing what is wrong with a repair
     input/<song folder>/      songs to repair
     output/new/               created songs
-    output/repaired/          repaired songs
+    output/repaired/<repair>/ repaired songs, one folder per repair done:
+                              gap, sync, recreated, lyrics, media, cover
     output/failed/<kind>/     partial output of failed jobs
     output/report.md          finishing report
     state/state.json          per-job status (can be hand-edited)

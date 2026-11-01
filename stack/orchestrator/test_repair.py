@@ -755,12 +755,12 @@ try:
     check(f"repair_txt gap: alignment runs on the separated vocals "
           f"(got {_gap_calls.get('aligned_on')})",
           _gap_calls.get("aligned_on") == "/work/vocals.wav")
-    check(f"repair_txt gap: disagreeing values -> the original #GAP is written "
+    check(f"repair_txt gap: disagreeing values -> nothing is written "
           f"(got {_gap_calls.get('written_gap_ms')})",
-          _gap_calls.get("written_gap_ms") == 31920)
-    check(f"repair_txt gap: the result says the start was kept and why (got {result})",
-          result["gap_new_ms"] == 31920 and result["gap_kept"] is True
-          and result["gap_spread_s"] > 0.3)
+          "written_gap_ms" not in _gap_calls)
+    check(f"repair_txt gap: the result says nothing changed and why (got {result})",
+          result["output"] is None and "gap check unsure" in result["unchanged"]
+          and "spread" in result["unchanged"])
 
     repair.implied_gap_samples = lambda txt, units, aligned: list(agreeing)
     result = repair.repair_txt(_GapTxt(), "/song", "/out", "gap", "cpu", _gap_dir)
@@ -911,7 +911,7 @@ _tc_saved = {name: getattr(repair, name) for name in (
     "load_audio_16k", "resolve_language", "load_aligner", "progressively_align",
     "implied_gap_samples", "write_repaired", "group_words", "other_media",
     "global_timing_correction", "reanchor_outlier_units", "rescue_dropped_units",
-    "refine_first_units", "detect_lyrics_mismatch")}
+    "refine_first_units", "detect_lyrics_mismatch", "recreate_song")}
 
 
 class _TcTxt:
@@ -1010,9 +1010,38 @@ try:
         os.environ.pop("REPAIR_FALLBACK", None)
     else:
         os.environ["REPAIR_FALLBACK"] = _saved_fb
+
+    # sync mode, lines unsure (detect_lyrics_mismatch) but the whole-song fit
+    # agrees: the whole-song correction, never a re-creation
+    def _tc_recreate(*args, **kwargs):
+        _tc["recreated"] = True
+        return "/out/new.txt"
+    repair.recreate_song = _tc_recreate
+    _tc.pop("written", None)
+    _tc["corr"] = {"gap_ms": 36920.0, "bpm": 297.0, "offset_s": 5.0, "drift_s": 1.2, "agree": 0.9}
+    _res = repair.repair_txt(_TcTxt(), "/song", "/out", "sync", "cpu", tempfile.mkdtemp())
+    check(f"sync: lines unsure, whole song fits -> whole-song #GAP/#BPM written, no re-creation (got {_res}, {_tc})",
+          not _tc.get("recreated") and _tc.get("written") == (36920, 297.0)
+          and _res["mode"] == "sync" and "whole-song correction" in _res["note"])
+    _tc.pop("written", None)
+    _tc["corr"] = {"gap_ms": 32020.0, "bpm": 300.0, "offset_s": 0.1, "drift_s": 0.05, "agree": 0.9}
+    _res = repair.repair_txt(_TcTxt(), "/song", "/out", "sync", "cpu", tempfile.mkdtemp())
+    check(f"sync: lines unsure, whole song fits without a correction -> unchanged, nothing written (got {_res})",
+          not _tc.get("recreated") and "written" not in _tc and _res["output"] is None
+          and "whole song" in _res["unchanged"])
+    _tc["corr"] = None
+    _res = repair.repair_txt(_TcTxt(), "/song", "/out", "sync", "cpu", tempfile.mkdtemp())
+    check(f"sync: lines unsure and no whole-song fit -> re-created as before (got {_res})",
+          _tc.get("recreated") is True and _res["mode"] == "recreated")
 finally:
     for name, func in _tc_saved.items():
         setattr(repair, name, func)
+
+class _SoloTxt:
+    """A stand-in for the song file main() repairs (find_ultrastar_txts() mocked)."""
+    path = "TXT"
+    duet = False
+
 
 # write_repaired(): a changed #BPM is written, an unchanged one stays as it is
 _bpm_dir = tempfile.mkdtemp()
@@ -1029,6 +1058,38 @@ _t.bpm_tag = 297.123456
 _out = repair.write_repaired(_t, _bpm_song, os.path.join(_bpm_dir, "out2"), 1000, None, None)
 check(f"write_repaired: a corrected #BPM is written",
       "#BPM:297.1235\n" in open(_out, encoding="utf-8").read())
+
+# write_repaired(): #START and #END move with #GAP (song_header.shift_play_range());
+# a #START that would end up below 0 is removed
+_se_dir = tempfile.mkdtemp()
+_se_song = os.path.join(_se_dir, "Song")
+os.makedirs(_se_song)
+with open(os.path.join(_se_song, "song.txt"), "w", encoding="utf-8") as _f:
+    # BPM 300 -> a beat is 0.05 s; notes from beat 0 to 400 (20 s)
+    _f.write("#TITLE:x\n#ARTIST:y\n#BPM:300\n#START:24.0\n#END:242000\n#GAP:45680\n"
+             ": 0 4 0 la\n- 10\n: 396 4 0 lu\nE\n")
+_out = repair.write_repaired(repair.Txt(os.path.join(_se_song, "song.txt")), _se_song,
+                             os.path.join(_se_dir, "out"), 35680, None, None)
+_text = open(_out, encoding="utf-8").read()
+check(f"write_repaired: #START and #END move with #GAP (got {_text!r})",
+      "#START:14\n" in _text and "#END:232000\n" in _text and "#GAP:35680\n" in _text)
+_out = repair.write_repaired(repair.Txt(os.path.join(_se_song, "song.txt")), _se_song,
+                             os.path.join(_se_dir, "out2"), 13556, None, None)
+_text = open(_out, encoding="utf-8").read()
+check(f"write_repaired: a #START below 0 is removed, #END still moves (got {_text!r})",
+      "#START" not in _text and "#END:209876\n" in _text)
+
+# main(): duet song files are not repaired ("duets are not supported yet");
+# a solo song file in the same folder is
+_du_dir = tempfile.mkdtemp()
+_du_song = os.path.join(_du_dir, "Song")
+os.makedirs(_du_song)
+with open(os.path.join(_du_song, "Song [DUET].txt"), "w", encoding="utf-8") as _f:
+    _f.write("#TITLE:x\n#ARTIST:y\n#BPM:300\n#GAP:1000\nP1\n: 0 4 0 la\nP2\n: 8 4 0 lu\nE\n")
+with open(os.path.join(_du_song, "Song.txt"), "w", encoding="utf-8") as _f:
+    _f.write("#TITLE:x\n#ARTIST:y\n#BPM:300\n#GAP:1000\n: 0 4 0 la\nE\n")
+check("repair_targets: duet song files are left out, solo ones stay",
+      [os.path.basename(t.path) for t in repair.repair_targets(_du_song)] == ["Song.txt"])
 
 # global_line_points(): one (file time, sung time) point per lyric line, from
 # the first word of the line the whole-song alignment placed
@@ -1061,7 +1122,7 @@ def _gap_main_output(result, extra_argv=(), all_lines=False):
     saved_argv = sys.argv
     buffer = io.StringIO()
     try:
-        repair.find_ultrastar_txts = lambda song_dir: ["TXT"]
+        repair.find_ultrastar_txts = lambda song_dir: [_SoloTxt()]
         repair.repair_txt = lambda *a, **k: dict(result)
         sys.argv = ["repair.py", "--song-dir", "/s", "--out", "/o", "--mode", "gap",
                     *extra_argv]
@@ -1080,15 +1141,14 @@ def _gap_main_output(result, extra_argv=(), all_lines=False):
 
 _gap_base = {"output": "/o/x.txt", "gap_old_ms": 31920, "gap_new_ms": 31920,
              "aligned_words": 12, "total_words": 14, "repitched": 0, "mode": "gap"}
-_done = _gap_main_output(dict(_gap_base, gap_kept=True, gap_spread_s=6.5))
-check(f"main gap: REPAIR_DONE says the start was kept, with the spread (got {_done})",
-      len(_done) == 1 and "gap_check=kept" in _done[0] and "gap_spread_s=6.50" in _done[0])
+_done = _gap_main_output({"output": None, "mode": "gap",
+                          "unchanged": "gap check unsure (spread 6.50 s) - #GAP kept"}, all_lines=True)
+check(f"main gap: nothing changed -> REPAIR_UNCHANGED with the reason, no REPAIR_DONE (got {_done})",
+      "REPAIR_UNCHANGED reason=gap check unsure (spread 6.50 s) - #GAP kept" in _done
+      and not any(l.startswith("REPAIR_DONE") for l in _done))
 _done = _gap_main_output(dict(_gap_base, gap_new_ms=32020, gap_kept=False, gap_spread_s=0.1))
 check(f"main gap: REPAIR_DONE says the start was moved (got {_done})",
       len(_done) == 1 and "gap_check=moved" in _done[0] and "gap_new_ms=32020" in _done[0])
-_done = _gap_main_output(dict(_gap_base, gap_kept=True, gap_spread_s=None))
-check(f"main gap: too few words -> gap_spread_s=none (got {_done})",
-      len(_done) == 1 and "gap_spread_s=none" in _done[0])
 _done = _gap_main_output(dict(_gap_base, mode="sync"))
 check(f"main sync: no gap check fields (got {_done})",
       len(_done) == 1 and "gap_check" not in _done[0])
@@ -1117,7 +1177,7 @@ def _lyrics_main_kwargs(extra_argv=()):
     saved_argv = sys.argv
     seen = {}
     try:
-        repair.find_ultrastar_txts = lambda song_dir: ["TXT"]
+        repair.find_ultrastar_txts = lambda song_dir: [_SoloTxt()]
         repair.load_lyrics_file = lambda path: ("genius", [])
         repair.parse_lyrics_lines = lambda data: ["UNIT"]
         repair.repair_txt_with_lyrics = lambda *a, **k: seen.update(k) or {
