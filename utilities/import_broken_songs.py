@@ -5,8 +5,9 @@ About me: reads library_check.py's results.jsonl and, for every song file
 with the chosen verdicts ("#GAP off" -> category gap, "drifts" -> category
 async):
 
-  1. copies its folder from the library into the stack input folder (a
-     folder already there is left as it is - the library itself is only read)
+  1. copies its folder from the library into the stack input's repairs/
+     folder (a folder already there is left as it is - the library itself is
+     only read)
   2. adds a broken.csv row in the karaoke-dashboard's export format (band,
      song name, category, description, lyrics_url, language, cover_url,
      genre, trait): band and song name from the song file's #ARTIST/#TITLE
@@ -41,6 +42,8 @@ import songfile  # noqa: E402
 HEADER = fill_lyrics_links.HEADER
 DEFAULTS = {"genre": "default", "trait": "none"}
 VERDICTS = {"gap": "#GAP off", "drift": "drifts"}
+# the stack input's folder of song folders to repair
+REPAIRS = "repairs"
 CATEGORY = {"#GAP off": "gap", "drifts": "async"}
 
 
@@ -101,10 +104,17 @@ def key(band: str, title: str):
     return (fill_lyrics_links.clean(band), fill_lyrics_links.clean(title))
 
 
+def repairs_dir(stack_input: str) -> str:
+    """The stack input's folder of song folders to repair (broken.csv stays
+    in the input folder itself)."""
+    return os.path.join(stack_input, REPAIRS)
+
+
 def import_songs(results: str, library: str, stack_input: str, categories=("gap", "drift"),
                  apply: bool = False) -> dict:
     wanted = {VERDICTS[c] for c in categories}
     csv_path = os.path.join(stack_input, "broken.csv")
+    repairs = repairs_dir(stack_input)
     rows = read_broken_csv(csv_path)
     have = {key(r[0], r[1]) for r in rows}
     copied, added, missing = [], 0, []
@@ -116,10 +126,10 @@ def import_songs(results: str, library: str, stack_input: str, categories=("gap"
         if not txt or not os.path.isfile(os.path.join(src, txt)):
             missing.append(result["name"])
             continue
-        if not os.path.exists(os.path.join(stack_input, folder)):
+        if not os.path.exists(os.path.join(repairs, folder)):
             copied.append(folder)
             if apply:
-                shutil.copytree(src, os.path.join(stack_input, folder))
+                shutil.copytree(src, os.path.join(repairs, folder))
         new = build_row(os.path.join(src, txt), result)
         if key(new[0], new[1]) not in have:
             have.add(key(new[0], new[1]))
@@ -138,7 +148,7 @@ def main():
     parser.add_argument("--library", required=True, help="the library the check ran on")
     parser.add_argument("--results", default=os.path.join(REPO, "library analysis", "results.jsonl"))
     parser.add_argument("--input", default=os.path.join(REPO, "stack", "input"),
-                        help="the stack input folder (broken.csv lives there)")
+                        help="the stack input folder (broken.csv lives there, the songs go to its repairs/)")
     parser.add_argument("--categories", default="gap,drift",
                         help="gap (#GAP off), drift (drifts) or both, comma-separated")
     parser.add_argument("--no-lyrics", action="store_true", help="skip the lyrics link lookup")
@@ -151,7 +161,8 @@ def main():
     if not args.no_lyrics:
         print("\nlyrics links:")
         if args.apply:
-            fill_lyrics_links.fill(os.path.join(args.input, "broken.csv"), args.input, apply=True)
+            fill_lyrics_links.fill(os.path.join(args.input, "broken.csv"), repairs_dir(args.input),
+                                   apply=True)
         else:
             print("  (looked up after a run with --apply, when the rows exist)")
     if not args.apply:

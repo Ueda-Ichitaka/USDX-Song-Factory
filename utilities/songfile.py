@@ -1,7 +1,8 @@
 """Read the header of an UltraStar song file, and the dashboard codes for it.
 
 About me: shared by the library utilities (library_check.py,
-import_broken_songs.py, fill_lyrics_links.py, copy_reported_songs.py).
+import_broken_songs.py, fill_lyrics_links.py, copy_reported_songs.py,
+genre_lookup.py).
 read() gives the header tags (first value of each tag), the number of notes
 and whether the file is a duet (P1/P2) or uses relative timing - the same
 rule as USDX (USong.pas): only #RELATIVE:yes, the second number of a line

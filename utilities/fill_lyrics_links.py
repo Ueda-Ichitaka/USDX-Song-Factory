@@ -7,7 +7,7 @@ song's lyrics are looked up online:
   lrclib.net  the search API by artist and title; a hit counts when artist
               and title match closely (difflib similarity >= 0.7 / 0.85,
               bracket parts like "(Album Version)" ignored) and - when the
-              song folder in the stack input is found - its length is within
+              song folder in the stack input's repairs/ is found - its length is within
               MAX_LEN_DIFF_S of the folder's own audio (same version).
               Synced lyrics first. Link: https://lrclib.net/tracks/<id>
   Genius      only when GENIUS_API_KEY is set (environment or stack/.env)
@@ -262,10 +262,12 @@ def fill(csv_path: str, input_dir: str, lrclib_search=lrclib_search, genius_sear
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--csv", default=os.path.join(REPO, "stack", "input", "broken.csv"))
-    parser.add_argument("--input", default=None, help="the stack input folder (default: next to the csv)")
+    parser.add_argument("--input", default=None,
+                        help="the folder of song folders (default: repairs/ next to the csv)")
     parser.add_argument("--apply", action="store_true", help="write the csv (a backup is kept)")
     args = parser.parse_args()
-    result = fill(args.csv, args.input or os.path.dirname(os.path.abspath(args.csv)), apply=args.apply)
+    result = fill(args.csv, args.input or os.path.join(os.path.dirname(os.path.abspath(args.csv)), "repairs"),
+                  apply=args.apply)
     print(f"\n{result['filled']} links found, {len(result['not_found'])} without"
           + ("" if args.apply else " (dry run - nothing written, use --apply)"))
 

@@ -70,21 +70,21 @@ csv_path = os.path.join(stack_input, "broken.csv")
 with open(csv_path, "w", encoding="utf-8") as f:
     f.write("band,song name,category,description,lyrics_url,language,cover_url\n"
             "Old,Song,gap,,,en,\n")
-os.makedirs(os.path.join(stack_input, "Disney - Song"))  # already in the input: not copied again
+os.makedirs(os.path.join(stack_input, "repairs", "Disney - Song"))  # already in the input: not copied again
 
 summary = ib.import_songs(results, lib, stack_input, categories=("gap", "drift"), apply=False)
 check(f"dry run: nothing copied or written (got {summary})",
-      not os.path.isdir(os.path.join(stack_input, "Toto - Africa"))
+      not os.path.isdir(os.path.join(stack_input, "repairs", "Toto - Africa"))
       and open(csv_path, encoding="utf-8").read().startswith("band,song name,category,description,lyrics_url,language,cover_url\n"))
 
 summary = ib.import_songs(results, lib, stack_input, categories=("gap", "drift"), apply=True)
 rows = list(csv.reader(open(csv_path, encoding="utf-8")))
 by_name = {(r[0], r[1]): r for r in rows[1:]}
 check(f"import: #GAP off and drift songs copied, an existing folder left alone (got {summary})",
-      os.path.isfile(os.path.join(stack_input, "Toto - Africa", "Toto - Africa.txt"))
-      and os.path.isfile(os.path.join(stack_input, "Two - Songs", "second.txt"))
-      and not os.listdir(os.path.join(stack_input, "Disney - Song"))
-      and not os.path.isdir(os.path.join(stack_input, "Fine - Song"))
+      os.path.isfile(os.path.join(stack_input, "repairs", "Toto - Africa", "Toto - Africa.txt"))
+      and os.path.isfile(os.path.join(stack_input, "repairs", "Two - Songs", "second.txt"))
+      and not os.listdir(os.path.join(stack_input, "repairs", "Disney - Song"))
+      and not os.path.isdir(os.path.join(stack_input, "repairs", "Fine - Song"))
       and summary["copied"] == ["Toto - Africa", "Two - Songs", "Old - Song"])
 check(f"import: broken.csv in the dashboard format, older rows kept with defaults (got {rows[0]}, {rows[1]})",
       rows[0] == ib.HEADER and rows[1] == ["Old", "Song", "gap", "", "", "en", "", "default", "none"])

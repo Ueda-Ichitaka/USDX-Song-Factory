@@ -10,8 +10,9 @@ row:
      it: "<band> - <song name>" (just "<song name>" without a band),
      case-insensitive - the dashboard takes band and song name from the
      folder name, split at the first " - "
-  2. copies that folder into the stack input folder; a folder already there
-     (in any case) is left as it is, the library itself is only read
+  2. copies that folder into the stack input's repairs/ folder; a folder
+     already there (in any case) is left as it is, the library itself is
+     only read
   3. merges the row into the stack input's broken.csv (dashboard format, a
      backup of the old file kept); a song that already has a row there gets
      no second one
@@ -69,7 +70,8 @@ def copy_songs(csv_paths: list, library: str, stack_input: str, apply: bool = Fa
     broken_csv = os.path.join(stack_input, "broken.csv")
     rows = import_broken_songs.read_broken_csv(broken_csv)
     have = {import_broken_songs.key(r[0], r[1]) for r in rows}
-    in_input = {name.casefold() for name in os.listdir(stack_input)}
+    repairs = import_broken_songs.repairs_dir(stack_input)
+    in_input = {name.casefold() for name in os.listdir(repairs)} if os.path.isdir(repairs) else set()
     copied, present, missing, added = [], [], [], 0
     for path in csv_paths:
         for row in read_export(path):
@@ -91,7 +93,7 @@ def copy_songs(csv_paths: list, library: str, stack_input: str, apply: bool = Fa
                 in_input.add(folder.casefold())
                 copied.append(folder)
                 if apply:
-                    shutil.copytree(os.path.join(library, folder), os.path.join(stack_input, folder))
+                    shutil.copytree(os.path.join(library, folder), os.path.join(repairs, folder))
     if apply and added:
         if os.path.isfile(broken_csv):
             shutil.copy2(broken_csv, f"{broken_csv}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
@@ -105,7 +107,7 @@ def main():
     parser.add_argument("--csv", required=True, action="append",
                         help="a dashboard broken.csv export (can be given more than once)")
     parser.add_argument("--input", default=os.path.join(REPO, "stack", "input"),
-                        help="the stack input folder (its broken.csv gets the rows)")
+                        help="the stack input folder (its broken.csv gets the rows, its repairs/ the folders)")
     parser.add_argument("--apply", action="store_true", help="copy and write (default: dry run)")
     args = parser.parse_args()
     summary = copy_songs(args.csv, args.library, args.input, args.apply)

@@ -68,7 +68,7 @@ csv_path = os.path.join(stack_input, "broken.csv")
 with open(csv_path, "w", encoding="utf-8") as f:
     f.write("band,song name,category,description,lyrics_url,language,cover_url\n"
             "Busy,Song,async,,,en,\n")
-os.makedirs(os.path.join(stack_input, "busy - song"))
+os.makedirs(os.path.join(stack_input, "repairs", "busy - song"))
 
 check("read_export: header or none, rows in the dashboard column order",
       crs.read_export(export1)[0] == ["Toto", "Africa", "gap", "starts late", "https://lrclib.net/tracks/1",
@@ -78,19 +78,19 @@ check("read_export: header or none, rows in the dashboard column order",
 before = open(csv_path, encoding="utf-8").read()
 summary = crs.copy_songs([export1, export2], lib, stack_input, apply=False)
 check(f"dry run: nothing copied or written (got {summary})",
-      not os.path.isdir(os.path.join(stack_input, "Toto - Africa"))
+      not os.path.isdir(os.path.join(stack_input, "repairs", "Toto - Africa"))
       and open(csv_path, encoding="utf-8").read() == before
       and summary["copied"] == ["Toto - Africa", "ABBA - Chiquitita"])
 
 summary = crs.copy_songs([export1, export2], lib, stack_input, apply=True)
 rows = list(csv.reader(open(csv_path, encoding="utf-8")))
 check(f"apply: reported folders copied with their files (got {summary})",
-      os.path.isfile(os.path.join(stack_input, "Toto - Africa", "Toto - Africa.txt"))
-      and os.path.isfile(os.path.join(stack_input, "ABBA - Chiquitita", "a.mp3"))
+      os.path.isfile(os.path.join(stack_input, "repairs", "Toto - Africa", "Toto - Africa.txt"))
+      and os.path.isfile(os.path.join(stack_input, "repairs", "ABBA - Chiquitita", "a.mp3"))
       and summary["copied"] == ["Toto - Africa", "ABBA - Chiquitita"])
 check("apply: a folder already in the input (any case) is left alone",
-      summary["present"] == ["Busy - Song"] and not os.listdir(os.path.join(stack_input, "busy - song"))
-      and not os.path.isdir(os.path.join(stack_input, "Busy - Song")))
+      summary["present"] == ["Busy - Song"] and not os.listdir(os.path.join(stack_input, "repairs", "busy - song"))
+      and not os.path.isdir(os.path.join(stack_input, "repairs", "Busy - Song")))
 check("apply: a song not in the library is listed", summary["missing"] == ["Toto - Rosanna"])
 check(f"apply: broken.csv in the dashboard format, rows merged once, older rows kept (got {rows})",
       rows[0] == crs.HEADER

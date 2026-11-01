@@ -5,7 +5,12 @@ library and hand them to the stack for repair. Three steps, each its own
 tool - run them one after another or only the ones you need - plus a tool
 that copies the songs of a dashboard export into the stack input. The
 repair itself is a normal stack run; step 4 covers getting the repaired
-songs back into the library.
+songs back into the library. Two more tools fill in missing `#GENRE` tags
+(see [Genres](#genres)).
+
+The stack input: `stack/input/` holds `broken.csv` and `song-requests.csv`,
+`stack/input/repairs/` the song folders to repair, `stack/input/songtexts/`
+lyrics files the csv rows point to.
 
 All commands below run from the repository root (not from `stack/`).
 
@@ -16,6 +21,8 @@ All commands below run from the repository root (not from `stack/`).
 | 3. Lyrics links | `fill_lyrics_links.py` | host | fills empty `lyrics_url` cells of `broken.csv` |
 | 4. Repair, copy back | the stack, a file manager | stack container, host | writes `stack/output/repaired/<repair>/`; you copy the songs into the library |
 | Dashboard export | `copy_reported_songs.py` | host | copies the reported song folders into the stack input, merges the rows into `broken.csv` |
+| Genres | `genre_lookup.py` | host | nothing in the library; writes the genre list and the predictions |
+| Genres | `apply_genres.sh` | host | writes the predicted genres into the song files (backup kept) |
 
 `songfile.py` is no tool of its own: the other tools use it to read song
 file headers (the same rules as USDX) and to turn `#LANGUAGE`/`#GENRE` into
@@ -28,7 +35,7 @@ Requirements:
   separation and the aligner on the GPU (the service maps `/dev/kfd` and
   `/dev/dri`); Docker with the Compose plugin
 - the host tools: Python 3 with `requests`, and `ffprobe` (ffmpeg) for the
-  audio length checks
+  audio length checks; `apply_genres.sh`: bash, GNU awk and iconv
 
 ## 1. Scan a library
 
@@ -118,8 +125,8 @@ python3 utilities/import_broken_songs.py --library /path/to/library --apply
 For every song with the verdict `#GAP off` (category `gap`) or `drifts`
 (category `async`) of the scan's `results.jsonl`:
 
-- its folder is copied from the library into `stack/input/` (a folder
-  already there is left as it is);
+- its folder is copied from the library into `stack/input/repairs/` (a
+  folder already there is left as it is);
 - a `broken.csv` row is added in the karaoke-dashboard's export format:
   band and song name from the song file's `#ARTIST`/`#TITLE` (the stack
   matches rows to folders by them), the measured values and the fix as
@@ -134,7 +141,8 @@ For every song with the verdict `#GAP off` (category `gap`) or `drifts`
 - then step 3 runs for the rows without a lyrics link (`--no-lyrics` skips it).
 
 Options: `--results FILE` (default `library analysis/results.jsonl`),
-`--input DIR` (default `stack/input`), `--categories gap`, `drift` or
+`--input DIR` (the stack input, default `stack/input`; the folders go to its
+`repairs/`), `--categories gap`, `drift` or
 `gap,drift` (default both).
 
 Note: a `broken.csv` exported from the dashboard later does not contain
@@ -151,8 +159,8 @@ Looks up a link for every `broken.csv` row with an empty `lyrics_url`
 (rows with a link are never touched):
 
 - **lrclib.net** first: artist and title must match closely, and the
-  hit's length must be within 4 s of the song's own audio in the stack
-  input (same version); synced lyrics are preferred.
+  hit's length must be within 4 s of the song's own audio in
+  `stack/input/repairs/` (same version); synced lyrics are preferred.
   Link: `https://lrclib.net/tracks/<id>`.
 - **Genius** when lrclib.net has nothing and a Genius API key is set: the
   environment variable `GENIUS_API_KEY`, else the same key in the stack's
@@ -167,7 +175,7 @@ Looks up a link for every `broken.csv` row with an empty `lyrics_url`
   And The Diamonds - Jealousy". Without the song's audio nothing is taken.
 
 Options: `--csv FILE` (default `stack/input/broken.csv`), `--input DIR`
-(the stack input folder, default: next to the csv). The requests identify
+(the folder of song folders, default: `repairs/` next to the csv). The requests identify
 the stack (User-Agent) and wait 1 s between songs; when lrclib.net is
 overloaded (429/503) a request is tried again after 5, 10 and 20 s.
 
@@ -217,15 +225,72 @@ with or without the header line; `--csv` can be given more than once):
 
 - the song folder is found in the library the way the dashboard names it:
   `<band> - <song name>` (just `<song name>` without a band), ignoring case;
-- the folder is copied into `stack/input/` (a folder already there, in any
-  case, is left as it is); rows without a library folder are listed;
+- the folder is copied into `stack/input/repairs/` (a folder already there,
+  in any case, is left as it is); rows without a library folder are listed;
 - the row is merged into `stack/input/broken.csv` (dashboard format, a
   backup `broken.csv.bak-<time>` is kept); a song that already has a row
   gets no second one. Rows without a library folder are merged too (the
   stack ignores a row without a folder). Empty genre and trait cells become
   `default` and `none`.
 
-Option: `--input DIR` (default `stack/input`).
+Option: `--input DIR` (the stack input, default `stack/input`; the folders go
+to its `repairs/`).
+
+## Genres
+
+```sh
+python3 utilities/genre_lookup.py --library /path/to/library     # writes the two lists, changes nothing
+utilities/apply_genres.sh                                         # dry run: what would be set
+utilities/apply_genres.sh --apply                                 # writes #GENRE into the song files
+```
+
+`genre_lookup.py` reads every song file of the library (all subfolders) and
+writes into `library analysis/` (`--out DIR`):
+
+- `library-genres.tsv`: every song - band, title, genre, path;
+- `genre-predictions.tsv`: the songs without a genre - no `#GENRE`, an empty
+  one, or `Unknown`/`No idea` (`--keep-placeholders` counts these as a
+  genre) - with band, title, path, predicted genre and found (each source's
+  own genres, for checking).
+
+The sources, per song without a genre:
+
+- **MusicBrainz**: the song's recording (the one with that exact title and
+  the most releases - a song has many live versions and edits), its album
+  when the recording has no genres, the artist when neither has; genres by
+  votes. One request every 1.5 s.
+- **Metal Archives**: the band, only when exactly one band has that exact
+  name (several bands are called Avatar). An unofficial search page; it
+  answers automated requests with a block page (HTTP 403) at times - then it
+  is left out for the rest of the run and the run says so.
+- **Wikidata**: the artist (same name, described as a band, singer, group,
+  unit, ...) and its genres.
+- **Last.fm**: the artist's top tags, only with an API key
+  (`LASTFM_API_KEY` in the environment or `stack/.env`; free at
+  https://www.last.fm/api/account/create); only tags that are MusicBrainz
+  genres count. `--no-lastfm` leaves it out.
+
+The predicted genre: each found genre in the stack's genre names where one
+fits (`power metal` -> `Metal`, `symphonic metal` -> `Symphonic, Metal`,
+`pop music` -> `Pop`, `k-pop` -> `K-Pop`), other genres as found
+(`Italo Disco`, `Dark Wave`); the genres most sources agree on first, at
+most 6. Rate-limit answers (429/503) are asked again after 5, 15 and 30 s.
+Answers are cached in `library analysis/genre-cache.json`, so a second run
+only asks for new songs (a failed request is asked again). A library of 750
+songs without a genre (about 280 artists) takes about 45 minutes.
+
+Check the predictions before writing them: edit the `predicted genre`
+column (LibreOffice: open as tab-separated text, save in the same format);
+an empty cell leaves that song alone.
+
+`apply_genres.sh [--apply] [--backup DIR] [predictions file]` writes
+`#GENRE` into each listed song file that still has no genre (a song that got
+one in the meantime is left alone): the placeholder line is replaced in
+place, else the line is added after the last header line. Byte order mark,
+line endings and the encoding stay (a cp1252 song file gets the genre in
+cp1252). Without `--apply` it only lists what it would set. With `--apply`
+every changed file is copied first into `library analysis/genre-backup-<time>/`
+under its full path.
 
 ## Tests
 
@@ -236,4 +301,6 @@ python3 test_library_check.py
 python3 test_import_broken_songs.py
 python3 test_fill_lyrics_links.py
 python3 test_copy_reported_songs.py
+python3 test_genre_lookup.py
+python3 test_apply_genres.py
 ```
