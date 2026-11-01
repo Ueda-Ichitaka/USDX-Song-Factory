@@ -40,7 +40,7 @@ docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py rep
 
 # one job, bypassing the queue
 docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py run-one "https://www.youtube.com/watch?v=XYZ"
-docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py repair-one "/data/input/Some Song"
+docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py repair-one "/data/input/repairs/Some Song"
 
 # state
 docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset          # retry failed jobs
@@ -163,7 +163,7 @@ docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py rep
 ### Failed jobs
 
 A failed job never leaves partial output among your real songs: whatever it
-created is moved to `output/failed/new/` or `output/failed/repair/`
+created or replaced is moved to `output/failed/new/` or `output/failed/repair/`
 (colliding names get a ` (1)` suffix, nothing is overwritten). The job shows
 up in `progress`, `list` and `report` with its error, and `reset` retries it
 on the next run. Each song is tried up to `MAX_ATTEMPTS` times (default 3).
@@ -182,9 +182,10 @@ stack/
 ├── input/
 │   ├── song-requests.csv   want-list for new songs (band,title,url,...)
 │   ├── broken.csv          optional: broken-song reports (band,song name,category,description)
-│   ├── lyrics/             optional: lyrics files that a lyrics_url column points at
-│   └── <song folder>/      broken songs to repair (one folder per song)
-│       └── lyrics.txt      optional: trusted lyrics -> repair "lyrics" mode
+│   ├── songtexts/          optional: lyrics files that a lyrics_url column points at
+│   └── repairs/            broken songs to repair (one folder per song)
+│       └── <song folder>/
+│           └── lyrics.txt  optional: trusted lyrics -> repair "lyrics" mode
 ├── .env                    optional: accounts, API keys, tuning (copy from .env.example)
 ├── output/                 results (see above)
 ├── state/                  job state (resume support)

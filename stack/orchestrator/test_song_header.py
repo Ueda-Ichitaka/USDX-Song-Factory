@@ -130,6 +130,17 @@ check("set_tag: a missing tag is added after the header, line endings kept",
       song_header.set_tag("#TITLE:A\r\n#BPM:300\r\n: 0 4 0 la\r\nE\r\n", "VIDEOGAP", "2.5")
       == "#TITLE:A\r\n#BPM:300\r\n#VIDEOGAP:2.5\r\n: 0 4 0 la\r\nE\r\n")
 
+# --------------------------------------------------------------------------
+# remove_tag(): one header tag of a whole song file removed (any case);
+# the rest of the file stays
+# --------------------------------------------------------------------------
+
+check("remove_tag: the tag line goes, line endings kept",
+      song_header.remove_tag("#TITLE:A\r\n#genre:Pop\r\n#BPM:300\r\n: 0 4 0 la\r\nE\r\n", "GENRE")
+      == "#TITLE:A\r\n#BPM:300\r\n: 0 4 0 la\r\nE\r\n")
+check("remove_tag: a file without the tag stays as it is",
+      song_header.remove_tag("#TITLE:A\n: 0 4 0 la\nE\n", "GENRE") == "#TITLE:A\n: 0 4 0 la\nE\n")
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")

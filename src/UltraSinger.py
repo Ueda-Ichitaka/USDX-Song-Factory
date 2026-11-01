@@ -65,7 +65,7 @@ from modules.Ultrastar.coverter.ultrastar_txt_converter import from_ultrastar_tx
     create_ultrastar_txt_from_midi_segments, create_ultrastar_txt_from_automation
 from modules.Ultrastar.ultrastar_parser import parse_ultrastar_txt
 from modules.common_print import print_support, print_help, print_version
-from modules.os_helper import check_file_exists, get_unused_song_output_dir
+from modules.os_helper import check_file_exists, replace_song_output_dir
 from modules.plot import create_plots
 from modules.musicbrainz_client import get_song_info
 from modules.sheet import create_sheet
@@ -685,7 +685,8 @@ def infos_from_audio_video_input_file() -> tuple[str, str, str, MediaInfo]:
     basename_without_ext = f"{song_info.artist} - {song_info.title}"
 
     song_folder_output_path = os.path.join(settings.output_folder_path, basename_without_ext)
-    song_folder_output_path = get_unused_song_output_dir(song_folder_output_path)
+    song_folder_output_path = replace_song_output_dir(
+        song_folder_output_path, keep=[settings.input_file_path])
     os_helper.create_folder(song_folder_output_path)
 
     extension = os.path.splitext(basename)[1]

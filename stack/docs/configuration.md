@@ -22,6 +22,9 @@ fine. Changes take effect at the next `docker compose up`/`run`.
 |----------|---------|---------|
 | `SONGS_FILE` | `/data/input/song-requests.csv` | the want-list inside the container |
 | `BROKEN_CSV` | `/data/input/broken.csv` | broken-song reports ([repairs.md](repairs.md)) |
+| `REPAIRS_DIR` | `/data/input/repairs` | the song folders to repair, one per song |
+| `CREATOR_NAME` | empty | `#CREATOR` of the songs the stack generates (new songs not taken from USDB, re-created repairs), e.g. `ueda`; empty: `USDX-Song-Factory`. USDB songs and repaired songs keep their creator |
+| `CREATOR_FACTORY_SUFFIX` | `1` | `1` writes ` with USDX-Song-Factory` behind `CREATOR_NAME` (`ueda with USDX-Song-Factory`), `0` the name alone |
 | `NEW_SONGS_DIR` | `/data/output/new` | where new songs are written |
 | `FAILED_DIR` | `/data/output/failed` | where a failed job's partial output goes |
 | `MAX_ATTEMPTS` | `3` | attempts per song before it stays failed |

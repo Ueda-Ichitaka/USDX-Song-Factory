@@ -5,7 +5,7 @@ import re
 
 import yt_dlp
 
-from modules.os_helper import sanitize_filename, get_unused_song_output_dir
+from modules.os_helper import sanitize_filename, replace_song_output_dir
 from modules import os_helper
 from modules.ProcessData import MediaInfo
 from modules.Audio.bpm import get_bpm_from_file
@@ -157,7 +157,7 @@ def download_from_youtube(input_url: str, output_folder_path: str, cookiefile: s
 
     basename_without_ext = sanitize_filename(f"{song_info.artist} - {song_info.title}")
     song_output = os.path.join(output_folder_path, basename_without_ext)
-    song_output = get_unused_song_output_dir(song_output)
+    song_output = replace_song_output_dir(song_output)
     os_helper.create_folder(song_output)
 
     print(f"{ULTRASINGER_HEAD} Downloading from YouTube")

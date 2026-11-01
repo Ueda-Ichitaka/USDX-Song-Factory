@@ -106,6 +106,9 @@ import usdb_lookup
 
 SONGS_FILE = os.environ.get("SONGS_FILE", "/data/input/song-requests.csv")
 INPUT_DIR = os.environ.get("INPUT_DIR", "/data/input")
+# the song folders to repair, one per song (INPUT_DIR itself holds the csv
+# files and songtexts/, the lyrics files the csv rows point to)
+REPAIRS_DIR = os.environ.get("REPAIRS_DIR", os.path.join(INPUT_DIR, "repairs"))
 BROKEN_CSV = os.environ.get("BROKEN_CSV", "/data/input/broken.csv")
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/data/output")
 NEW_SONGS_DIR = os.environ.get("NEW_SONGS_DIR", os.path.join(OUTPUT_DIR, "new"))
@@ -120,6 +123,11 @@ COOKIES_FILE = os.environ.get("COOKIES_FILE", "/data/cookies/cookies.txt")
 DEVICE = os.environ.get("DEVICE", "cpu")
 WHISPER_ON_CPU = os.environ.get("WHISPER_ON_CPU", "") not in ("", "0", "false")
 REPAIR_MODE = os.environ.get("REPAIR_MODE", "sync")
+# #CREATOR of a generated song: CREATOR_NAME, with " with USDX-Song-Factory"
+# behind it while CREATOR_FACTORY_SUFFIX is on (see creator_value())
+CREATOR_NAME = os.environ.get("CREATOR_NAME", "")
+CREATOR_FACTORY_SUFFIX = os.environ.get("CREATOR_FACTORY_SUFFIX", "1") not in ("", "0", "false")
+FACTORY_NAME = "USDX-Song-Factory"
 EXTRA_ARGS = os.environ.get("ULTRASINGER_ARGS", "")
 MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS", "3"))
 JOB_TIMEOUT_MIN = float(os.environ.get("JOB_TIMEOUT_MIN", "90"))
@@ -719,6 +727,42 @@ def only_duets(folder: str) -> bool:
     return found
 
 
+def creator_value(name: str, factory_suffix: bool) -> str:
+    """The #CREATOR text of a generated song: the name, followed by
+    " with USDX-Song-Factory" when factory_suffix is on; without a name
+    just "USDX-Song-Factory"."""
+    name = (name or "").strip()
+    if not name:
+        return FACTORY_NAME
+    return f"{name} with {FACTORY_NAME}" if factory_suffix else name
+
+
+def apply_song_tags(job: dict, result: dict) -> None:
+    """#CREATOR and #GENRE of a finished song. A song UltraSinger generated
+    (a new song not taken from USDB, a re-created repair) gets our
+    creator_value() instead of UltraSinger's; a generated new song also
+    gets the request's genres (song_style.genre_tag_value()), and no
+    #GENRE line when the request names none. USDB songs and every other
+    repair keep their creator and genre."""
+    path = result.get("output_path")
+    if not path or not os.path.isfile(path):
+        return None
+    new_generated = job.get("kind") == "new" and not result.get("usdb_song_id")
+    recreated = job.get("kind") == "repair" and result.get("repair_mode_result") == "recreated"
+    if not (new_generated or recreated):
+        return None
+    with open(path, encoding="utf-8", errors="replace", newline="") as f:
+        text = f.read()
+    text = song_header.set_tag(text, "CREATOR", creator_value(CREATOR_NAME, CREATOR_FACTORY_SUFFIX))
+    if new_generated:
+        genre = song_style.genre_tag_value(job)
+        text = (song_header.set_tag(text, "GENRE", genre) if genre
+                else song_header.remove_tag(text, "GENRE"))
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+    return None
+
+
 def apply_video_gaps(output_path: str, measure=None) -> dict:
     """Measure the #VIDEOGAP of every song file in the folder of
     `output_path` that names a video and an audio file there
@@ -1009,7 +1053,7 @@ def current_job_ids() -> set:
     (what build_job_plan() would register) - without touching the state.
     Jobs stored in the state but missing here are orphans (see cmd_prune())."""
     ids = {new_job_id(song) for song in parse_songs_file(SONGS_FILE)}
-    ids |= {repair_job_id(folder) for folder in scan_repair_jobs(INPUT_DIR)}
+    ids |= {repair_job_id(folder) for folder in scan_repair_jobs(REPAIRS_DIR)}
     return ids
 
 
@@ -1062,7 +1106,7 @@ def build_job_plan(state: State) -> list:
 
     broken_reports = broken_report.parse_broken_csv(BROKEN_CSV)
 
-    for folder in scan_repair_jobs(INPUT_DIR):
+    for folder in scan_repair_jobs(REPAIRS_DIR):
         name = os.path.basename(folder.rstrip("/"))
         job_id = repair_job_id(folder)
         lyrics_file = find_lyrics_file(folder)
@@ -2069,9 +2113,8 @@ def resolve_song_input(value: str) -> str:
 
 
 def unused_path(path: str) -> str:
-    """Like UltraSinger's own get_unused_song_output_dir: append ' (n)'
-    until `path` does not already exist, so a quarantine move never
-    clobbers an earlier one."""
+    """Append ' (n)' until `path` does not already exist, so a quarantine
+    move never clobbers an earlier one."""
     if not os.path.exists(path):
         return path
     n = 1
@@ -2080,17 +2123,33 @@ def unused_path(path: str) -> str:
     return f"{path} ({n})"
 
 
-def quarantine_partial_output(kind: str, before_names: set, output_dir: str) -> list:
-    """Move any folder that appeared in `output_dir` during a failed job
-    out to FAILED_DIR/<kind>/, so partial/broken output never lingers in
-    the live output tree. Returns [(original_name, destination_path), ...].
+def snapshot_output(output_dir: str) -> dict:
+    """{entry name: (inode, mtime, ctime)} of `output_dir` - what a job
+    starts with, so quarantine_partial_output() can tell the folders the
+    job created or replaced from the ones it left alone."""
+    snapshot = {}
+    try:
+        names = os.listdir(output_dir)
+    except OSError:
+        return snapshot
+    for name in names:
+        try:
+            st = os.stat(os.path.join(output_dir, name))
+        except OSError:
+            continue
+        snapshot[name] = (st.st_ino, st.st_mtime_ns, st.st_ctime_ns)
+    return snapshot
+
+
+def quarantine_partial_output(kind: str, before: dict, output_dir: str) -> list:
+    """Move any folder a failed job created or replaced in `output_dir`
+    (new, or changed since the snapshot_output() `before`) out to
+    FAILED_DIR/<kind>/, so partial/broken output never lingers in the live
+    output tree. Returns [(original_name, destination_path), ...].
     """
     moved = []
-    try:
-        after_names = set(os.listdir(output_dir))
-    except OSError:
-        return moved
-    new_names = sorted(after_names - before_names)
+    after = snapshot_output(output_dir)
+    new_names = sorted(name for name, stamp in after.items() if before.get(name) != stamp)
     if not new_names:
         return moved
     dest_root = os.path.join(FAILED_DIR, kind)
@@ -2432,7 +2491,7 @@ class JobRunner:
                     "lyrics_source_result": None, "usdb_song_id": None}
 
         out_dir = NEW_SONGS_DIR if self.job["kind"] == "new" else REPAIRED_DIR
-        before_names = set(os.listdir(out_dir)) if os.path.isdir(out_dir) else set()
+        before = snapshot_output(out_dir)
 
         cmd = self.command()
         out("")
@@ -2538,7 +2597,7 @@ class JobRunner:
         quarantined_outputs = []
         if status == "failed":
             for name, dst in quarantine_partial_output(
-                    self.job["kind"], before_names, out_dir):
+                    self.job["kind"], before, out_dir):
                 out(f"  .. moved partial output to {dst}")
                 quarantined_outputs.append(dst)
                 quarantined_output = quarantined_output or dst
@@ -2637,10 +2696,12 @@ def finish_done_job(job: dict, result: dict) -> None:
     new song's lyrics are replaced by a trusted online source when one is
     found (usdb songs keep theirs, see finalize_new_job_lyrics()) BEFORE
     romanization runs on whatever text ends up final; then a cover_url from
-    the song list / broken.csv replaces the cover, and a repaired song's
-    #VIDEOGAP is measured (apply_video_gaps()). A new song with online
-    lyrics also gets its lyrics review (lyrics_review()). A "cover" repair
-    is complete as it is (prepare_cover_repair()) and gets none of this."""
+    the song list / broken.csv replaces the cover, a repaired song's
+    #VIDEOGAP is measured (apply_video_gaps()), and last a generated song
+    gets our #CREATOR and a new one the request's #GENRE
+    (apply_song_tags()). A new song with online lyrics also gets its lyrics
+    review (lyrics_review()). A "cover" repair is complete as it is
+    (prepare_cover_repair()) and gets none of this."""
     output_path = result["output_path"]
     if result.get("repair_mode_result") == "cover":
         return
@@ -2669,6 +2730,7 @@ def finish_done_job(job: dict, result: dict) -> None:
     if job["kind"] == "repair" and output_path and os.path.isfile(output_path):
         for name, value in apply_video_gaps(output_path).items():
             out(f"  .. #VIDEOGAP of {name} set to {value} (measured against the audio)")
+    apply_song_tags(job, result)
 
 
 def cmd_run(state, selection=None, control=None):

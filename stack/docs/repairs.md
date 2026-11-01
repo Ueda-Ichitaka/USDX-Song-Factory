@@ -7,22 +7,22 @@ All commands on this page are run from inside `stack/`.
 
 ## How it works
 
-1. Copy a song folder (its `*.txt`, audio, video, cover) into `input/`:
+1. Copy a song folder (its `*.txt`, audio, video, cover) into `input/repairs/`:
 
    ```
-   stack/input/ASP - Ich will brennen/ASP - Ich will brennen.txt
-   stack/input/ASP - Ich will brennen/ASP - Ich will brennen.mp3
+   stack/input/repairs/ASP - Ich will brennen/ASP - Ich will brennen.txt
+   stack/input/repairs/ASP - Ich will brennen/ASP - Ich will brennen.mp3
    ...
    ```
 
-2. Start the stack (`docker compose up -d`). Every folder in `input/` that
+2. Start the stack (`docker compose up -d`). Every folder in `input/repairs/` that
    contains an UltraStar txt is repaired into
    `output/repaired/<repair>/<song folder>/`, one folder per repair actually
    done: `gap/`, `sync/`, `recreated/` (a sync repair that had to re-create
    the song from the audio), `lyrics/`, `media/`, `cover/`. A song repaired
    again is merged into its older output there (files of the same name are
    overwritten).
-3. Your originals in `input/` are never modified.
+3. Your originals in `input/repairs/` are never modified.
 4. Every repaired song file gets the format version new songs have
    (`#VERSION:1.2.0`, first line) unless it already has one. `#AUDIO` repeats
    `#MP3` (as in new songs), and `#RELATIVE` and a UTF-8 `#ENCODING` are
@@ -82,9 +82,9 @@ a tiny whisper model. Force it by setting `#LANGUAGE` in the txt, or with
 
 ## `broken.csv`: tell the stack what is broken
 
-Without `broken.csv`, every folder in `input/` gets the same blind
+Without `broken.csv`, every folder in `input/repairs/` gets the same blind
 `REPAIR_MODE` - correct, but wasteful when you know a song's `#GAP` is just
-off by a few seconds. Put `input/broken.csv` next to the song folders (it is
+off by a few seconds. Put `input/broken.csv` into `input/` (it is
 the export of the "report a broken song" admin view of
 [karaoke-dashboard](https://github.com/Ueda-Ichitaka/karaoke-dashboard),
 `GET /admin/reports.csv`). Each folder is matched to its report by
@@ -138,12 +138,12 @@ back to `pending` once you have fixed the report or the folder.
 `sync` mode never touches the lyrics themselves - re-timing wrong words only
 moves the problem. If a song's lyrics are actually wrong (mis-heard words,
 missing lines), put a plain text file named `lyrics.txt` next to its txt and
-audio in `input/`:
+audio in `input/repairs/`:
 
 ```
-stack/input/ASP - Ich will brennen/ASP - Ich will brennen.txt
-stack/input/ASP - Ich will brennen/ASP - Ich will brennen.mp3
-stack/input/ASP - Ich will brennen/lyrics.txt      <- one sung line per text line
+stack/input/repairs/ASP - Ich will brennen/ASP - Ich will brennen.txt
+stack/input/repairs/ASP - Ich will brennen/ASP - Ich will brennen.mp3
+stack/input/repairs/ASP - Ich will brennen/lyrics.txt      <- one sung line per text line
 ```
 
 Its presence switches that song's repair to `lyrics` mode. Each line of
@@ -172,9 +172,9 @@ not shortened).
 Put it next to the song's txt, in the same folder as `lyrics.txt`:
 
 ```
-stack/input/Lord of the Lost - Six Feet Underground/Lord of the Lost - Six Feet Underground.txt
-stack/input/Lord of the Lost - Six Feet Underground/lyrics.txt
-stack/input/Lord of the Lost - Six Feet Underground/song_end.txt   <- 4:34.5
+stack/input/repairs/Lord of the Lost - Six Feet Underground/Lord of the Lost - Six Feet Underground.txt
+stack/input/repairs/Lord of the Lost - Six Feet Underground/lyrics.txt
+stack/input/repairs/Lord of the Lost - Six Feet Underground/song_end.txt   <- 4:34.5
 ```
 
 Format (UTF-8 plain text):
@@ -210,7 +210,7 @@ Rules:
   later repair of that output uses it again.
 
 To fix a finished new song this way, copy its folder from `output/new/` to
-`input/`, add `song_end.txt` (and `lyrics.txt` - the one written next to the
+`input/repairs/`, add `song_end.txt` (and `lyrics.txt` - the one written next to the
 song is fine) and run the repair.
 
 ## Anchors (`anchors.txt`)
@@ -224,8 +224,8 @@ anchor can no longer push the lines after it out of place.
 Put `anchors.txt` next to the song's txt and `lyrics.txt`:
 
 ```
-stack/input/Lord of the Lost - Six Feet Underground/lyrics.txt
-stack/input/Lord of the Lost - Six Feet Underground/anchors.txt
+stack/input/repairs/Lord of the Lost - Six Feet Underground/lyrics.txt
+stack/input/repairs/Lord of the Lost - Six Feet Underground/anchors.txt
 ```
 
 Format (UTF-8 plain text, one entry per line):

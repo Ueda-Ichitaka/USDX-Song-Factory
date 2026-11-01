@@ -13,12 +13,12 @@ is removed; `#AUDIO` repeats `#MP3` as in new songs.
 Also the header rules both need: is_duet() (P1/P2 voices - the stack does
 not repair duets), shift_play_range() (#START and #END move with a #GAP
 shift; a #START the first note would come before is removed, since USDX
-plays silence until #START) and set_tag() (one tag of a finished song
-file, e.g. #VIDEOGAP).
+plays silence until #START), set_tag() and remove_tag() (one tag of a
+finished song file, e.g. #VIDEOGAP, #CREATOR, #GENRE).
 
 Used by repair.py (every repaired song file it writes) and orchestrator.py
 (the cover repair, which copies a song without repair.py, duet folders,
-#VIDEOGAP). No heavy imports, so both can use it.
+#VIDEOGAP, #CREATOR and #GENRE). No heavy imports, so both can use it.
 """
 
 import re
@@ -138,6 +138,17 @@ def shift_play_range(header: list, delta_ms: float, first_note_s: float,
             raw = f"#END:{int(round(end))}"
         out.append(raw)
     return out
+
+
+def remove_tag(text: str, tag: str) -> str:
+    """A whole song file's text without the header lines of one tag (any
+    case). The rest of the file stays as it is."""
+    lines = text.splitlines(keepends=True)
+    end = 0
+    while end < len(lines) and lines[end].strip().startswith("#"):
+        end += 1
+    kept = [line for line in lines[:end] if header_tag(line)[0] != tag.upper()]
+    return "".join(kept + lines[end:])
 
 
 def set_tag(text: str, tag: str, value: str) -> str:

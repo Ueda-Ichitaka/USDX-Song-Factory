@@ -17,7 +17,8 @@ import tempfile
 TMP_DATA = tempfile.mkdtemp(prefix="ultrasinger-test-")
 # set, not setdefault: inside the container the compose file points these
 # at the real song list, output, state and logs
-for _name, _rel in (("INPUT_DIR", "input"), ("SONGS_FILE", "input/song-requests.csv"),
+for _name, _rel in (("INPUT_DIR", "input"), ("REPAIRS_DIR", "input/repairs"),
+                    ("SONGS_FILE", "input/song-requests.csv"),
                     ("BROKEN_CSV", "input/broken.csv"), ("OUTPUT_DIR", "output"),
                     ("NEW_SONGS_DIR", "output/new"), ("REPAIRED_DIR", "output/repaired"),
                     ("FAILED_DIR", "output/failed"), ("REPORT_FILE", "output/report.md"),
@@ -31,7 +32,7 @@ import orchestrator as orch  # noqa: E402
 
 # every data path must point into TMP_DATA before any check runs: in the
 # container the compose file sets them to the real /data folders
-_DATA_PATHS = ("SONGS_FILE", "INPUT_DIR", "BROKEN_CSV", "OUTPUT_DIR", "NEW_SONGS_DIR",
+_DATA_PATHS = ("SONGS_FILE", "INPUT_DIR", "REPAIRS_DIR", "BROKEN_CSV", "OUTPUT_DIR", "NEW_SONGS_DIR",
                "REPAIRED_DIR", "FAILED_DIR", "REPORT_FILE", "STATE_DIR", "LOGS_DIR",
                "WORK_DIR", "COOKIES_FILE")
 _outside = [n for n in _DATA_PATHS
@@ -352,15 +353,29 @@ check("missing local input file -> error message names the resolved path",
 qdir = tempfile.mkdtemp(prefix="ultrasinger-quarantine-src-")
 orch.FAILED_DIR = os.path.join(TMP_DATA, "failed")
 
-before = set(os.listdir(qdir))
+# two songs from earlier runs: one this job leaves alone, one it replaces
+# (UltraSinger replaces an existing song folder of the same name)
+for _old in ("Untouched Song", "Replaced Song"):
+    os.makedirs(os.path.join(qdir, _old))
+    with open(os.path.join(qdir, _old, "old.txt"), "w", encoding="utf-8") as f:
+        f.write("old")
+    os.utime(os.path.join(qdir, _old), (1_000_000_000, 1_000_000_000))
+before = orch.snapshot_output(qdir)
+shutil.rmtree(os.path.join(qdir, "Replaced Song"))
+os.makedirs(os.path.join(qdir, "Replaced Song"))
+with open(os.path.join(qdir, "Replaced Song", "partial.txt"), "w", encoding="utf-8") as f:
+    f.write("partial")
 partial = os.path.join(qdir, "Partial Song")
 os.makedirs(partial)
 with open(os.path.join(partial, "x.txt"), "w", encoding="utf-8") as f:
     f.write("x")
 
 moved = orch.quarantine_partial_output("new", before, qdir)
-check("quarantine_partial_output moves exactly the new folder",
-      len(moved) == 1 and moved[0][0] == "Partial Song")
+check(f"quarantine_partial_output moves the new and the replaced folder, not the "
+      f"untouched one (got {moved})",
+      [name for name, _ in moved] == ["Partial Song", "Replaced Song"]
+      and os.path.isfile(os.path.join(qdir, "Untouched Song", "old.txt")))
+moved = moved[:1]
 check("quarantine_partial_output removes it from the live output dir",
       not os.path.isdir(partial))
 check("quarantine_partial_output destination is under FAILED_DIR/<kind>/",
@@ -1420,10 +1435,10 @@ with open(plan_broken_csv, "w", encoding="utf-8") as f:
             "Metric,Black Sheep,async,,\n"
             "Some Band,Other Category Song,other,needs a human look,\n")
 
-orig_input_dir = orch.INPUT_DIR
+orig_repairs_dir = orch.REPAIRS_DIR
 orig_songs_file = orch.SONGS_FILE
 orig_broken_csv = orch.BROKEN_CSV
-orch.INPUT_DIR = plan_input
+orch.REPAIRS_DIR = plan_input
 orch.SONGS_FILE = os.path.join(TMP_DATA, "no-such-songs.csv")
 orch.BROKEN_CSV = plan_broken_csv
 try:
@@ -1449,7 +1464,7 @@ try:
           "job's language empty, not a guess",
           not by_label["Metric - Black Sheep"].get("language"))
 finally:
-    orch.INPUT_DIR = orig_input_dir
+    orch.REPAIRS_DIR = orig_repairs_dir
     orch.SONGS_FILE = orig_songs_file
     orch.BROKEN_CSV = orig_broken_csv
 
@@ -2069,25 +2084,27 @@ check("new_job_id: a skipped row is keyed by its label",
 check("repair_job_id: keyed by the folder name",
       orch.repair_job_id("/data/input/Some Song/") == "repair|Some Song")
 
-_saved_songs, _saved_input = orch.SONGS_FILE, orch.INPUT_DIR
+_saved_songs, _saved_input, _saved_repairs = orch.SONGS_FILE, orch.INPUT_DIR, orch.REPAIRS_DIR
 _ids_dir = tempfile.mkdtemp(prefix="ids-")
 try:
     with open(os.path.join(_ids_dir, "songs.csv"), "w", encoding="utf-8") as f:
         f.write("band name,song name,youtube link\n"
                 "A,One,https://y/1\nB,Two,skip\n")
-    os.makedirs(os.path.join(_ids_dir, "input", "Fix Me"))
-    with open(os.path.join(_ids_dir, "input", "Fix Me", "Fix Me.txt"), "w") as f:
-        f.write("#TITLE:x\n#BPM:100\n: 0 4 0 la\nE\n")
-    os.makedirs(os.path.join(_ids_dir, "input", "Not A Song"))
+    for _folder in (os.path.join("repairs", "Fix Me"), "Outside Repairs"):
+        os.makedirs(os.path.join(_ids_dir, "input", _folder))
+        with open(os.path.join(_ids_dir, "input", _folder, "Fix Me.txt"), "w") as f:
+            f.write("#TITLE:x\n#BPM:100\n: 0 4 0 la\nE\n")
+    os.makedirs(os.path.join(_ids_dir, "input", "repairs", "Not A Song"))
     orch.SONGS_FILE = os.path.join(_ids_dir, "songs.csv")
     orch.INPUT_DIR = os.path.join(_ids_dir, "input")
+    orch.REPAIRS_DIR = os.path.join(_ids_dir, "input", "repairs")
     _current_ids = orch.current_job_ids()
     _plan_state = orch.State()
     _plan_ids = {j["id"] for j in orch.build_job_plan(_plan_state)}
 finally:
-    orch.SONGS_FILE, orch.INPUT_DIR = _saved_songs, _saved_input
-check(f"current_job_ids: every song-list row and every input folder with a "
-      f"song txt, nothing else (got {sorted(_current_ids)})",
+    orch.SONGS_FILE, orch.INPUT_DIR, orch.REPAIRS_DIR = _saved_songs, _saved_input, _saved_repairs
+check(f"current_job_ids: every song-list row and every folder with a song txt "
+      f"in input/repairs/, nothing else (got {sorted(_current_ids)})",
       _current_ids == {"new|https://y/1", "new|skip|B - Two", "repair|Fix Me"})
 check("current_job_ids: agrees with the jobs build_job_plan() registers",
       _current_ids == _plan_ids)
@@ -2296,9 +2313,9 @@ _skip_plain = {"band": "X", "title": "Y", "url": "skip", "duet": False}
 check("new_job_id: skipped rows of the plain and the duet version do not collide",
       orch.new_job_id(_skip_duet) != orch.new_job_id(_skip_plain))
 
-_orig_songs, _orig_input, _orig_broken = orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV
+_orig_songs, _orig_input, _orig_broken = orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV
 orch.SONGS_FILE = _dash_csv
-orch.INPUT_DIR = os.path.join(TMP_DATA, "no-input-dir")
+orch.REPAIRS_DIR = os.path.join(TMP_DATA, "no-input-dir")
 orch.BROKEN_CSV = os.path.join(TMP_DATA, "no-broken.csv")
 try:
     _duet_state = orch.State()
@@ -2324,7 +2341,7 @@ try:
     check(f"render_progress: skipped duet versions are named as such (got {_p!r})",
           "duet" in _p.lower())
 finally:
-    orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV = _orig_songs, _orig_input, _orig_broken
+    orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV = _orig_songs, _orig_input, _orig_broken
 
 # language: the dashboard also exports the pseudo-code "mixed" (songs that
 # switch language) - no language whisper or the aligner knows, so it must
@@ -2408,8 +2425,8 @@ _xandria_dir = os.path.join(_style_input, "Xandria - Nightfall")
 os.makedirs(_xandria_dir, exist_ok=True)
 with open(os.path.join(_xandria_dir, "Xandria - Nightfall.txt"), "w", encoding="utf-8") as f:
     f.write("#ARTIST:Xandria\n#TITLE:Nightfall\n#BPM:300\n#GAP:1000\n: 0 4 5 Night\nE\n")
-_orig_songs, _orig_input, _orig_broken = orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV
-orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV = _style_csv, _style_input, _style_broken
+_orig_songs, _orig_input, _orig_broken = orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV
+orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV = _style_csv, _style_input, _style_broken
 try:
     _style_state = orch.State()
     _sj = {j["id"]: j for j in orch.build_job_plan(_style_state)}
@@ -2427,7 +2444,7 @@ try:
           "Unknown genre or trait values" in _report
           and "| Eisenfunk - Majak | genre:polka, trait:yodel |" in _report)
 finally:
-    orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV = _orig_songs, _orig_input, _orig_broken
+    orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV = _orig_songs, _orig_input, _orig_broken
 
 _no_style_state = orch.State()
 _no_style_state.data["jobs"]["x"] = {"id": "x", "kind": "new", "status": "pending", "label": "X"}
@@ -2479,27 +2496,32 @@ check("apply_cover_url: no link, nothing to do",
 
 # finish_done_job(): the post-processing of a finished job, in order
 _calls = []
-_saved_fns = (orch.finalize_new_job_lyrics, orch.run_romanize_step, orch.apply_cover_url)
+_saved_fns = (orch.finalize_new_job_lyrics, orch.run_romanize_step, orch.apply_cover_url,
+              orch.apply_song_tags)
+orch.apply_song_tags = lambda job, result: _calls.append("tags")
 orch.finalize_new_job_lyrics = lambda job, path, usdb_id=None: _calls.append("lyrics") or "online:x"
 orch.run_romanize_step = lambda job, path: _calls.append("romanize")
 orch.apply_cover_url = lambda path, url, fetch=None: _calls.append(("cover", url)) or True
 try:
     _job_new = {"kind": "new", "cover_url": "https://img/c.jpg"}
     orch.finish_done_job(_job_new, {"output_path": "/o/x.txt", "usdb_song_id": None})
-    check(f"finish_done_job: new song -> lyrics, romanize, then the cover (got {_calls})",
-          _calls == ["lyrics", "romanize", ("cover", "https://img/c.jpg")]
+    check(f"finish_done_job: new song -> lyrics, romanize, the cover, then creator/genre "
+          f"(got {_calls})",
+          _calls == ["lyrics", "romanize", ("cover", "https://img/c.jpg"), "tags"]
           and _job_new["lyrics_source"] == "online:x")
     _calls.clear()
     orch.finish_done_job({"kind": "repair", "cover_url": "https://img/r.png"},
                          {"output_path": "/o/y.txt"})
-    check(f"finish_done_job: repair -> romanize, then the report's cover (got {_calls})",
-          _calls == ["romanize", ("cover", "https://img/r.png")])
+    check(f"finish_done_job: repair -> romanize, the report's cover, then creator/genre "
+          f"(got {_calls})",
+          _calls == ["romanize", ("cover", "https://img/r.png"), "tags"])
     _calls.clear()
     orch.finish_done_job({"kind": "new", "cover_url": ""}, {"output_path": "/o/z.txt"})
     check("finish_done_job: no cover_url -> no cover step",
           not any(isinstance(c, tuple) for c in _calls))
 finally:
-    orch.finalize_new_job_lyrics, orch.run_romanize_step, orch.apply_cover_url = _saved_fns
+    (orch.finalize_new_job_lyrics, orch.run_romanize_step, orch.apply_cover_url,
+     orch.apply_song_tags) = _saved_fns
 
 # --------------------------------------------------------------------------
 # lyrics review: UltraSinger's own transcript (the txt before the lyrics step
@@ -3016,7 +3038,7 @@ finally:
 # cmd_run(): a finished repair is filed into its category folder and the
 # state records the new path
 _run_dir = tempfile.mkdtemp()
-_saved = (orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV, orch.REPAIRED_DIR,
+_saved = (orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV, orch.REPAIRED_DIR,
           orch.JobRunner, orch.finish_done_job, orch.stdin_listener)
 
 
@@ -3039,7 +3061,7 @@ try:
     with open(os.path.join(_run_dir, "input", "Fix Me", "Fix Me.txt"), "w", encoding="utf-8") as f:
         f.write("#TITLE:x\n#ARTIST:y\n#BPM:100\n: 0 4 0 la\nE\n")
     orch.SONGS_FILE = os.path.join(_run_dir, "songs.csv")
-    orch.INPUT_DIR = os.path.join(_run_dir, "input")
+    orch.REPAIRS_DIR = os.path.join(_run_dir, "input")
     orch.BROKEN_CSV = os.path.join(_run_dir, "input", "broken.csv")
     orch.REPAIRED_DIR = os.path.join(_run_dir, "repaired")
     orch.JobRunner = _FakeRepairRunner
@@ -3060,7 +3082,7 @@ try:
     check("cmd_repair_one: the repaired song is filed into its category folder too",
           os.path.isfile(_want) and not os.path.exists(os.path.join(_run_dir, "repaired", "Fix Me")))
 finally:
-    (orch.SONGS_FILE, orch.INPUT_DIR, orch.BROKEN_CSV, orch.REPAIRED_DIR,
+    (orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV, orch.REPAIRED_DIR,
      orch.JobRunner, orch.finish_done_job, orch.stdin_listener) = _saved
     shutil.rmtree(_run_dir)
 
@@ -3146,6 +3168,73 @@ try:
           _measured == [("a.mp3", "a.mp4")])
 finally:
     shutil.rmtree(_vg_dir)
+
+# --------------------------------------------------------------------------
+# creator_value() / apply_song_tags(): a generated song gets our #CREATOR
+# (CREATOR_NAME, " with USDX-Song-Factory" behind it when
+# CREATOR_FACTORY_SUFFIX is on) and a new one the request's #GENRE; USDB
+# songs and repaired songs keep theirs
+# --------------------------------------------------------------------------
+
+check("creator_value: name with the factory suffix",
+      orch.creator_value("ueda", True) == "ueda with USDX-Song-Factory")
+check("creator_value: name without the suffix",
+      orch.creator_value("ueda", False) == "ueda")
+check("creator_value: no name -> the factory name, the switch does not matter",
+      orch.creator_value("", True) == "USDX-Song-Factory"
+      and orch.creator_value("  ", False) == "USDX-Song-Factory")
+
+_tags_dir = tempfile.mkdtemp(prefix="song-tags-")
+_saved_creator = (orch.CREATOR_NAME, orch.CREATOR_FACTORY_SUFFIX)
+orch.CREATOR_NAME, orch.CREATOR_FACTORY_SUFFIX = "ueda", True
+
+
+def _tagged_song(name, header="#CREATOR:UltraSinger [GitHub] 0.0.13\n#GENRE:Rock,\n"):
+    path = os.path.join(_tags_dir, name + ".txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("#TITLE:x\n#ARTIST:y\n" + header + "#BPM:300\n: 0 4 0 la\nE\n")
+    return path
+
+
+def _read(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+try:
+    _p = _tagged_song("generated")
+    orch.apply_song_tags({"kind": "new", "genres": ["metal", "gothic"], "style_unknown": []},
+                         {"output_path": _p, "usdb_song_id": None})
+    check(f"apply_song_tags: a generated new song gets our creator and the request's genres "
+          f"(got {_read(_p)!r})",
+          "#CREATOR:ueda with USDX-Song-Factory\n" in _read(_p)
+          and "#GENRE:Gothic, Metal\n" in _read(_p) and "UltraSinger [GitHub]" not in _read(_p))
+    _p = _tagged_song("no-genre")
+    orch.apply_song_tags({"kind": "new", "genres": [], "style_unknown": []},
+                         {"output_path": _p, "usdb_song_id": None})
+    check("apply_song_tags: a request with no genre but default -> no #GENRE line",
+          "#GENRE" not in _read(_p) and "#CREATOR:ueda with USDX-Song-Factory" in _read(_p))
+    _p = _tagged_song("usdb", "#CREATOR:someone\n#GENRE:Pop\n")
+    orch.apply_song_tags({"kind": "new", "genres": ["metal"], "style_unknown": []},
+                         {"output_path": _p, "usdb_song_id": "animux#5"})
+    check("apply_song_tags: a USDB song keeps its creator and genre",
+          "#CREATOR:someone\n#GENRE:Pop\n" in _read(_p))
+    _p = _tagged_song("recreated")
+    orch.apply_song_tags({"kind": "repair", "genres": ["metal"], "style_unknown": []},
+                         {"output_path": _p, "repair_mode_result": "recreated"})
+    check("apply_song_tags: a re-created repair gets our creator, its #GENRE stays",
+          "#CREATOR:ueda with USDX-Song-Factory\n" in _read(_p) and "#GENRE:Rock,\n" in _read(_p))
+    _p = _tagged_song("gap-repair", "#CREATOR:someone\n")
+    orch.apply_song_tags({"kind": "repair", "genres": ["metal"], "style_unknown": []},
+                         {"output_path": _p, "repair_mode_result": "gap"})
+    check("apply_song_tags: any other repair keeps its creator",
+          "#CREATOR:someone\n" in _read(_p))
+    check("apply_song_tags: a missing output file is no error",
+          orch.apply_song_tags({"kind": "new", "genres": []},
+                               {"output_path": os.path.join(_tags_dir, "gone.txt")}) is None)
+finally:
+    orch.CREATOR_NAME, orch.CREATOR_FACTORY_SUFFIX = _saved_creator
+    shutil.rmtree(_tags_dir)
 
 print()
 if failures:

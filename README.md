@@ -91,9 +91,9 @@ docker compose up -d
 
 Copy the folders from `output/new/` into your UltraStar Deluxe song folder.
 `reset` never deletes song folders - it only marks songs as to-do again. A
-redone song is written as a new folder next to the old one
-(`Artist - Title (1)`); delete or move the old folder first if you want the
-new version under the original name.
+redone song replaces its old folder in `output/new/` (same name, the old
+files are deleted first); copy the old version away first if you want to
+keep it.
 For the GPU service, use `ultrasinger-rocm` instead of `ultrasinger` in the
 commands above and below.
 
@@ -106,7 +106,9 @@ step 2.
 The two input files are designed to come from the companion project
 [karaoke-dashboard](https://github.com/Ueda-Ichitaka/karaoke-dashboard), a web
 app where people request songs and report broken ones. Its admin exports go
-straight into `stack/input/`:
+straight into `stack/input/`. The songs to repair go into
+`stack/input/repairs/` (one folder per song), lyrics files the lists point to
+into `stack/input/songtexts/`:
 
 | Dashboard export | Save as | Used for |
 |---|---|---|
@@ -140,15 +142,19 @@ finished songs are skipped. Every command and option:
 ## Library utilities
 
 `utilities/` has tools that find broken songs in an existing UltraStar
-library and hand them to the stack for repair. They run from the repository
-root (not from `stack/`); the library is only read, never changed.
+library and hand them to the stack for repair, and tools that fill in missing
+genres. They run from the repository root (not from `stack/`); the library is
+only read, never changed - except by `apply_genres.sh`, which writes the
+genres you checked (backups of every changed file are kept).
 
 | Tool | What it does |
 |---|---|
 | `run_library_check.sh` | scans a library for songs with a wrong `#GAP` or drifting timing; writes a report |
-| `import_broken_songs.py` | copies the songs the scan found into `stack/input/` and adds their `broken.csv` rows |
+| `import_broken_songs.py` | copies the songs the scan found into `stack/input/repairs/` and adds their `broken.csv` rows |
 | `fill_lyrics_links.py` | fills empty `lyrics_url` cells of `broken.csv` (lrclib.net, Genius) |
-| `copy_reported_songs.py` | copies the songs of a karaoke-dashboard `broken.csv` export into `stack/input/` |
+| `copy_reported_songs.py` | copies the songs of a karaoke-dashboard `broken.csv` export into `stack/input/repairs/` |
+| `genre_lookup.py` | lists every song's `#GENRE`, looks up the missing ones online (MusicBrainz, Wikidata, Metal Archives, Last.fm) |
+| `apply_genres.sh` | writes the looked-up genres into the song files (the only tool that changes the library) |
 
 ```bash
 # 1. Scan the library (runs in the stack's container, takes many hours)
@@ -167,6 +173,11 @@ python3 utilities/copy_reported_songs.py --library /path/to/library --csv ~/Down
 
 # Then repair them (from stack/)
 docker compose up -d   # or only the repairs: docker compose run -d ultrasinger python /app/orchestrator/orchestrator.py run --only repairs
+
+# Missing genres: list them with a prediction, check the list, then write them
+python3 utilities/genre_lookup.py --library /path/to/library   # "library analysis/genre-predictions.tsv"
+utilities/apply_genres.sh            # dry run
+utilities/apply_genres.sh --apply    # writes #GENRE (backups in "library analysis/genre-backup-<time>")
 ```
 
 Without `--apply` the Python tools only show what they would do. Each

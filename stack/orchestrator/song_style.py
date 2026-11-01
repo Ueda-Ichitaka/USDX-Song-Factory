@@ -15,8 +15,11 @@ UPSTREAM_REQUESTS.md):
 - values are per song, not per band;
 - blank or `default` genre and blank or `none` trait mean no special
   handling;
-- a value this file does not know is returned separately and never used,
-  so the dashboard can add labels at any time.
+- a value this file does not know is returned separately and never used
+  for the pipeline, so the dashboard can add labels at any time.
+
+genre_tag_value() turns a song's genres (known and unknown, without
+`default`) into the text of its #GENRE tag.
 """
 
 GENRES = frozenset({
@@ -24,6 +27,8 @@ GENRES = frozenset({
     "kpop", "jpop", "rock", "industrial", "ebm",
 })
 NEUTRAL_GENRE = "default"
+# genre codes whose display name is not just the capitalized code
+GENRE_DISPLAY = {"kpop": "K-Pop", "jpop": "J-Pop", "ebm": "EBM"}
 
 TRAITS = frozenset({
     "harsh_vocals", "operatic_vocals", "loud_high_instruments", "choir",
@@ -66,6 +71,20 @@ def style_fields(row: dict) -> dict:
         "style_unknown": [f"genre:{v}" for v in unknown_genres]
                          + [f"trait:{v}" for v in unknown_traits],
     }
+
+
+def genre_display(code: str) -> str:
+    """The display name of a genre code ("power_metal" -> "Power Metal")."""
+    return GENRE_DISPLAY.get(code) or " ".join(w.capitalize() for w in code.split("_"))
+
+
+def genre_tag_value(job: dict) -> str:
+    """The #GENRE text of a job: its genres and the unknown genre values of
+    its row (style_unknown "genre:<code>"), sorted, as display names,
+    ", "-joined; empty when the row names no genre but `default`."""
+    codes = set(job.get("genres") or [])
+    codes |= {v.split(":", 1)[1] for v in job.get("style_unknown") or [] if v.startswith("genre:")}
+    return ", ".join(genre_display(c) for c in sorted(codes))
 
 
 def describe(job: dict) -> str:

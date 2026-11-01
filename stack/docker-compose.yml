@@ -16,6 +16,8 @@ x-common-env-file: &common-env-file
 x-common-env: &common-env
   SONGS_FILE: /data/input/song-requests.csv
   INPUT_DIR: /data/input
+  # the song folders to repair (one folder per song)
+  REPAIRS_DIR: /data/input/repairs
   BROKEN_CSV: /data/input/broken.csv
   OUTPUT_DIR: /data/output
   NEW_SONGS_DIR: /data/output/new
@@ -33,6 +35,9 @@ x-common-env: &common-env
   ROMANIZE: ${ROMANIZE:-1}
   ROMANIZE_STYLE: ${ROMANIZE_STYLE:-scientific}
   LYRICS_ENABLED: ${LYRICS_ENABLED:-1}
+  # #CREATOR of generated songs - see .env.example
+  CREATOR_NAME: ${CREATOR_NAME:-}
+  CREATOR_FACTORY_SUFFIX: ${CREATOR_FACTORY_SUFFIX:-1}
   GENIUS_API_KEY: ${GENIUS_API_KEY:-}
   # USDB (usdb.animux.de) account - when both are set, a new song first
   # checks for an existing matching upload there before generating from

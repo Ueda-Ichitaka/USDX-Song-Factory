@@ -1464,8 +1464,8 @@ def recreate_song(song_dir: str, out_dir: str, work_dir: str, audio_path: str,
         return None
 
     # the folder UltraSinger wrote the song to: the newest one holding a
-    # song file (an earlier run can have left folders in us_out, and
-    # UltraSinger then writes to "<name> (1)")
+    # song file (an earlier run can have left folders of other names in
+    # us_out)
     created = [os.path.join(us_out, d) for d in os.listdir(us_out)
                if os.path.isdir(os.path.join(us_out, d))]
     created = [d for d in created if find_ultrastar_txts(d)]

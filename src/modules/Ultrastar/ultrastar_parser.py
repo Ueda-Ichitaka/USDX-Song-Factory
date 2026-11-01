@@ -16,7 +16,7 @@ from modules.Ultrastar.ultrastar_txt import (
     UltrastarNoteLine,
     get_note_type_from_string
 )
-from modules.os_helper import get_unused_song_output_dir
+from modules.os_helper import replace_song_output_dir
 
 
 def parse(input_file: str) -> UltrastarTxtValue:
@@ -110,8 +110,7 @@ def parse_ultrastar_txt(input_file_path: str, output_folder_path: str) -> tuple[
         ultrastar_class.artist.strip() + " - " + ultrastar_class.title.strip(),
     )
 
-    # todo: get_unused_song_output_dir should be in the runner
-    song_output = get_unused_song_output_dir(str(song_output))
+    song_output = replace_song_output_dir(str(song_output), keep=[input_file_path])
     os_helper.create_folder(song_output)
 
     dirname = os.path.dirname(input_file_path)

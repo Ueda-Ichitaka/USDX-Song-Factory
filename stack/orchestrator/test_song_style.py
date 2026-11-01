@@ -94,6 +94,22 @@ check("describe: a job from before the columns",
       song_style.describe({}) == "default | none")
 
 
+# --------------------------------------------------------------------------
+# genre_tag_value(): the #GENRE text of a song request - every genre value
+# but "default" (unknown ones too), as display names, ", "-joined
+# --------------------------------------------------------------------------
+
+check("genre_display: display names, with the spelled-out exceptions",
+      [song_style.genre_display(c) for c in ("gothic", "kpop", "jpop", "ebm", "power_metal")]
+      == ["Gothic", "K-Pop", "J-Pop", "EBM", "Power Metal"])
+check("genre_tag_value: known and unknown genres, sorted, display names",
+      song_style.genre_tag_value({"genres": ["metal", "gothic"],
+                                  "style_unknown": ["genre:polka", "trait:yodel"]})
+      == "Gothic, Metal, Polka")
+check("genre_tag_value: no genre but default -> empty",
+      song_style.genre_tag_value({"genres": [], "style_unknown": []}) == ""
+      and song_style.genre_tag_value({}) == "")
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")

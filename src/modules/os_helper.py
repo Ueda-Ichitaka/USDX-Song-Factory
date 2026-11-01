@@ -1,9 +1,15 @@
-"""OS helper functions."""
+"""OS helper functions.
+
+About me: small file and folder helpers of UltraSinger - creating, moving
+and copying files, sanitizing file names, and preparing a song's output
+folder: an existing folder of the same name is replaced by the new song
+(replace_song_output_dir()), unless it holds the run's own input file.
+"""
 
 import os
 import shutil
 
-from modules.console_colors import ULTRASINGER_HEAD, red_highlighted
+from modules.console_colors import ULTRASINGER_HEAD
 
 
 def create_folder(folder_name: str) -> None:
@@ -67,21 +73,18 @@ def sanitize_filename(fname: str) -> str:
     return fname
 
 
-def get_unused_song_output_dir(path: str) -> str:
-    """Get an unused song output dir"""
-    # check if dir exists and add (i) if it does
-    i = 1
-    if check_if_folder_exists(path):
-        path = f"{path} ({i})"
-    else:
+def replace_song_output_dir(path: str, keep=()) -> str:
+    """The song output folder `path`, emptied for the new song: an existing
+    folder is removed, so the new song replaces the old one with no stale
+    files left. A folder that holds one of the `keep` files (the run's own
+    input) is kept, and the new song's files overwrite the old ones in it."""
+    if not check_if_folder_exists(path):
         return path
-
-    while check_if_folder_exists(path):
-        path = path.replace(f"({i - 1})", f"({i})")
-        i += 1
-        if i > 999:
-            print(
-                f"{ULTRASINGER_HEAD} {red_highlighted('Error: Could not create output folder! (999) is the maximum number of tries.')}"
-            )
-            raise ValueError("Could not create output folder! (999) is the maximum number of tries.")
+    folder = os.path.realpath(path)
+    for item in keep:
+        if item and os.path.realpath(item).startswith(folder + os.sep):
+            print(f"{ULTRASINGER_HEAD} Output folder holds the input file, writing into it -> {path}")
+            return path
+    print(f"{ULTRASINGER_HEAD} Replacing the existing output folder -> {path}")
+    shutil.rmtree(path)
     return path

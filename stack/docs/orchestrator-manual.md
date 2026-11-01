@@ -26,7 +26,7 @@ SYNOPSIS
 
 DESCRIPTION
     Reads the want-list (input/song-requests.csv) and the song folders in
-    input/, plans one job per song, runs the pending ones one after another
+    input/repairs/, plans one job per song, runs the pending ones one after another
     and records every result in state/state.json. Finished jobs are skipped
     on the next run, so a run can be stopped and resumed at any time.
 
@@ -35,7 +35,7 @@ DESCRIPTION
     re-detected; otherwise the song is generated from scratch (vocal
     separation, transcription, and online lyrics force-aligned to the audio
     when a lyrics source is found). A repair job fixes a song folder from
-    input/ (#GAP only, resync, or trusted lyrics - see repairs.md).
+    input/repairs/ (#GAP only, resync, or trusted lyrics - see repairs.md).
 
 COMMANDS
     run                 Process all pending jobs. This is the default when no
@@ -64,7 +64,7 @@ SELECTION OPTIONS  (run, list, report, reset)
                           generated  new songs USDB does not have; created
                                      from scratch
                           usdb       new songs USDB has; pulled from USDB
-                          repairs    songs repaired from input/
+                          repairs    songs repaired from input/repairs/
                         Whether a new song is "generated" or "usdb" is only
                         known from a USDB lookup, so before a run with
                         `generated` or `usdb` every pending new song is
@@ -95,7 +95,7 @@ INTERACTIVE COMMANDS  (attached to a running `docker compose up`)
     See running.md, "Interactive commands".
 
 ENVIRONMENT
-    SONGS_FILE, BROKEN_CSV, INPUT_DIR, OUTPUT_DIR, NEW_SONGS_DIR, STATE_DIR,
+    SONGS_FILE, BROKEN_CSV, INPUT_DIR, REPAIRS_DIR, OUTPUT_DIR, NEW_SONGS_DIR, STATE_DIR,
     LOGS_DIR, WORK_DIR, MAX_ATTEMPTS, JOB_TIMEOUT_MIN, LYRICS_ENABLED,
     GENIUS_API_KEY, USDB_USERNAME, USDB_PASSWORD, USDB_EU_EMAIL,
     USDB_EU_PASSWORD, ROMANIZE, WHISPER_MODEL, DEMUCS_MODEL.
@@ -104,7 +104,8 @@ ENVIRONMENT
 FILES
     input/song-requests.csv   want-list of new songs
     input/broken.csv          reports describing what is wrong with a repair
-    input/<song folder>/      songs to repair
+    input/songtexts/          lyrics files the csv rows point to
+    input/repairs/<song folder>/  songs to repair
     output/new/               created songs
     output/repaired/<repair>/ repaired songs, one folder per repair done:
                               gap, sync, recreated, lyrics, media, cover

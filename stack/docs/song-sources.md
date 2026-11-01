@@ -79,7 +79,7 @@ before trusting the transcription:
 1. **`lyrics_url` from the song list**, if given - used directly. A link
    (genius.com, an lrclib.net track page, a plain text or `.lrc` file on the
    web), or a lyrics file under `stack/input/` (such as
-   `lyrics/Die Funkhausgruppe - Die Physiker.txt`) - see
+   `songtexts/Die Funkhausgruppe - Die Physiker.txt`) - see
    [new-songs.md](new-songs.md#optional-columns).
 2. Otherwise all search sources are asked and the best-matching result wins
    (below a minimum confidence nothing is used):

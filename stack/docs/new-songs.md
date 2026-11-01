@@ -87,8 +87,8 @@ Lacrimosa,Lichtgestalt,https://www.youtube.com/watch?v=XYZ,de,,,,
   must point straight at plain text or an `.lrc` file (arbitrary lyrics-site
   HTML pages are not supported). Anything that is not a link is a lyrics file
   (plain text, one sung line per line, or LRC), relative to `stack/input/`
-  unless the path is absolute, e.g. `lyrics/Die Funkhausgruppe - Die Physiker.txt`
-  for `stack/input/lyrics/Die Funkhausgruppe - Die Physiker.txt`. See
+  unless the path is absolute, e.g. `songtexts/Die Funkhausgruppe - Die Physiker.txt`
+  for `stack/input/songtexts/Die Funkhausgruppe - Die Physiker.txt`. See
   [song-sources.md](song-sources.md).
 * **`cover_url`** - a link to a cover image. After the song is created, the
   image replaces the cover (`<Artist - Title> [CO].jpg`/`.png`; WebP, GIF and
@@ -117,7 +117,12 @@ Lacrimosa,Lichtgestalt,https://www.youtube.com/watch?v=XYZ,de,,,,
   screamed notes from jumping around: a note the pitch detector is unsure
   about moves halfway towards the melody around it, at most 3 semitones
   from it (`HARSH_MAX_DISTANCE`). The other traits and the genres change
-  nothing yet - no handling was measured to beat the default.
+  nothing in the pipeline yet - no handling was measured to beat the default.
+  The genres go into the new song's `#GENRE` as display names (`Gothic,
+  Metal`; `kpop`/`jpop`/`ebm` become `K-Pop`/`J-Pop`/`EBM`), unknown values
+  too, `default` left out; a row with no other genre gets no `#GENRE` line
+  (UltraSinger's MusicBrainz genres are removed). A song taken from USDB
+  keeps the `#GENRE` of its USDB file.
 
 ### `songs.txt` (plain list)
 
@@ -167,7 +172,14 @@ Point the stack to another file with the environment variable `SONGS_FILE`
    compared with what whisper heard in the vocals (UltraSinger's own
    transcription, kept from before the lyrics step). See
    [Lyrics review](#lyrics-review) below.
-4. The result lands in `output/new/<Artist - Title>/`.
+4. The result lands in `output/new/<Artist - Title>/`. A folder of that
+   name from an earlier run is replaced: it is deleted before the new song is
+   written, so no `<Artist - Title> (1)` appears and no old file stays. A
+   generated song gets `#CREATOR` from `CREATOR_NAME` (`ueda with
+   USDX-Song-Factory`, see [configuration.md](configuration.md)) instead of
+   UltraSinger's, and `#GENRE` from the request's `genre` column (see
+   [Optional columns](#optional-columns)); a song taken from USDB keeps its
+   creator and genre.
 
 ## Lyrics review
 
@@ -220,7 +232,7 @@ reference: [orchestrator-manual.md](orchestrator-manual.md)):
 |---|---|
 | `--only generated` | new songs USDB does **not** have - created from scratch |
 | `--only usdb` | new songs USDB has - pulled from USDB (notes, video/audio, corrected `#GAP`) |
-| `--only repairs` | songs repaired from `input/` |
+| `--only repairs` | songs repaired from `input/repairs/` |
 | `--only a,b` | any comma-separated combination |
 | `--only-new` / `--only-repairs` | older aliases: every new song / repairs only |
 | `--match TEXT` | only jobs whose label contains TEXT (case-insensitive) |
@@ -248,7 +260,7 @@ selection.
 ### Leftover jobs
 
 `state/state.json` remembers every job ever planned, so a song you later
-remove from `song-requests.csv` (or a folder removed from `input/`) stays
+remove from `song-requests.csv` (or a folder removed from `input/repairs/`) stays
 behind as an "orphan" that no run ever queues. The progress view counts only
 the jobs the song list and input folder define right now and shows orphans on
 a separate "Not counted" line; `reset --prune` deletes them from the state
