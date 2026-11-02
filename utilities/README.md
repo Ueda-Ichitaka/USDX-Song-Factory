@@ -306,7 +306,9 @@ writes into `library analysis/` (`--out DIR`):
 - `genre-predictions.tsv`: the songs without a genre - no `#GENRE`, an empty
   one, or a placeholder: `Unknown`, `No idea`, `Other`, `None`, `Misc`
   (`--keep-placeholders` counts these as a genre) - with band, title, path,
-  predicted genre and found (each source's own genres, for checking).
+  predicted genre, found (each source's own genres, for checking) and new
+  bases (predicted bases the library does not have yet - add a rule in
+  `genre_bases.py` or edit the prediction before `apply_genres.sh`).
 
 The sources, per song without a genre:
 
@@ -325,10 +327,17 @@ The sources, per song without a genre:
   https://www.last.fm/api/account/create); only tags that are MusicBrainz
   genres count. `--no-lastfm` leaves it out.
 
-The predicted genre: each found genre broken down into its bases, the same
-way as the library's genres (see [Genre bases](#genre-bases):
-`symphonic black metal` -> `Symphonic, Black, Metal`, `pop music` -> `Pop`,
-`k-pop` -> `K-Pop`); the bases most sources agree on first, all of them.
+The predicted genre: each found genre goes the same way as the library's
+genres (see [Genre bases](#genre-bases)): when `library analysis/genre-clusters.tsv`
+exists, a found genre with the spelling of a row (any case: `power metal` =
+`Power Metal`) gets that row's genre cell - your reviewed proposals, `-`
+drops it; any other found genre goes through the rules of `genre_bases.py`
+(`symphonic black metal` -> `Symphonic, Black, Metal`, `medieval rock` ->
+`Mittelalter, Rock`, `easy listening` -> dropped). The bases most sources
+agree on come first, all of them. A song in `utilities/genre-song-fixes.tsv`
+(`--fixes FILE`) gets its fix as prediction (found: `song fix`) and is not
+looked up. Run `genre_clusters.py` and review its file first, so the
+lookup uses your edits.
 Rate-limit answers (429/503) are asked again after 5, 15 and 30 s.
 Answers are cached in `library analysis/genre-cache.json`, so a second run
 only asks for new songs (a failed request is asked again). A library of 750
@@ -343,7 +352,10 @@ an empty cell leaves that song alone.
 one in the meantime is left alone): the placeholder line is replaced in
 place, else the line is added after the last header line. Byte order mark,
 line endings and the encoding stay (a cp1252 song file gets the genre in
-cp1252). Without `--apply` it only lists what it would set. With `--apply`
+cp1252). A song file that is not writable - the read-only attribute set on
+the NAS - is listed as `read-only` and skipped, the run goes on; clear the
+attribute (File Station, Windows file properties) and run again. Without
+`--apply` it only lists what it would set. With `--apply`
 every changed file is copied first into `library analysis/genre-backup-<time>/`
 under its full path.
 
@@ -366,12 +378,15 @@ genre lookup uses the same rules:
 
 - a genre is split at spaces, hyphens and slashes;
 - names in `KEEP_WHOLE` stay one base in any spelling: `Hip Hop`, `hiphop`
-  -> `Hip-Hop`; `Rock'n'Roll` -> `Rock and Roll`; `A capella` ->
-  `A cappella`; also R&B, K-Pop, J-Pop, J-Rock, Drum and Bass, Neue
-  Deutsche Härte, New Wave, Hi-NRG, EBM, ...;
+  -> `Hip-Hop`; `A capella` -> `A cappella`; also R&B, K-Pop, J-Pop,
+  J-Rock, Drum and Bass, Neue Deutsche Härte, New Wave, Hi-NRG, EBM, ...;
 - names in `DROPPED` are no genre for this library and are removed wherever
   they appear: Easy Listening, Singer-Songwriter. `PHRASES` turn a name
-  into another base: Video Game Music -> Soundtrack;
+  into other bases: Video Game Music -> Soundtrack, 8bit/8-bit -> Electronic,
+  Grog'n Roll -> Pirate,
+  Garage Rock -> Rock, Skate Punk -> Punk, US Metal -> Metal, Synthpop ->
+  Pop, Eurodance -> Dance, Tanzmetal -> Dance, Metal, Darkwave -> Gothic,
+  Electro Hop -> Electronic, Hip-Hop;
 - filler words (`FILLER`: music, general, and, &, ...) are dropped:
   `Electronic Music` -> `Electronic`;
 - translations and short forms: `Alternativo` -> Alternative, `Sinfonico`
@@ -380,15 +395,31 @@ genre lookup uses the same rules:
   Medieval);
 - a one-word genre splits into two halves when both halves are genres
   themselves - a one-word MusicBrainz genre or a base in the library:
-  `Synthpop` -> Synth, Pop; `Darkwave` -> Dark, Wave; `Electropop` ->
-  Electro, Pop. `Metalcore`, `Hardcore`, `Tanzmetal` stay (`core`, `tanz`
-  are no genres). `KEEP_ONE_WORD` lists one-word genres that never split;
+  `Electropop` -> Electronic, Pop. `Hardcore` stays (`core` is no genre).
+  `KEEP_ONE_WORD` lists one-word genres that never split;
 - typos: a word that is not in the
   [MusicBrainz genre list](https://musicbrainz.org/ws/2/genre/all?fmt=txt)
   and has exactly one close word in it that the library also uses
   (`Ghotic` -> Gothic, `Trash` -> Thrash). Real genres close to each other
   (`Punk`, `Funk`) stay apart. The list is downloaded once into
-  `library analysis/musicbrainz-genres.txt` (delete it to get a new one).
+  `library analysis/musicbrainz-genres.txt` (delete it to get a new one);
+- last, `MERGE` turns a base into other bases or none, wherever it came
+  from: Electro -> Electronic (also the half of `Electropop`),
+  Metalcore -> Metal, Rapcore -> Rap, Rock and Roll -> Rock, Christmas and
+  Vocal -> Pop, Folklore and Shanty -> Folk, Musical -> Soundtrack, Ragga
+  -> Reggae, Medieval -> Mittelalter, Celtic -> Pagan, Pony -> Children;
+  Gypsy and Freak are dropped (`Gypsy jazz` -> Jazz, `Freak Metal` ->
+  Metal).
+
+Single songs whose genre no rule gets right go into
+`utilities/genre-song-fixes.tsv` (hand-written, in the repository, never
+written by a tool; tab-separated: band, title, genre, note). The genre is
+the song's whole new `#GENRE` value; band and title match in any case, so a
+song's duet version is fixed too. Example: Twisted Sister's "Heavy Metal
+Christmas" was tagged `Christmas` by its USDB uploader and gets `Metal`.
+`genre_clusters.py` counts the fixes in its overview and summary
+(`--fixes FILE`), `normalize_genres.sh` writes them (`--fixes FILE`; marked
+`(song fix)` in its list), also into a song that had no genre.
 
 A base is written the way most library songs write it (first letter upper
 case). The bases of a song keep their order of appearance, duplicates
@@ -409,14 +440,15 @@ Check `genre-clusters.tsv` before using it: change a `genre` cell to the
 bases you want (comma-separated), `-` to drop that spelling from the songs,
 or empty it to leave that spelling as it is.
 
-`normalize_genres.sh [--apply] [--backup DIR] [--songs FILE] [clusters file]`
+`normalize_genres.sh [--apply] [--backup DIR] [--songs FILE] [--fixes FILE] [clusters file]`
 goes through the songs of `library-genres.tsv` (`--songs`) and, for each song
 with a genre, replaces every comma-separated part by its bases from the
 clusters file, drops duplicates (any case) and joins the bases with `, `.
 Parts the file does not name stay. A song left without any base loses its
 `#GENRE` line (the genre lookup then counts it as without a genre). A song without a genre or with a
 placeholder is left alone. Byte order mark, line endings and the encoding
-stay. Without `--apply` it only lists what it would change (`old -> new`).
+stay. A read-only song file is listed as `read-only` and skipped, as with
+`apply_genres.sh`. Without `--apply` it only lists what it would change (`old -> new`).
 With `--apply` every changed file is copied first into
 `library analysis/genre-normalize-backup-<time>/` under its full path.
 

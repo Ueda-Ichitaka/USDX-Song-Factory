@@ -11,6 +11,8 @@
 # stays: byte order mark, each line's ending (LF/CRLF; a last line without
 # one gets one) and the encoding - a song file that is no valid UTF-8
 # (cp1252 in old libraries) gets the genre in cp1252.
+# A song file that is not writable (the read-only attribute on the NAS) is
+# listed as "read-only" and skipped; the run goes on.
 # Without --apply nothing is written, the script only lists what it would
 # set. With --apply every changed file is copied first into the backup
 # folder under its full path (default: "library analysis/genre-backup-<time>").
@@ -24,7 +26,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --apply) APPLY=1 ;;
         --backup) shift; BACKUP="${1:?--backup needs a folder}" ;;
-        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
         *) TSV="$1" ;;
     esac
     shift
@@ -36,7 +38,7 @@ BACKUP="${BACKUP:-$REPO/library analysis/genre-backup-$(date +%Y%m%d-%H%M%S)}"
 # shellcheck source=genre_tags.sh
 source "$(dirname "$0")/genre_tags.sh"
 
-set_count=0; skipped=0; missing=0; empty=0
+set_count=0; skipped=0; missing=0; empty=0; readonly=0
 while IFS= read -r line || [ -n "$line" ]; do
     split_tsv "$line"
     band="$(unquote "${CELLS[0]:-}")"; title="$(unquote "${CELLS[1]:-}")"
@@ -52,6 +54,9 @@ while IFS= read -r line || [ -n "$line" ]; do
         ""|unknown|"no idea"|other|none|misc) ;;
         *) echo "has genre $band - $title: $now (left alone)"; skipped=$((skipped + 1)); continue ;;
     esac
+    if [ ! -w "$path" ]; then
+        echo "read-only $band - $title: $predicted"; readonly=$((readonly + 1)); continue
+    fi
     echo "set       $band - $title: $predicted"
     set_count=$((set_count + 1))
     [ "$APPLY" = 1 ] || continue
@@ -59,9 +64,10 @@ while IFS= read -r line || [ -n "$line" ]; do
 done < <(tail -n +2 "$TSV")
 
 echo
-echo "$set_count set, $skipped already with a genre, $empty without a prediction, $missing missing"
+echo "$set_count set, $skipped already with a genre, $empty without a prediction, $missing missing, $readonly read-only"
 if [ "$APPLY" = 1 ]; then
     [ "$set_count" = 0 ] || echo "backup of the changed files: $BACKUP"
+    [ "$readonly" = 0 ] || echo "read-only files were not changed: clear their read-only attribute on the NAS and run again"
 else
     echo "dry run - nothing written, use --apply"
 fi

@@ -58,7 +58,9 @@ j = song("J", plain("J", "Symphonic Black Metal, Black Metal, Metal"))
 k = song("K", plain("K", "Pop, Easy Listening"))
 m = song("M", b"#ARTIST:M\n#TITLE:M\n#GENRE:Easy Listening\n#BPM:300\n: 0 4 0 la\nE\n")
 n = song("N", b"\xef\xbb\xbf#GENRE:Easy Listening\r\n#ARTIST:N\r\n#TITLE:N\r\n: 0 4 0 la\r\nE\r\n")
-songs = [a, b, c, d, e, f_, g, h, i, j, k, m, n]
+ro = song("R", plain("R", "Nu-Metal"))
+os.chmod(ro, 0o444)   # the read-only attribute on the NAS shows like this
+songs = [a, b, c, d, e, f_, g, h, i, j, k, m, n, ro]
 originals = {p: read(p) for p in songs}
 
 clusters = os.path.join(root, "genre-clusters.tsv")
@@ -83,28 +85,43 @@ with open(song_list, "w", encoding="utf-8") as f:
         f.write(f"x\t{os.path.basename(p)}\t{'' if p == f_ else 'something'}\t{p}\n")
 
 
+fixes = os.path.join(root, "genre-song-fixes.tsv")
+with open(fixes, "w", encoding="utf-8") as f:
+    f.write("band\ttitle\tgenre\tnote\n"
+            "X\tE.TXT\tMetal, Fixed\tcase does not matter\n"
+            "x\tF.txt\tPop\ta song without a genre gets one\n"
+            "x\tnobody.txt\tRock\tno such song\n")
+
+
 def run(*args):
-    return subprocess.run(["bash", SCRIPT, *args, "--songs", song_list, clusters],
+    return subprocess.run(["bash", SCRIPT, *args, "--songs", song_list, "--fixes", fixes, clusters],
                           capture_output=True, text=True)
 
 
 dry = run()
 check(f"dry run: exit 0, nothing changed (got {dry.returncode}: {dry.stderr})",
       dry.returncode == 0 and all(read(p) == data for p, data in originals.items()))
+check(f"dry run: a read-only file is named as such (got {dry.stdout!r})",
+      "read-only x - R.txt: Nu-Metal -> Nu Metal" in dry.stdout)
 check(f"dry run: lists the changes (got {dry.stdout!r})",
       "Nu-Metal, Rock -> Nu Metal, Rock" in dry.stdout and "dry run" in dry.stdout)
 
 backup = os.path.join(root, "backup")
 done = run("--apply", "--backup", backup)
-check(f"apply: exit 0 (got {done.returncode}: {done.stderr})", done.returncode == 0)
+check(f"apply: a read-only file does not stop the run, exit 0 (got {done.returncode}: {done.stderr})",
+      done.returncode == 0)
+check("apply: the read-only file is left as it is", read(ro) == originals[ro])
 check(f"apply: each part mapped (got {read(a)!r})", read(a) == plain("A", "Nu Metal, Rock"))
 check(f"apply: duplicates dropped (got {read(b)!r})", read(b) == plain("B", "Nu Metal"))
 check(f"apply: a cp1252 file stays cp1252 (got {read(c)!r})",
       read(c) == "#ARTIST:C\n#TITLE:Café\n#GENRE:Gothic Metal\n#BPM:300\n: 0 4 0 la\nE\n".encode("cp1252"))
 check(f"apply: unmapped parts stay, the list is joined with ', ', BOM and CRLF kept (got {read(d)!r})",
       read(d) == b"\xef\xbb\xbf#ARTIST:D\r\n#TITLE:D\r\n#GENRE:Rock, Pony\r\n#BPM:300\r\n: 0 4 0 la\r\nE\r\n")
-check("apply: an unchanged genre, no genre and a placeholder are not touched",
-      read(e) == originals[e] and read(f_) == originals[f_] and read(g) == originals[g])
+check("apply: a placeholder is not touched", read(g) == originals[g])
+check(f"apply: a song fix sets the whole value (got {read(e)!r}, {read(f_)!r})",
+      read(e) == plain("E", "Metal, Fixed")
+      and read(f_) == b"#ARTIST:F\n#TITLE:F\n#BPM:300\n#GENRE:Pop\n: 0 4 0 la\nE\n"
+      and "(song fix)" in done.stdout)
 check(f"apply: an empty genre cell leaves that spelling (got {read(h)!r})", read(h) == originals[h])
 check(f"apply: a quoted cell is unquoted (got {read(i)!r})", read(i) == plain("I", "Hip-Hop, Rap"))
 check(f"apply: bases of several genres, duplicates dropped across them (got {read(j)!r})",
@@ -116,9 +133,9 @@ check(f"apply: a removed first line keeps the byte order mark (got {read(n)!r})"
       read(n) == b"\xef\xbb\xbf#ARTIST:N\r\n#TITLE:N\r\n: 0 4 0 la\r\nE\r\n")
 check("apply: the changed files are backed up with their full path",
       read(os.path.join(backup, a.lstrip("/"))) == originals[a]
-      and not os.path.exists(os.path.join(backup, e.lstrip("/"))))
+      and not os.path.exists(os.path.join(backup, g.lstrip("/"))))
 check(f"apply: summary line (got {done.stdout.splitlines()[-2:]})",
-      "9 changed, 2 unchanged, 2 without a genre, 1 missing" in done.stdout)
+      "11 changed, 1 unchanged, 1 without a genre, 1 missing, 1 read-only" in done.stdout)
 
 again = run("--apply", "--backup", backup + "2")
 check(f"apply twice: nothing left to change (got {again.stdout.splitlines()[-2:]})",

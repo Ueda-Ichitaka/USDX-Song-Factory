@@ -76,6 +76,9 @@ check("combine: two sources agreeing outrank one source's first genre",
       gl.combine({"wikidata": ["disco", "pop"], "lastfm": ["pop"]}, _sp) == ["Pop", "Disco"])
 check("combine: dropped genres give no base",
       gl.combine({"lastfm": ["easy listening", "pop", "singer-songwriter"]}, _sp) == ["Pop"])
+check(f"combine: a reviewed clusters row wins over the rules, any case (got {gl.combine({'musicbrainz': ['power metal', 'speed metal']}, _sp, {'power metal': 'Metal'})})",
+      gl.combine({"musicbrainz": ["power metal", "speed metal"]}, _sp, {"power metal": "Metal"}) == ["Metal", "Speed"]
+      and gl.combine({"wikidata": ["Foo Bar", "pop"]}, _sp, {"foo bar": "-"}) == ["Pop"])
 check("combine: nothing found -> []", gl.combine({}, _sp) == [] and gl.combine({"wikidata": []}) == [])
 check("describe_found: each source with its genres",
       gl.describe_found({"musicbrainz": ["a", "b"], "wikidata": [], "lastfm": ["c"]})
@@ -200,13 +203,37 @@ check(f"run: the overview lists every song (got {_overview})",
       _overview[0] == "band\ttitle\tgenre\tpath" and len(_overview) == 4
       and _overview[3].startswith("Toto\tAfrica\tRock\t"))
 check(f"run: predictions for the songs without a genre, nothing found -> empty (got {_pred})",
-      _pred[0] == ["band", "title", "path", "predicted genre", "found"]
+      _pred[0] == ["band", "title", "path", "predicted genre", "found", "new bases"]
       and _pred[1][:2] == ["Blind Guardian", "Valhalla"] and _pred[1][3] == "Power, Metal, Speed"
       and _pred[1][4].startswith("musicbrainz: power metal, speed metal")
       and _pred[2][:2] == ["Nobody", "Nothing"] and _pred[2][3] == ""
       and len(_pred) == 3)
 check(f"run: summary counts (got {_summary})",
       _summary == {"songs": 3, "without genre": 2, "predicted": 1})
+check(f"run: bases the library does not have are listed (got {_pred[1][5:]}, {_pred[2][5:]})",
+      _pred[1][5] == "Power, Metal, Speed" and _pred[2][5] == "")
+
+_clusters = os.path.join(_out, "genre-clusters.tsv")
+with open(_clusters, "w", encoding="utf-8") as f:
+    f.write("genre\tspelling\tsongs\twhy\nMetal\tPower Metal\t3\tedited\nRock\tRock\t1\tunchanged\n"
+            "\tEmpty\t1\tleft alone\n")
+check(f"load_clusters: spelling in lower case -> genre cell, empty cells left out (got {gl.load_clusters(_clusters)})",
+      gl.load_clusters(_clusters) == {"power metal": "Metal", "rock": "Rock"}
+      and gl.load_clusters(os.path.join(_out, "none.tsv")) == {})
+_fixes = os.path.join(_out, "fixes.tsv")
+with open(_fixes, "w", encoding="utf-8") as f:
+    f.write("band\ttitle\tgenre\tnote\nNOBODY\tnothing\tPop, Metal\tx\n")
+check(f"load_fixes: (band, title) lower case -> genre (got {gl.load_fixes(_fixes)})",
+      gl.load_fixes(_fixes) == {("nobody", "nothing"): "Pop, Metal"})
+_out2 = tempfile.mkdtemp()
+_summary2 = gl.run(_lib, _out2, _lookup2, mb_genres=["power metal", "speed metal", "metal"],
+                   clusters=gl.load_clusters(_clusters), fixes=gl.load_fixes(_fixes))
+with open(os.path.join(_out2, gl.PREDICTIONS_FILE), encoding="utf-8") as f:
+    _pred2 = [line.split("\t") for line in f.read().splitlines()]
+check(f"run: the reviewed clusters file and the song fixes are used (got {_pred2})",
+      _pred2[1][3] == "Metal, Speed" and _pred2[1][5] == "Speed"
+      and _pred2[2][3] == "Pop, Metal" and _pred2[2][4] == "song fix" and _pred2[2][5] == ""
+      and _summary2 == {"songs": 3, "without genre": 2, "predicted": 2})
 _mbdir = tempfile.mkdtemp()
 _fetches = []
 

@@ -163,13 +163,13 @@ body { margin: 0; }
   <div class="stats" aria-label="Your library, scanned 2026-11-02">
     <div class="stat"><b>1803</b><span>songs in the library</span></div>
     <div class="stat"><b>823</b><span>need a genre (302 artists)</span></div>
-    <div class="stat"><b>143 → 89</b><span>genre spellings → bases</span></div>
-    <div class="stat"><b>220</b><span>songs the base proposals change</span></div>
+    <div class="stat"><b>143 → 63</b><span>genre spellings → bases</span></div>
+    <div class="stat"><b>238</b><span>songs the base proposals change</span></div>
   </div>
 
   <figure>
     <div class="scroll">
-      <svg viewBox="0 0 1170 590" role="img" aria-label="Two lanes from the song library back to the same library. Lane 1: genre_lookup.py asks MusicBrainz, Wikidata and Last.fm, writes genre-predictions.tsv, you edit it, apply_genres.sh writes #GENRE into songs without one. Lane 2: genre_clusters.py uses the MusicBrainz genre list, writes genre-clusters.tsv, you edit it, normalize_genres.sh rewrites #GENRE with the bases of each genre. Both scripts back up each file before changing it.">
+      <svg viewBox="0 0 1170 590" role="img" aria-label="Two lanes from the song library back to the same library. Lane 1: genre_lookup.py asks MusicBrainz, Wikidata and Last.fm and turns what they find into bases with the reviewed genre-clusters.tsv, writes genre-predictions.tsv, you edit it, apply_genres.sh writes #GENRE into songs without one. Lane 2: genre_clusters.py uses the MusicBrainz genre list, writes genre-clusters.tsv, you edit it, normalize_genres.sh rewrites #GENRE with the bases of each genre. Both scripts back up each file before changing it.">
         <defs>
           <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
           <marker id="arr-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="ah-w" d="M0 0 L10 5 L0 10 z"/></marker>
@@ -179,8 +179,8 @@ body { margin: 0; }
         <!-- lanes -->
         <rect class="lane" x="186" y="14" width="836" height="268" rx="6"/>
         <rect class="lane" x="186" y="300" width="836" height="272" rx="6"/>
-        <text class="t-lane" x="204" y="36">1  Fill in missing genres</text>
-        <text class="t-lane" x="204" y="322">2  Break genres into bases</text>
+        <text class="t-lane" x="204" y="36">Fill in missing genres</text>
+        <text class="t-lane" x="204" y="322">Break genres into bases</text>
 
         <!-- library, read (left) -->
         <path class="lib" d="M20 240 V362 A65 11 0 0 0 150 362 V240"/>
@@ -314,7 +314,9 @@ body { margin: 0; }
         <text class="t-label" x="1008" y="426">bases, no duplicates</text>
 
         <!-- shared helper note -->
-        <text class="t-label" x="600" y="293" text-anchor="middle">both scripts read and write tags through genre_tags.sh</text>
+        <text class="t-label" x="820" y="293" text-anchor="middle">both scripts read and write tags through genre_tags.sh</text>
+        <path class="flow" d="M515 386 V292 H382 V210 H372" marker-end="url(#arr)"/>
+        <text class="t-label" x="392" y="288">your reviewed bases</text>
       </svg>
     </div>
     <div class="legend">
@@ -340,11 +342,12 @@ body { margin: 0; }
             <li>MusicBrainz for each song: the recording, else its album, else the artist</li>
             <li>Wikidata and Last.fm, once per artist</li>
             <li><code>LASTFM_API_KEY</code> from the environment or <code>stack/.env</code></li>
+            <li>your reviewed <code>genre-clusters.tsv</code> and <code>genre-song-fixes.tsv</code>, so found genres become the same bases</li>
           </ul></dd>
           <dt>Writes</dt>
           <dd><ul>
             <li><code>library-genres.tsv</code>: every song</li>
-            <li><code>genre-predictions.tsv</code>: songs without a genre, with the predicted bases (all of them) and each source's raw answer</li>
+            <li><code>genre-predictions.tsv</code>: songs without a genre, with the predicted bases (all of them), each source's raw answer and the bases the library doesn't have yet</li>
             <li><code>genre-cache.json</code></li>
           </ul></dd>
           <dt>Missing</dt>
@@ -381,15 +384,16 @@ body { margin: 0; }
           <dt>Splits</dt>
           <dd><ul>
             <li>at spaces, hyphens, slashes: <span class="mono">Mittelalter-Rock</span> → Mittelalter, Rock</li>
-            <li>one-word genres whose halves are genres: <span class="mono">Synthpop</span> → Synth, Pop</li>
+            <li>one-word genres whose halves are genres: <span class="mono">Electropop</span> → Electronic, Pop</li>
           </ul></dd>
           <dt>Keeps</dt>
-          <dd>names that mean one thing: Hip-Hop, R&amp;B, K-Pop, Rock and Roll, A cappella, ...; <span class="mono">Metalcore</span>, <span class="mono">Tanzmetal</span></dd>
+          <dd>names that mean one thing: Hip-Hop, R&amp;B, K-Pop, A cappella, ...; <span class="mono">Hardcore</span></dd>
           <dt>Fixes</dt>
           <dd><ul>
             <li>translations, short forms: <span class="mono">Alternativo</span>, <span class="mono">Alt.</span>, <span class="mono">BSO</span>; Mittelalter stays</li>
             <li>filler words: <span class="mono">Electronic Music</span> → Electronic</li>
-            <li>dropped: Easy Listening, Singer-Songwriter; Video Game Music → Soundtrack</li>
+            <li>dropped: Easy Listening, Singer-Songwriter, Gypsy, Freak</li>
+            <li>merged: Electro, 8-bit → Electronic; Metalcore → Metal; Medieval → Mittelalter; Celtic → Pagan; Pony → Children; Christmas, Vocal → Pop; Musical, Video Game Music → Soundtrack; ...</li>
             <li>typos: <span class="mono">Ghotic</span>, <span class="mono">Trash</span></li>
           </ul></dd>
           <dt>Writes</dt>
@@ -402,7 +406,7 @@ body { margin: 0; }
         <p>Rewrites the existing genre tags with the bases you settled on.</p>
         <dl>
           <dt>Reads</dt>
-          <dd><code>genre-clusters.tsv</code> (spelling → bases) and <code>library-genres.tsv</code> (<code>--songs</code>, the paths)</dd>
+          <dd><code>genre-song-fixes.tsv</code> (whole genre of single songs), <code>genre-clusters.tsv</code> (spelling → bases) and <code>library-genres.tsv</code> (<code>--songs</code>, the paths)</dd>
           <dt>Writes</dt>
           <dd>each part replaced by its bases, in order, duplicates dropped, joined with ", "; parts the file doesn't list stay as they are</dd>
           <dt>Skips</dt>
@@ -417,21 +421,21 @@ body { margin: 0; }
   <section aria-labelledby="order-h">
     <h2 id="order-h">Run order</h2>
     <ol class="steps">
-      <li><div><span class="who who-tool">Look up</span>
-        <pre>python3 utilities/genre_lookup.py --library /dhuaddan/media/ultrastar/songs</pre></div></li>
-      <li><div><span class="who who-you">You check</span>
-        <p>Open <code>library analysis/genre-predictions.tsv</code> in LibreOffice as tab-separated text. Correct the <em>predicted genre</em> column, empty a cell to skip that song, and save in the same format.</p></div></li>
-      <li><div><span class="who who-write">Write genres</span>
-        <pre>utilities/apply_genres.sh            # dry run: lists what it would set
-utilities/apply_genres.sh --apply</pre></div></li>
       <li><div><span class="who who-tool">Propose bases</span>
-        <pre>python3 utilities/genre_clusters.py --library /dhuaddan/media/ultrastar/songs</pre>
-        <p class="note">Run it after step 3, so the genres you just added are checked too.</p></div></li>
+        <pre>python3 utilities/genre_clusters.py --library /dhuaddan/media/ultrastar/songs</pre></div></li>
       <li><div><span class="who who-you">You check</span>
-        <p>In <code>genre-clusters.tsv</code>, change a <em>genre</em> cell to the bases you want (comma-separated), <code>-</code> to drop that spelling, or empty it to keep that spelling. Worth a look: <span class="mono">Grog’n Roll</span>, <span class="mono">Electro Hop</span> (gives a base "Hop"), <span class="mono">Neo-Classical</span>.</p></div></li>
+        <p>In <code>genre-clusters.tsv</code>, change a <em>genre</em> cell to the bases you want (comma-separated), <code>-</code> to drop that spelling, or empty it to keep that spelling. A song no rule gets right goes into <code>utilities/genre-song-fixes.tsv</code> (band, title, genre, note) instead, which survives every rerun.</p></div></li>
       <li><div><span class="who who-write">Write bases</span>
         <pre>utilities/normalize_genres.sh        # dry run: old -&gt; new per song
 utilities/normalize_genres.sh --apply</pre></div></li>
+      <li><div><span class="who who-tool">Look up</span>
+        <pre>python3 utilities/genre_lookup.py --library /dhuaddan/media/ultrastar/songs</pre>
+        <p class="note">Uses your reviewed <code>genre-clusters.tsv</code> and the song fixes, so found genres become the same bases.</p></div></li>
+      <li><div><span class="who who-you">You check</span>
+        <p>Open <code>library analysis/genre-predictions.tsv</code> in LibreOffice as tab-separated text. The <em>new bases</em> column names bases your library doesn't have yet. Correct the <em>predicted genre</em> column, empty a cell to skip that song, and save in the same format.</p></div></li>
+      <li><div><span class="who who-write">Write genres</span>
+        <pre>utilities/apply_genres.sh            # dry run: lists what it would set
+utilities/apply_genres.sh --apply</pre></div></li>
     </ol>
   </section>
 </main>

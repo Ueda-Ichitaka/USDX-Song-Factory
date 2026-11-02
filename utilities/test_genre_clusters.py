@@ -97,8 +97,14 @@ song("E", "Metal, Thrash Metal")
 song("F", None)
 song("G", "Unknown")
 song("H", "Easy Listening")
+fixes_file = os.path.join(root, "genre-song-fixes.tsv")
+with open(fixes_file, "w", encoding="utf-8") as f:
+    f.write("band\ttitle\tgenre\tnote\n\"H\"\th\tPop, Comedy\tLibreOffice quotes\nZ\tZ\t\tempty genre: ignored\n")
+check(f"load_fixes: (band, title) lower case -> genre (got {gc.load_fixes(fixes_file)})",
+      gc.load_fixes(fixes_file) == {("h", "h"): "Pop, Comedy"}
+      and gc.load_fixes(os.path.join(root, "none.tsv")) == {})
 out = os.path.join(root, "out")
-summary = gc.run(lib, out, MB)
+summary = gc.run(lib, out, MB, gc.load_fixes(fixes_file))
 
 
 def _tsv(name):
@@ -119,12 +125,13 @@ check(f"run: genre-overview.tsv, songs per base counted once per song (got {over
       over[0] == ["base", "songs", "from"]
       and over[1][:2] == ["Metal", "5"]
       and ["Black", "1", "Black Metal (1), Symphonic Black Metal (1)"] in over
-      and ["Nu", "2", "Nu Metal (1), Nu-Metal (1)"] in over)
+      and ["Nu", "2", "Nu Metal (1), Nu-Metal (1)"] in over
+      and ["Comedy", "1", "song fix: H - H"] in over)
 check("run: library-genres.tsv lists every song",
       len(_tsv("library-genres.tsv")) == 9)
 check(f"run: the summary (got {summary})",
-      summary == {"songs": 8, "with genre": 6, "spellings": 9, "bases": 6,
-                  "spellings to change": 7, "songs to change": 6})
+      summary == {"songs": 8, "with genre": 6, "spellings": 9, "bases": 8,
+                  "spellings to change": 7, "songs to change": 6, "song fixes": 1})
 
 print()
 if failures:

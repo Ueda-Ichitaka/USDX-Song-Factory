@@ -21,11 +21,16 @@ Writes three tab-separated files into the output folder:
   library-genres.tsv  every song: band, title, genre, path (the song list
                       normalize_genres.sh goes through)
 
+Song fixes: utilities/genre-song-fixes.tsv (--fixes; hand-written, band,
+title, genre, note) sets the whole genre of single songs - a song whose
+genre no rule gets right ("Heavy Metal Christmas" -> Metal). The overview
+counts them; normalize_genres.sh writes them.
+
 The MusicBrainz genre list is downloaded once and kept as
 musicbrainz-genres.txt in the output folder (delete it to download it again).
 
 Usage:
-  python3 genre_clusters.py --library DIR [--out DIR]
+  python3 genre_clusters.py --library DIR [--out DIR] [--fixes FILE]
 """
 
 import argparse
@@ -40,6 +45,9 @@ import genre_lookup  # noqa: E402
 
 CLUSTERS_FILE = "genre-clusters.tsv"
 GENRES_OVERVIEW_FILE = "genre-overview.tsv"
+# hand-written fixes for single songs: band, title, genre (the whole #GENRE
+# value), note - kept in the repository, never written by a tool
+FIXES_FILE = genre_lookup.FIXES_FILE
 # the genre cell of a spelling that is dropped from the songs
 DROP = "-"
 
@@ -77,9 +85,13 @@ def rebuild(value: str, mapping: dict) -> str:
     return ", ".join(out)
 
 
-def run(library: str, out_dir: str, mb_genres: list) -> dict:
+load_fixes = genre_lookup.load_fixes
+
+
+def run(library: str, out_dir: str, mb_genres: list, fixes=None) -> dict:
     """Scan, break the genres down, write the three files; returns the
-    counts."""
+    counts. fixes (load_fixes()) set a song's whole genre."""
+    fixes = fixes or {}
     songs = genre_lookup.scan(library)
     os.makedirs(out_dir, exist_ok=True)
     genre_lookup.write_tsv(os.path.join(out_dir, genre_lookup.OVERVIEW_FILE),
@@ -93,22 +105,30 @@ def run(library: str, out_dir: str, mb_genres: list) -> dict:
     mapping = {r["spelling"]: ", ".join(r["bases"]) or DROP for r in rows}
     genre_lookup.write_tsv(os.path.join(out_dir, CLUSTERS_FILE), ["genre", "spelling", "songs", "why"],
                            [[mapping[r["spelling"]], r["spelling"], r["songs"], r["why"]] for r in rows])
-    base_songs, base_from = {}, {}
-    for song in songs:
-        for base in {b for s in split_genres(song["genre"]) for b in mapping[s].split(", ") if b != DROP}:
-            base_songs[base] = base_songs.get(base, 0) + 1
+    base_songs, base_from, final = {}, {}, {}
     for r in rows:
         for base in r["bases"]:
             base_from.setdefault(base, []).append(f"{r['spelling']} ({r['songs']})")
+    for song in songs:
+        fix = fixes.get((song["band"].strip().lower(), song["title"].strip().lower()))
+        final[song["path"]] = fix if fix is not None else rebuild(song["genre"], mapping)
+        bases = [b.strip() for b in fix.split(",") if b.strip()] if fix is not None else \
+            [b for s in split_genres(song["genre"]) for b in mapping[s].split(", ") if b != DROP]
+        for base in dict.fromkeys(bases):
+            base_songs[base] = base_songs.get(base, 0) + 1
+            if fix is not None:
+                base_from.setdefault(base, []).append(f"song fix: {song['band']} - {song['title']}")
     bases = sorted(base_songs, key=lambda b: (-base_songs[b], b.lower()))
     genre_lookup.write_tsv(os.path.join(out_dir, GENRES_OVERVIEW_FILE), ["base", "songs", "from"],
                            [[b, base_songs[b], ", ".join(base_from[b])] for b in bases])
     with_genre = [s for s in songs if split_genres(s["genre"])]
+    fixed = [s for s in songs if (s["band"].strip().lower(), s["title"].strip().lower()) in fixes]
     return {"songs": len(songs), "with genre": len(with_genre), "spellings": len(counts),
             "bases": len(bases),
             "spellings to change": sum(1 for s, g in mapping.items() if s != g),
-            "songs to change": sum(1 for s in with_genre
-                                   if rebuild(s["genre"], mapping) != s["genre"].strip())}
+            "songs to change": sum(1 for s in songs if (s in with_genre or s in fixed)
+                                   and final[s["path"]] != s["genre"].strip()),
+            "song fixes": len(fixed)}
 
 
 def main():
@@ -116,12 +136,13 @@ def main():
     parser.add_argument("--library", required=True, help="the song library (only read)")
     parser.add_argument("--out", default=os.path.join(genre_lookup.REPO, "library analysis"),
                         help="the folder for the result files")
+    parser.add_argument("--fixes", default=FIXES_FILE, help="the song fixes file")
     args = parser.parse_args()
-    summary = run(args.library, args.out, genre_lookup.load_mb_genres(args.out))
+    summary = run(args.library, args.out, genre_lookup.load_mb_genres(args.out), load_fixes(args.fixes))
     print(f"{summary['songs']} songs, {summary['with genre']} with a genre: "
           f"{summary['spellings']} spellings, {summary['bases']} bases")
     print(f"the proposals change {summary['spellings to change']} spellings in "
-          f"{summary['songs to change']} songs")
+          f"{summary['songs to change']} songs; {summary['song fixes']} songs set by {args.fixes}")
     for name in (CLUSTERS_FILE, GENRES_OVERVIEW_FILE, genre_lookup.OVERVIEW_FILE):
         print(f"written: {os.path.join(args.out, name)}")
 

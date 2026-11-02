@@ -15,7 +15,7 @@ Rules, in this order:
   Hip-Hop; "Rock'n'Roll" -> Rock and Roll; "A capella" -> A cappella);
 - names in DROPPED are no genre for this library and are dropped (Easy
   Listening, Singer-Songwriter); PHRASES are other bases (Video Game
-  Music -> Soundtrack, Electro Hop -> Electro, Hip-Hop);
+  Music -> Soundtrack, Tanzmetal -> Dance, Metal, Garage Rock -> Rock);
 - FILLER words are dropped ("Electronic Music" -> Electronic);
 - TRANSLATIONS and SYNONYMS replace a word (Alternativo -> Alternative,
   Alt. -> Alternative, BSO -> Soundtrack); Mittelalter stays German;
@@ -26,11 +26,15 @@ Rules, in this order:
 - a typo is a word that is not in the MusicBrainz genre list (as a word or
   as a whole genre without spaces) with exactly one close word (one letter
   off up to 5 letters, two for longer ones) that is in the list and used in
-  the library ("Ghotic" -> Gothic).
+  the library ("Ghotic" -> Gothic);
+- last, MERGE turns a base into other bases or none, wherever it came from
+  (Electro -> Electronic, also the half of "Electropop"; Medieval ->
+  Mittelalter; Gypsy -> dropped). Single songs no rule gets right go into
+  genre-song-fixes.tsv (genre_clusters.py, normalize_genres.sh).
 A base is written the way most library songs write it (only spellings
 that needed no fix count), a base the library does not have as written in
-the genre (DISPLAY for acronyms); the first letter is always upper case. The bases of a genre keep their order,
-duplicates dropped.
+the genre (DISPLAY for acronyms); the first letter is always upper case.
+The bases of a genre keep their order, duplicates dropped.
 """
 
 import re
@@ -51,7 +55,6 @@ KEEP_WHOLE = {
     "Lo-Fi": ["lofi"], "Hi-NRG": ["hinrg"], "Doo-Wop": ["doowop"],
     "Bossa Nova": ["bossanova"], "Big Band": ["bigband"],
     "EBM": ["ebm", "electronicbodymusic"],
-    "Grog’n Roll": ["grog'nroll"],
 }
 # names that are no genre for this library: dropped wherever they appear
 # (name -> spellings, lower case, spaces and hyphens removed)
@@ -59,7 +62,16 @@ DROPPED = {"Easy Listening": ["easylistening"], "Singer-Songwriter": ["singerson
 # names that are other bases (spellings as in KEEP_WHOLE -> bases)
 PHRASES = {"videogamemusic": ["soundtrack"], "videogamesoundtrack": ["soundtrack"],
            "videogame": ["soundtrack"], "gamemusic": ["soundtrack"],
-           "electrohop": ["electro", "hip-hop"]}
+           "electrohop": ["electro", "hip-hop"], "grog'nroll": ["pirate"],
+           "garagerock": ["rock"], "usmetal": ["metal"], "skatepunk": ["punk"],
+           "synthpop": ["pop"], "eurodance": ["dance"], "tanzmetal": ["dance", "metal"],
+           "darkwave": ["gothic"], "8bit": ["electronic"]}
+# bases that are other bases ([] drops the base), applied last
+MERGE = {"electro": ["electronic"], "metalcore": ["metal"],
+         "rapcore": ["rap"], "rock and roll": ["rock"], "christmas": ["pop"],
+         "vocal": ["pop"], "folklore": ["folk"], "shanty": ["folk"],
+         "musical": ["soundtrack"], "ragga": ["reggae"], "medieval": ["mittelalter"],
+         "celtic": ["pagan"], "pony": ["children"], "gypsy": [], "freak": []}
 # one-word genres that are never split into halves (lower case)
 KEEP_ONE_WORD = set()
 # words that are no genre on their own
@@ -210,10 +222,15 @@ class Splitter:
         """(bases, fixes) of one genre name."""
         keys, fixes = {}, []
         for key, written, fix in self._items(spelling):
-            if key and key not in keys:
-                keys[key] = written or ""
             if fix:
                 fixes.append(fix)
+            if key in MERGE:
+                targets = MERGE[key]
+                fixes.append(f"merged {key} -> {', '.join(targets)}" if targets else f"dropped: {key}")
+                for target in targets:
+                    keys.setdefault(target, "")
+            elif key:
+                keys.setdefault(key, written or "")
         return [self.display(k, w) for k, w in keys.items()], fixes
 
     def bases(self, spelling: str) -> list:

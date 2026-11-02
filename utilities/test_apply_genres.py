@@ -49,7 +49,10 @@ nothing = song("F - Nothing", b"#ARTIST:F\n#TITLE:Nothing\n#BPM:300\n: 0 4 0 la\
 others = [song(f"H - {v}", f"#ARTIST:H\n#TITLE:{v}\n#GENRE:{v}\n#BPM:300\n: 0 4 0 la\nE\n".encode())
           for v in ("Other", "None", "Misc")]
 no_band = song("I - No band", b"#ARTIST:\n#TITLE:No band\n#BPM:300\n: 0 4 0 la\nE\n")
-originals = {p: read(p) for p in (plain, placeholder, crlf, cp1252, has_genre, nothing, *others, no_band)}
+read_only = song("J - Read only", b"#ARTIST:J\n#TITLE:Read only\n#BPM:300\n: 0 4 0 la\nE\n")
+os.chmod(read_only, 0o444)   # the read-only attribute on the NAS shows like this
+originals = {p: read(p) for p in (plain, placeholder, crlf, cp1252, has_genre, nothing, *others, no_band,
+                                  read_only)}
 
 tsv = os.path.join(root, "genre-predictions.tsv")
 with open(tsv, "w", encoding="utf-8") as f:
@@ -63,6 +66,7 @@ with open(tsv, "w", encoding="utf-8") as f:
     for v, path in zip(("Other", "None", "Misc"), others):
         f.write(f"H\t{v}\t{path}\tPop\tmusicbrainz: pop\n")
     f.write(f"\tNo band\t{no_band}\tPop\tmusicbrainz: pop\n")
+    f.write(f"J\tRead only\t{read_only}\tPop\tmusicbrainz: pop\n")
     f.write(f"G\tGone\t{os.path.join(lib, 'gone.txt')}\tPop\tmusicbrainz: pop\n")
 
 dry = subprocess.run(["bash", SCRIPT, tsv], capture_output=True, text=True)
@@ -73,7 +77,9 @@ check(f"dry run: says what it would set (got {dry.stdout!r})",
 
 backup = os.path.join(root, "backup")
 run = subprocess.run(["bash", SCRIPT, "--apply", "--backup", backup, tsv], capture_output=True, text=True)
-check(f"apply: exit 0 (got {run.returncode}: {run.stderr})", run.returncode == 0)
+check(f"apply: a read-only file does not stop the run, exit 0 (got {run.returncode}: {run.stderr})",
+      run.returncode == 0 and read(read_only) == originals[read_only]
+      and "read-only J - Read only" in run.stdout and "read-only J - Read only" in dry.stdout)
 check(f"apply: a missing #GENRE is added after the header (got {read(plain)!r})",
       read(plain) == b"#ARTIST:A\n#TITLE:Plain\n#BPM:300\n#GENRE:Metal, Symphonic\n: 0 4 0 la\nE\n")
 check(f"apply: a placeholder #GENRE is replaced in place (got {read(placeholder)!r})",
@@ -97,7 +103,7 @@ check("apply: the changed files are backed up with their full path",
       read(os.path.join(backup, plain.lstrip("/"))) == originals[plain]
       and not os.path.exists(os.path.join(backup, has_genre.lstrip("/"))))
 check(f"apply: summary line (got {run.stdout.splitlines()[-1:]})",
-      "8 set" in run.stdout)
+      "8 set" in run.stdout and "1 read-only" in run.stdout)
 
 again = subprocess.run(["bash", SCRIPT, "--apply", "--backup", backup + "2", tsv],
                        capture_output=True, text=True)
