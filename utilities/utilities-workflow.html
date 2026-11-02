@@ -1,0 +1,393 @@
+<!doctype html>
+<!--
+  About me: a picture of the library utilities (run_library_check.sh,
+  import_broken_songs.py, fill_lyrics_links.py, copy_reported_songs.py,
+  import_local_media.py) - what each reads and writes, how they fill the
+  stack input and how repaired songs get back into the library - for opening
+  in a browser. The genre tools have genre-workflow.html, the details live in
+  README.md. The numbers are from the library check report of 2026-10-16
+  and the stack input of 2026-11-02.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library Utilities Workflow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: one wide flow diagram (three lanes into the stack input, back into the library), then tool sheets and the run order */
+:root {
+  --bg: #f3f4f1;
+  --surface: #ffffff;
+  --fg: #1d2421;
+  --muted: #5c6862;
+  --line: #36403b;
+  --rule: #d5dad5;
+  --lane: #e8ebe6;
+  --file: #f7f8f5;
+  --online: #2f62a8;
+  --human: #a86412;
+  --write: #b3361f;
+  --tint-online: #e6eef9;
+  --tint-human: #fbefdf;
+  --tint-write: #fbe7e2;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #151a18; --surface: #1d2421; --fg: #e4e9e5; --muted: #9aa69f; --line: #c3ccc6;
+    --rule: #2f3834; --lane: #1a201d; --file: #222a26;
+    --online: #7fa9e8; --human: #e2a457; --write: #f07a62;
+    --tint-online: #1d2a3d; --tint-human: #33281a; --tint-write: #3a221d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #151a18; --surface: #1d2421; --fg: #e4e9e5; --muted: #9aa69f; --line: #c3ccc6;
+  --rule: #2f3834; --lane: #1a201d; --file: #222a26;
+  --online: #7fa9e8; --human: #e2a457; --write: #f07a62;
+  --tint-online: #1d2a3d; --tint-human: #33281a; --tint-write: #3a221d;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+.page {
+  max-width: 1200px; margin: 0 auto;
+  padding-block: 40px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 40px;
+}
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(28px, 4vw, 40px); line-height: 1.1; }
+h2 { font-size: 22px; }
+h3 { font-size: 17px; font-family: var(--mono); font-weight: 600; letter-spacing: 0; }
+p { margin: 0; max-width: 68ch; }
+code, .mono { font-family: var(--mono); font-size: 0.92em; }
+.eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+header { display: grid; gap: 10px; }
+header p { color: var(--muted); }
+
+/* numbers */
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.stat { padding: 14px 16px 14px 0; display: grid; gap: 2px; min-width: 0; }
+.stat + .stat { padding-left: 16px; border-left: 1px solid var(--rule); }
+.stat b { font-family: var(--display); font-size: 28px; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.stat span { color: var(--muted); font-size: 13px; }
+@media (max-width: 700px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat:nth-child(3) { padding-left: 0; border-left: 0; }
+  .stat:nth-child(n+3) { border-top: 1px solid var(--rule); }
+}
+
+/* diagram */
+figure { margin: 0; display: grid; gap: 12px; }
+.scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; }
+.scroll svg { display: block; width: 100%; min-width: 980px; height: auto; color: var(--line); }
+figcaption { color: var(--muted); font-size: 14px; max-width: 80ch; }
+svg text { font-family: var(--body); font-size: 12px; fill: var(--fg); }
+svg .t-tool { font-family: var(--mono); font-size: 13.5px; font-weight: 600; }
+svg .t-file { font-family: var(--mono); font-size: 12px; font-weight: 500; }
+svg .t-small { font-size: 11px; fill: var(--muted); }
+svg .t-lane { font-family: var(--display); font-size: 15px; font-weight: 700; }
+svg .t-label { font-size: 11px; fill: var(--muted); }
+svg .t-write { font-size: 11.5px; fill: var(--write); font-weight: 600; }
+svg .t-online { fill: var(--online); }
+svg .t-human { fill: var(--human); font-weight: 600; }
+svg .t-strike { fill: var(--muted); text-decoration: line-through; }
+svg .lane { fill: var(--lane); }
+svg .tool { fill: var(--surface); stroke: var(--line); stroke-width: 1.6; }
+svg .file { fill: var(--file); stroke: var(--line); stroke-width: 1; }
+svg .file-key { fill: var(--file); stroke: var(--line); stroke-width: 1.6; }
+svg .online { fill: var(--tint-online); stroke: var(--online); stroke-width: 1.3; stroke-dasharray: 5 4; }
+svg .human { fill: var(--tint-human); stroke: var(--human); stroke-width: 1.3; stroke-dasharray: 5 4; }
+svg .lib { fill: var(--surface); stroke: var(--line); stroke-width: 1.6; }
+svg .lib-w { fill: var(--tint-write); stroke: var(--write); stroke-width: 1.6; }
+svg .flow { fill: none; stroke: var(--line); stroke-width: 1.4; }
+svg .flow-w { fill: none; stroke: var(--write); stroke-width: 2.2; }
+svg .flow-o { fill: none; stroke: var(--online); stroke-width: 1.4; }
+svg .ah { fill: var(--line); }
+svg .ah-w { fill: var(--write); }
+svg .ah-o { fill: var(--online); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 26px; height: 14px; border-radius: 2px; display: inline-block; flex: none; }
+.sw-tool { background: var(--surface); border: 1.6px solid var(--line); }
+.sw-file { background: var(--file); border: 1px solid var(--line); }
+.sw-online { background: var(--tint-online); border: 1.3px dashed var(--online); }
+.sw-human { background: var(--tint-human); border: 1.3px dashed var(--human); }
+.sw-write { height: 0; border-top: 2.2px solid var(--write); border-radius: 0; }
+
+/* tool sheets */
+.tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 820px) { .tools { grid-template-columns: minmax(0, 1fr); } }
+.sheet { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 20px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+.sheet-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
+.pill { font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.pill-read { background: var(--lane); color: var(--muted); }
+.pill-write { background: var(--tint-write); color: var(--write); }
+.sheet p { color: var(--muted); font-size: 14px; }
+dl { margin: 0; display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 6px 12px; font-size: 14px; }
+dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; padding-top: 2px; }
+dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+dd ul { margin: 0; padding-left: 18px; }
+pre { margin: 0; overflow-x: auto; background: var(--lane); border-radius: 4px; padding: 10px 12px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; }
+
+/* run order */
+.steps { display: grid; gap: 14px; counter-reset: step; padding: 0; margin: 0; list-style: none; }
+.steps li { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 12px; align-items: start; counter-increment: step; }
+.steps li::before { content: counter(step); font-family: var(--display); font-weight: 700; font-size: 15px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; border: 1.5px solid var(--line); }
+.steps li > div { display: grid; gap: 6px; min-width: 0; }
+.steps .who { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+.who-you { color: var(--human); }
+.who-tool { color: var(--muted); }
+.who-write { color: var(--write); }
+section { display: grid; gap: 16px; }
+.note { font-size: 14px; color: var(--muted); }
+</style>
+<style>
+html { color-scheme: light; }
+body { margin: 0; }
+</style>
+<style>
+a { color: var(--online); text-underline-offset: 2px; }
+.tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--rule); }
+tr:last-child td { border-bottom: 0; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+td:first-child { white-space: nowrap; font-weight: 500; }
+</style>
+</head>
+<body>
+<main class="page">
+  <header>
+    <span class="eyebrow">USDX-Song-Factory · utilities/</span>
+    <h1>Library utilities workflow</h1>
+    <p>Host tools that find broken songs in the UltraStar library, hand them to the stack for repair, bring dashboard reports and local song files into the stack input, and get the repaired songs back into the library. The genre tools have <a href="genre-workflow.html">their own overview</a>.</p>
+  </header>
+
+  <div class="stats" aria-label="Library check report of 2026-10-16 and the current stack input">
+    <div class="stat"><b>1691</b><span>song files checked</span></div>
+    <div class="stat"><b>256</b><span><code>#GAP</code> off</span></div>
+    <div class="stat"><b>85 · 139</b><span>drifting · unclear</span></div>
+    <div class="stat"><b>287</b><span>song folders in <code>input/repairs/</code></span></div>
+  </div>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 1290 600" style="min-width:1080px" role="img" aria-label="Three ways into the stack input. Library check: run_library_check.sh scans the song library and writes results.jsonl and library-check.txt; import_broken_songs.py copies the broken songs into input/repairs and adds broken.csv rows, fill_lyrics_links.py finds lyrics links. Dashboard reports: copy_reported_songs.py copies the reported songs from the library and merges broken.csv. Local song files: import_local_media.py copies the files the song list names into input/videos and rewrites the list. The stack repairs the songs into output/repaired; you copy them back into the library.">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
+          <marker id="arr-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="ah-w" d="M0 0 L10 5 L0 10 z"/></marker>
+          <marker id="arr-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-o" d="M0 0 L10 5 L0 10 z"/></marker>
+        </defs>
+
+        <rect class="lane" x="180" y="14" width="630" height="262" rx="6"/>
+        <rect class="lane" x="180" y="290" width="630" height="130" rx="6"/>
+        <rect class="lane" x="180" y="434" width="630" height="150" rx="6"/>
+        <text class="t-lane" x="196" y="34">Library check: find broken songs</text>
+        <text class="t-lane" x="196" y="310">Songs reported in the dashboard</text>
+        <text class="t-lane" x="196" y="454">Local song files</text>
+
+        <!-- library (read) -->
+        <path class="lib" d="M20 90 V380 A65 11 0 0 0 150 380 V90"/>
+        <ellipse class="lib" cx="85" cy="90" rx="65" ry="11"/>
+        <text x="85" y="200" text-anchor="middle" font-weight="600">song library</text>
+        <text class="t-small" x="85" y="218" text-anchor="middle">/dhuaddan/media/</text>
+        <text class="t-small" x="85" y="232" text-anchor="middle">ultrastar/songs</text>
+        <text class="t-label" x="85" y="258" text-anchor="middle">only read</text>
+
+        <!-- lane A -->
+        <path class="flow" d="M150 146 H188" marker-end="url(#arr)"/>
+        <rect class="tool" x="190" y="120" width="170" height="52" rx="4"/>
+        <text class="t-tool" x="275" y="142" text-anchor="middle" style="font-size:12.5px">run_library_check.sh</text>
+        <text class="t-small" x="275" y="159" text-anchor="middle">container, GPU · hours</text>
+
+        <rect class="file" x="400" y="84" width="180" height="30" rx="3"/>
+        <text class="t-file" x="490" y="103" text-anchor="middle">results.jsonl</text>
+        <rect class="file-key" x="400" y="128" width="180" height="42" rx="3"/>
+        <text class="t-file" x="490" y="145" text-anchor="middle">library-check.txt</text>
+        <text class="t-small" x="490" y="161" text-anchor="middle">a verdict per song</text>
+        <path class="flow" d="M360 134 H380 V99 H398" marker-end="url(#arr)"/>
+        <path class="flow" d="M360 152 H398" marker-end="url(#arr)"/>
+
+        <rect class="human" x="400" y="196" width="180" height="44" rx="5"/>
+        <text class="t-human" x="490" y="214" text-anchor="middle">you read the verdicts</text>
+        <text x="490" y="230" text-anchor="middle">listen to "unclear" first</text>
+        <path class="flow" d="M490 170 V194" marker-end="url(#arr)"/>
+
+        <path class="flow" d="M85 79 V54 H705 V78" marker-end="url(#arr)"/>
+        <text class="t-label" x="470" y="49">copies the song folders</text>
+        <rect class="tool" x="620" y="80" width="170" height="52" rx="4"/>
+        <text class="t-tool" x="705" y="101" text-anchor="middle" style="font-size:12px">import_broken_songs.py</text>
+        <text class="t-small" x="705" y="119" text-anchor="middle">then fill_lyrics_links.py</text>
+        <path class="flow" d="M580 99 H618" marker-end="url(#arr)"/>
+        <text class="t-label" x="584" y="74">#GAP off, drifts</text>
+        <rect class="online" x="620" y="168" width="170" height="44" rx="5"/>
+        <text class="t-online" x="705" y="186" text-anchor="middle" font-weight="600">lrclib.net, Genius</text>
+        <text class="t-small" x="705" y="203" text-anchor="middle">lyrics links</text>
+        <path class="flow-o" d="M705 168 V134" marker-end="url(#arr-o)"/>
+        <path class="flow" d="M790 106 H828" marker-end="url(#arr)"/>
+
+        <!-- lane B -->
+        <rect class="online" x="190" y="322" width="170" height="44" rx="5"/>
+        <text class="t-online" x="275" y="340" text-anchor="middle" font-weight="600">broken.csv</text>
+        <text class="t-small" x="275" y="357" text-anchor="middle">dashboard export, "Reported"</text>
+        <rect class="tool" x="400" y="326" width="180" height="56" rx="4"/>
+        <text class="t-tool" x="490" y="348" text-anchor="middle" style="font-size:12.5px">copy_reported_songs.py</text>
+        <text class="t-small" x="490" y="366" text-anchor="middle">finds "Band - Song" folders</text>
+        <path class="flow" d="M360 344 H398" marker-end="url(#arr)"/>
+        <path class="flow" d="M150 374 H398" marker-end="url(#arr)"/>
+        <text class="t-label" x="200" y="391">copies the song folders</text>
+        <path class="flow" d="M580 354 H828" marker-end="url(#arr)"/>
+        <text class="t-label" x="600" y="347">folders + merged rows</text>
+
+        <!-- lane C -->
+        <rect class="online" x="190" y="466" width="170" height="44" rx="5"/>
+        <text class="t-online" x="275" y="484" text-anchor="middle" font-weight="600">song-requests.csv</text>
+        <text class="t-small" x="275" y="501" text-anchor="middle">dashboard export</text>
+        <rect class="file" x="190" y="526" width="170" height="44" rx="3"/>
+        <text class="t-file" x="275" y="544" text-anchor="middle">audio / video files</text>
+        <text class="t-small" x="275" y="561" text-anchor="middle">disk, smb://, \\host\share</text>
+        <rect class="tool" x="400" y="486" width="180" height="56" rx="4"/>
+        <text class="t-tool" x="490" y="508" text-anchor="middle">import_local_media.py</text>
+        <text class="t-small" x="490" y="526" text-anchor="middle">dry run unless --apply</text>
+        <path class="flow" d="M360 488 H380 V506 H398" marker-end="url(#arr)"/>
+        <path class="flow" d="M360 548 H380 V524 H398" marker-end="url(#arr)"/>
+        <path class="flow" d="M580 514 H828" marker-end="url(#arr)"/>
+        <text class="t-label" x="600" y="507">files + rewritten list</text>
+
+        <!-- stack input -->
+        <rect class="file-key" x="830" y="60" width="150" height="500" rx="4"/>
+        <text class="t-file" x="905" y="86" text-anchor="middle">stack/input/</text>
+        <text class="t-small" x="844" y="120">repairs/&lt;folder&gt;/</text>
+        <text class="t-small" x="844" y="140">broken.csv</text>
+        <text class="t-small" x="844" y="160">songtexts/</text>
+        <text class="t-small" x="844" y="514">videos/&lt;file&gt;</text>
+        <text class="t-small" x="844" y="534">song-requests.csv</text>
+
+        <!-- stack and back -->
+        <path class="flow" d="M980 290 H1013" marker-end="url(#arr)"/>
+        <rect class="tool" x="1015" y="262" width="140" height="56" rx="4"/>
+        <text class="t-tool" x="1085" y="284" text-anchor="middle">the stack</text>
+        <text class="t-small" x="1085" y="302" text-anchor="middle">docker compose up -d</text>
+        <rect class="file" x="1015" y="346" width="140" height="44" rx="3"/>
+        <text class="t-file" x="1085" y="364" text-anchor="middle">output/repaired/</text>
+        <text class="t-small" x="1085" y="381" text-anchor="middle">&lt;repair&gt;/&lt;folder&gt;/</text>
+        <path class="flow" d="M1085 318 V344" marker-end="url(#arr)"/>
+        <rect class="human" x="1015" y="418" width="140" height="44" rx="5"/>
+        <text class="t-human" x="1085" y="436" text-anchor="middle">you copy back</text>
+        <text class="t-small" x="1085" y="453" text-anchor="middle">overwrite older only</text>
+        <path class="flow" d="M1085 390 V416" marker-end="url(#arr)"/>
+        <path class="lib-w" d="M1180 470 V560 A50 10 0 0 0 1280 560 V470"/>
+        <ellipse class="lib-w" cx="1230" cy="470" rx="50" ry="10"/>
+        <text x="1230" y="506" text-anchor="middle" font-weight="600">song</text>
+        <text x="1230" y="522" text-anchor="middle" font-weight="600">library</text>
+        <path class="flow-w" d="M1155 440 H1230 V458" marker-end="url(#arr-w)"/>
+        <text class="t-write" x="1163" y="432">fixed songs</text>
+      </svg>
+    </div>
+    <div class="legend">
+      <span><i class="sw sw-tool"></i>tool you run</span>
+      <span><i class="sw sw-file"></i>file or folder (bold border: the one you work with)</span>
+      <span><i class="sw sw-online"></i>from outside: dashboard export, online service</span>
+      <span><i class="sw sw-human"></i>your step</span>
+      <span><i class="sw sw-write"></i>changes the library</span>
+    </div>
+    <figcaption>No utility writes to the song library: the check reads it through a read-only mount, the import tools copy song folders out of it. The library changes only when you copy the repaired songs back. All commands run from the repository root.</figcaption>
+  </figure>
+
+  <section aria-labelledby="tools-h">
+    <h2 id="tools-h">The tools</h2>
+    <div class="tools">
+      <article class="sheet">
+        <div class="sheet-head"><h3>run_library_check.sh</h3><span class="pill pill-read">reads library</span></div>
+        <p>Measures every song the way the stack's gap/sync repair does: the song file's own lyrics aligned to its separated vocals.</p>
+        <dl>
+          <dt>Runs</dt><dd><code>library_check.py</code> in the stack's ROCm container (GPU); 20-45 s per song, a whole library takes many hours; stop with <code>docker stop library-check</code>, the same command continues</dd>
+          <dt>Writes</dt><dd><code>library analysis/results.jsonl</code> (one line per song file) and <code>library-check.txt</code> (the report), every 10 songs</dd>
+          <dt>Verdicts</dt><dd><code>#GAP off</code>, <code>drifts</code>, <code>unclear</code>, <code>damaged audio</code>, <code>good</code>; left out: duets, relative timing, no <code>#BPM</code>, no audio, under 50 notes, the stack's own songs, audio over 15 min</dd>
+          <dt>Limits</dt><dd><code>MEMORY</code>, <code>CPUS</code>, <code>MIN_AVAIL_GB</code>, <code>MAX_LOAD</code>; never at the same time as a stack batch</dd>
+        </dl>
+      </article>
+      <article class="sheet">
+        <div class="sheet-head"><h3>import_broken_songs.py</h3><span class="pill pill-read">reads library</span></div>
+        <p>Hands the songs the check found broken to the stack.</p>
+        <dl>
+          <dt>Reads</dt><dd><code>results.jsonl</code>: verdicts <code>#GAP off</code> (category <code>gap</code>) and <code>drifts</code> (<code>async</code>); <code>--categories</code> narrows it</dd>
+          <dt>Writes</dt><dd>song folders into <code>stack/input/repairs/</code> (existing ones left alone); <code>broken.csv</code> rows in the dashboard format with the measured fix as description (backup kept)</dd>
+          <dt>Then</dt><dd>runs <code>fill_lyrics_links.py</code> for rows without a lyrics link (<code>--no-lyrics</code> skips it)</dd>
+          <dt>Safe</dt><dd>dry run unless <code>--apply</code></dd>
+        </dl>
+      </article>
+      <article class="sheet">
+        <div class="sheet-head"><h3>fill_lyrics_links.py</h3><span class="pill pill-read">online</span></div>
+        <p>Finds a lyrics link for every <code>broken.csv</code> row with an empty <code>lyrics_url</code>; rows with a link are never touched.</p>
+        <dl>
+          <dt>Asks</dt><dd><ul><li>lrclib.net: artist and title match, length within 4 s of the song's own audio</li><li>Genius, with <code>GENIUS_API_KEY</code></li><li>lrclib.net free-text search, with the same length check</li></ul></dd>
+          <dt>Writes</dt><dd>the <code>lyrics_url</code> cells of <code>stack/input/broken.csv</code></dd>
+          <dt>Safe</dt><dd>dry run unless <code>--apply</code>; 1 s between songs</dd>
+        </dl>
+      </article>
+      <article class="sheet">
+        <div class="sheet-head"><h3>copy_reported_songs.py</h3><span class="pill pill-read">reads library</span></div>
+        <p>Brings the songs reported on the dashboard's "Reported" page into the stack.</p>
+        <dl>
+          <dt>Reads</dt><dd>one or more <code>broken.csv</code> exports (<code>--csv</code>); finds each <code>Band - Song</code> folder in <code>--library</code>, any case</dd>
+          <dt>Writes</dt><dd>the folders into <code>stack/input/repairs/</code>; the rows merged into <code>stack/input/broken.csv</code> (backup kept, no duplicate rows)</dd>
+          <dt>Lists</dt><dd>rows without a library folder</dd>
+          <dt>Safe</dt><dd>dry run unless <code>--apply</code></dd>
+        </dl>
+      </article>
+      <article class="sheet">
+        <div class="sheet-head"><h3>import_local_media.py</h3><span class="pill pill-read">reads files</span></div>
+        <p>For songs that are not on YouTube: copies the audio or video file a song-list row names into the stack input, which the container can see.</p>
+        <dl>
+          <dt>Reads</dt><dd>paths in <code>song-requests.csv</code>: absolute paths, <code>smb://</code> and <code>\\host\share</code> on a mounted share, <code>--map</code> for Windows drives</dd>
+          <dt>Writes</dt><dd>the files into <code>stack/input/videos/</code> (own name; same name and size reused, otherwise " (1)"); the row becomes <code>videos/&lt;file&gt;</code> (backup kept)</dd>
+          <dt>Untested</dt><dd><code>nfs://</code> and shares that aren't mounted (<code>gio copy</code>): reference code, open for contribution</dd>
+        </dl>
+      </article>
+      <article class="sheet">
+        <div class="sheet-head"><h3>Copy back</h3><span class="pill pill-write">writes library</span></div>
+        <p>Not a tool: you copy the repaired song folders from <code>stack/output/repaired/&lt;repair&gt;/</code> into the library.</p>
+        <dl>
+          <dt>Dolphin</dt><dd>drop the folders onto the library, "Write Into", "Apply to All", "Overwrite older files": only the fixed song file is newer, the media is skipped</dd>
+          <dt>Check</dt><dd>in <code>recreated/</code> a folder can hold a second song file (USDX would list the song twice); <code>language.txt</code> is extra, USDX ignores it</dd>
+        </dl>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="order-h">
+    <h2 id="order-h">Run order</h2>
+    <ol class="steps">
+      <li><div><span class="who who-tool">Scan</span>
+        <pre>utilities/run_library_check.sh /dhuaddan/media/ultrastar/songs
+docker logs -f library-check        # progress</pre></div></li>
+      <li><div><span class="who who-you">You check</span>
+        <p>Read <code>library analysis/library-check.txt</code>. <code>#GAP off</code> and <code>drifts</code> come with the fix; listen to <code>unclear</code> songs before changing anything; replace <code>damaged audio</code> files.</p></div></li>
+      <li><div><span class="who who-tool">Import</span>
+        <pre>python3 utilities/import_broken_songs.py --library /dhuaddan/media/ultrastar/songs           # dry run
+python3 utilities/import_broken_songs.py --library /dhuaddan/media/ultrastar/songs --apply</pre>
+        <p class="note">Dashboard reports instead or as well: <code>copy_reported_songs.py --library ... --csv ~/Downloads/broken.csv --apply</code>, then <code>fill_lyrics_links.py --apply</code>.</p></div></li>
+      <li><div><span class="who who-tool">Local files</span>
+        <pre>python3 utilities/import_local_media.py --apply      # after every song-requests.csv export</pre></div></li>
+      <li><div><span class="who who-tool">Repair</span>
+        <pre>cd stack
+docker compose --profile rocm run -d --name repairs-run ultrasinger-rocm \
+  python /app/orchestrator/orchestrator.py run --only repairs
+docker exec -it repairs-run progress -w</pre>
+        <p class="note">The whole stack run is described in <a href="../stack/docs/factory-workflow.html">the factory overview</a>.</p></div></li>
+      <li><div><span class="who who-write">Copy back</span>
+        <p>Read <code>stack/output/report.md</code>, then copy the folders of <code>stack/output/repaired/&lt;repair&gt;/</code> into the library (Dolphin: overwrite older files only).</p></div></li>
+    </ol>
+  </section>
+</main>
+</body>
+</html>

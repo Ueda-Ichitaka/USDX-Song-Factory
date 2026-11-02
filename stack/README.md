@@ -10,6 +10,7 @@ New here? Start with the quickstart in the [main README](../README.md).
 
 | Topic | File |
 |---|---|
+| The whole workflow in one picture: what goes in, a batch, what comes out, what to check (open in a browser) | [docs/factory-workflow.html](docs/factory-workflow.html) |
 | Running the stack: commands, progress view, report, output, folder layout | [docs/running.md](docs/running.md) |
 | The song list: format, optional columns, choosing which jobs run | [docs/new-songs.md](docs/new-songs.md) |
 | Repairing existing songs, `broken.csv`, trusted lyrics | [docs/repairs.md](docs/repairs.md) |

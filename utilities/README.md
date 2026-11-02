@@ -14,6 +14,9 @@ lyrics files the csv rows point to, `stack/input/videos/` local song files
 (see [Local song files](#local-song-files)).
 
 All commands below run from the repository root (not from `stack/`).
+[utilities-workflow.html](utilities-workflow.html) shows these tools in one
+picture - what each reads and writes, how they fill the stack input and how
+the repaired songs get back into the library (open it in a browser).
 
 | Step | Tool | Runs on | Changes |
 |---|---|---|---|
