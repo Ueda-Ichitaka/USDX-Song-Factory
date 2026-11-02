@@ -456,17 +456,11 @@ Run it after `apply_genres.sh`, so the genres just added are checked too.
 
 ## Tests
 
+The tests live in `utilities/tests/`, one file per tool; each runs on its
+own (no pytest needed) and ends with "all checks passed":
+
 ```sh
 cd utilities
-python3 test_songfile.py
-python3 test_library_check.py
-python3 test_import_broken_songs.py
-python3 test_fill_lyrics_links.py
-python3 test_copy_reported_songs.py
-python3 test_genre_lookup.py
-python3 test_apply_genres.py
-python3 test_genre_bases.py
-python3 test_genre_clusters.py
-python3 test_normalize_genres.py
-python3 test_import_local_media.py
+for t in tests/test_*.py; do python3 "$t" | tail -1; done   # all of them
+python3 tests/test_genre_bases.py                          # one
 ```

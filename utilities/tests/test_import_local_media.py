@@ -3,7 +3,7 @@
 
 About me: plain assert-based checks like the other utility tests, on temp
 folders; mounts, host names and gio are fakes. Run:
-python3 test_import_local_media.py
+python3 tests/test_import_local_media.py (from utilities/)
 """
 
 import csv
@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import import_local_media as ilm  # noqa: E402
 

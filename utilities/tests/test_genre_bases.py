@@ -3,13 +3,13 @@
 
 About me: plain assert-based checks like the other utility tests; the
 MusicBrainz genre list is a small fake, no network. Run:
-python3 test_genre_bases.py
+python3 tests/test_genre_bases.py (from utilities/)
 """
 
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import genre_bases as gb  # noqa: E402
 

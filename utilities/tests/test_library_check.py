@@ -3,7 +3,7 @@
 
 About me: plain assert-based checks (no pytest), host only:
 
-    python3 test_library_check.py
+    python3 tests/test_library_check.py (from utilities/)
 """
 
 import json
@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import library_check  # noqa: E402
 

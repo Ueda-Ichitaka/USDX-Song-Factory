@@ -4,14 +4,14 @@
 About me: plain assert-based checks like the other utility tests, on a temp
 library; the MusicBrainz genre list is a small fake, no network. How a
 genre becomes bases is tested in test_genre_bases.py. Run:
-python3 test_genre_clusters.py
+python3 tests/test_genre_clusters.py (from utilities/)
 """
 
 import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import genre_bases  # noqa: E402
 import genre_clusters as gc  # noqa: E402

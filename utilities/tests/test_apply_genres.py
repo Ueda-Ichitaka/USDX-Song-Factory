@@ -3,7 +3,7 @@
 
 About me: runs the bash script on song files in a temp folder and checks the
 files afterwards - plain assert-based checks like the other utility tests.
-Run: python3 test_apply_genres.py
+Run: python3 tests/test_apply_genres.py (from utilities/)
 """
 
 import os
@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # utilities/
 SCRIPT = os.path.join(HERE, "apply_genres.sh")
 failures = []
 

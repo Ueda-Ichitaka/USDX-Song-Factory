@@ -4,7 +4,7 @@
 About me: plain assert-based checks (no pytest), host only, no network (the
 searches are replaced by fakes):
 
-    python3 test_fill_lyrics_links.py
+    python3 tests/test_fill_lyrics_links.py (from utilities/)
 """
 
 import csv
@@ -12,7 +12,7 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import fill_lyrics_links as fl  # noqa: E402
 

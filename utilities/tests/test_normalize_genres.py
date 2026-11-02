@@ -3,7 +3,7 @@
 
 About me: plain assert-based checks like the other utility tests; runs the
 bash script on a temp library with a hand-written genre-clusters.tsv and
-song list. Run: python3 test_normalize_genres.py
+song list. Run: python3 tests/test_normalize_genres.py (from utilities/)
 """
 
 import os
@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # utilities/
 SCRIPT = os.path.join(HERE, "normalize_genres.sh")
 
 failures = []

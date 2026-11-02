@@ -2,14 +2,15 @@
 """Tests for genre_lookup.py.
 
 About me: plain assert-based checks like the other utility tests, no
-network - every online source is a fake. Run: python3 test_genre_lookup.py
+network - every online source is a fake. Run (from utilities/):
+python3 tests/test_genre_lookup.py
 """
 
 import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import genre_bases  # noqa: E402
 import genre_lookup as gl  # noqa: E402

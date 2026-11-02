@@ -3,7 +3,7 @@
 
 About me: plain assert-based checks (no pytest), host only, no network:
 
-    python3 test_copy_reported_songs.py
+    python3 tests/test_copy_reported_songs.py (from utilities/)
 """
 
 import csv
@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import copy_reported_songs as crs  # noqa: E402
 

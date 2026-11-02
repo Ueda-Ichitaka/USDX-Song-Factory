@@ -3,7 +3,7 @@
 
 About me: plain assert-based checks (no pytest), host only, no network:
 
-    python3 test_import_broken_songs.py
+    python3 tests/test_import_broken_songs.py (from utilities/)
 """
 
 import csv
@@ -12,7 +12,7 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import import_broken_songs as ib  # noqa: E402
 
