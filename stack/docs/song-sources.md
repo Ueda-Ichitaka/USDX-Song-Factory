@@ -45,7 +45,10 @@ is generated from scratch.
 3. Neither site hosts audio or video (copyright), so they are fetched with
    `yt-dlp`: an animux.de upload's own comment-linked YouTube video first (if
    it still resolves), otherwise the song list's own YouTube link (usdb.eu
-   matches always use the song list's link).
+   matches always use the song list's link). When the song list names a
+   local song file instead of a link, that file is used when there is no
+   linked video or it cannot be downloaded (the report says which media was
+   used, see [new-songs.md](new-songs.md#local-song-files)).
 4. The upload's `#GAP` was tuned for somebody else's audio file, so it is
    re-detected against the downloaded audio (`gap` repair mode - only
    `#GAP` changes, the community-made notes stay untouched). The new value

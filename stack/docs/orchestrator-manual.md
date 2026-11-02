@@ -105,6 +105,7 @@ FILES
     input/song-requests.csv   want-list of new songs
     input/broken.csv          reports describing what is wrong with a repair
     input/songtexts/          lyrics files the csv rows point to
+    input/videos/             local song files (audio/video) the csv rows name
     input/repairs/<song folder>/  songs to repair
     output/new/               created songs
     output/repaired/<repair>/ repaired songs, one folder per repair done:

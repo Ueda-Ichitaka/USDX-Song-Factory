@@ -39,8 +39,12 @@ Commands
   (list and report accept --only / --match too)
 
 A "new" song's url column may be a YouTube link (starting with "https://")
-or a local audio/video file path (resolved relative to input/ when not
-absolute) - see resolve_song_input(). A failed job's partial output is
+or a local audio/video file in the stack input, normally input/videos/
+(resolved relative to input/ when not absolute) - see resolve_song_input()
+and local_media_problem(); a file elsewhere is copied in beforehand by
+utilities/import_local_media.py. An audio file gives a song without #VIDEO.
+A USDB match uses its linked video and falls back to the local file; the
+report lists the songs with a local file and the media used. A failed job's partial output is
 moved to output/failed/<kind>/ so it never pollutes the live song library.
 Non-Latin lyrics (Cyrillic/Korean/Japanese) are romanized automatically
 after a successful job (set ROMANIZE=0 to disable) - see romanize.py.
@@ -1367,6 +1371,18 @@ def render_report(state_data, active_ids=None) -> str:
     else:
         lines.append("_none_")
 
+    local_done = [j for j in new_done if is_local_media(j.get("url", ""))]
+    if local_done:
+        lines.append("")
+        lines.append(f"## Songs with a local file ({len(local_done)})")
+        lines.append("")
+        lines.append("| Song | File | Media used |")
+        lines.append("|---|---|---|")
+        for j in sorted(local_done, key=by_label):
+            used = MEDIA_SOURCE_TEXT.get(j.get("media_source") or "local file",
+                                         j.get("media_source"))
+            lines.append(f"| {j['label']} | `{j['url']}` | {used} |")
+
     lines.append("")
     lines.append(f"## Songs repaired ({len(repair_done)})")
     lines.append("")
@@ -1861,11 +1877,13 @@ def prepare_usdb_job(job: dict) -> dict:
     (usdb.animux.de, then usdb.eu - see find_usdb_match()) instead of
     full UltraSinger generation (see 02-DESIGN.md "USDB integration").
     USDB itself never hosts audio/video (copyright) - only notes/cover -
-    so the matched song's media is always fetched via yt-dlp: the
-    source's own comment-linked video first ("only fill gaps") where that
-    is supported, falling back to the job's own songs.csv url otherwise.
-    The video's sound is extracted to "<song name>.mp3" and #MP3 (and
-    #AUDIO, if present) point at it. Returns {"staging_dir", "song_id"} on
+    so the matched song's media comes from elsewhere: the source's own
+    comment-linked video first ("only fill gaps") where that is supported,
+    fetched via yt-dlp; when there is none or it cannot be downloaded, the
+    request's local file (input/videos/); else the request's own link. The
+    sound is extracted to "<song name>.mp3" (a local mp3 is copied) and
+    #MP3 (and #AUDIO, if present) point at it; a local audio file gives no
+    #VIDEO. Returns {"staging_dir", "song_id", "media"} on
     success (the caller runs repair.py --mode gap against staging_dir to
     re-detect #GAP for whatever media actually got downloaded) or None to
     fall back to normal generation - must never raise or fail the job."""
@@ -1880,10 +1898,18 @@ def prepare_usdb_job(job: dict) -> dict:
         return None
     match_label = f"{match['site']}#{match['song_id']}"
 
-    video_url = match["video_url"] or job.get("url")
-    if not video_url or not video_url.startswith("https://"):
+    # the media: USDB's own linked video first; else the request's local
+    # file (input/videos/), else the request's link
+    job_url = job.get("url") or ""
+    local = is_local_media(job_url) and local_media_problem(job_url) is None
+    link, link_kind = None, None
+    if (match.get("video_url") or "").startswith("https://"):
+        link, link_kind = match["video_url"], "usdb linked video"
+    elif not local and job_url.startswith("https://"):
+        link, link_kind = job_url, "song list link"
+    if not link and not local:
         out(f"  !! usdb match {match_label} has no usable video source "
-            "(no linked video, no youtube url in the song list either)")
+            "(no linked video, no youtube url or local file in the song list either)")
         return None
 
     slug = slugify(job["id"])
@@ -1900,21 +1926,47 @@ def prepare_usdb_job(job: dict) -> dict:
         shutil.rmtree(staging_dir)
     os.makedirs(staging_dir, exist_ok=True)
 
-    video_path = os.path.join(staging_dir, "video.mp4")
-    log_path = os.path.join(LOGS_DIR, slug + "-usdb-ytdlp.log")
-    out(f"  .. found on USDB ({match_label}), downloading media via yt-dlp")
-    if not download_media(video_url, video_path, want_video=True, log_path=log_path):
-        out(f"  !! usdb: could not download media for {match_label}, "
+    audio_name = f"{song_name}.mp3"
+    audio_path = os.path.join(staging_dir, audio_name)
+    media, video_name = None, None
+    if link:
+        log_path = os.path.join(LOGS_DIR, slug + "-usdb-ytdlp.log")
+        out(f"  .. found on USDB ({match_label}), downloading media via yt-dlp")
+        if download_media(link, os.path.join(staging_dir, "video.mp4"), want_video=True,
+                          log_path=log_path):
+            media, video_name = link_kind, "video.mp4"
+        elif not local:
+            out(f"  !! usdb: could not download media for {match_label}, "
+                "falling back to normal generation")
+            return None
+        else:
+            out(f"  .. usdb: could not download {link}, using the local file {job_url}")
+    if media is None:
+        source = resolve_song_input(job_url)
+        out(f"  .. found on USDB ({match_label}), using the local file {job_url}")
+        if os.path.splitext(source)[1].lower() in VIDEO_EXTENSIONS:
+            video_name = "video" + os.path.splitext(source)[1].lower()
+            shutil.copy2(source, os.path.join(staging_dir, video_name))
+        media = "usdb local file"
+
+    if video_name:
+        audio_ok = extract_audio_mp3(os.path.join(staging_dir, video_name), audio_path)
+    elif source.lower().endswith(".mp3"):
+        shutil.copy2(source, audio_path)
+        audio_ok = True
+    else:
+        audio_ok = extract_audio_mp3(source, audio_path)
+    if not audio_ok:
+        out(f"  !! usdb: could not extract the audio for {match_label}, "
             "falling back to normal generation")
         return None
 
-    audio_name = f"{song_name}.mp3"
-    if not extract_audio_mp3(video_path, os.path.join(staging_dir, audio_name)):
-        out(f"  !! usdb: could not extract the audio from the download for "
-            f"{match_label}, falling back to normal generation")
-        return None
-
-    txt_content = patch_tag(match["txt"], "VIDEO", "video.mp4")
+    if video_name:
+        txt_content = patch_tag(match["txt"], "VIDEO", video_name)
+    else:
+        # an audio file only: no video to name
+        txt_content = song_header.remove_tag(
+            song_header.remove_tag(match["txt"], "VIDEO"), "VIDEOGAP")
     # the upload's #MP3/#AUDIO name the uploader's own file, which is not here
     txt_content = patch_tag(txt_content, "MP3", audio_name)
     if re.search(r"^#AUDIO:", txt_content, re.MULTILINE | re.IGNORECASE):
@@ -1938,7 +1990,8 @@ def prepare_usdb_job(job: dict) -> dict:
 
     out(f"  .. sourced from USDB {match_label} - re-detecting #GAP "
         "against our own download")
-    return {"staging_dir": staging_dir, "song_id": f"{match['site']}:{match['song_id']}"}
+    return {"staging_dir": staging_dir, "song_id": f"{match['site']}:{match['song_id']}",
+            "media": media}
 
 
 # --------------------------------------------------------------------------
@@ -1947,6 +2000,8 @@ def prepare_usdb_job(job: dict) -> dict:
 
 VIDEO_EXTENSIONS = (".mp4", ".webm", ".mkv", ".avi", ".mov")
 AUDIO_EXTENSIONS = (".mp3", ".m4a", ".wav", ".ogg", ".flac", ".opus")
+# the file types a song list may name as a new song's audio/video
+LOCAL_MEDIA_EXTENSIONS = AUDIO_EXTENSIONS + VIDEO_EXTENSIONS
 
 
 class _NullLogger:
@@ -2110,6 +2165,52 @@ def resolve_song_input(value: str) -> str:
     if os.path.isabs(value):
         return value
     return os.path.join(INPUT_DIR, value)
+
+
+def local_media_problem(value: str):
+    """Why a song-list cell that is no link cannot be used as the song's
+    audio/video file, or None when it can: it has to be an audio or video
+    file (LOCAL_MEDIA_EXTENSIONS) inside the stack input (normally
+    input/videos/). A file anywhere else - another absolute path, an
+    smb:// or nfs:// URL, a Windows/UNC path - is not visible in the
+    container; utilities/import_local_media.py copies it in and rewrites
+    the song list."""
+    value = (value or "").strip()
+    outside = (f"the file {value} is outside the stack input - copy it into input/videos/ "
+               "with utilities/import_local_media.py (it also rewrites the song list)")
+    if re.match(r"^[a-z][a-z0-9+.-]*://", value, re.IGNORECASE) or value.startswith("\\"):
+        return outside
+    path = resolve_song_input(value)
+    if not os.path.realpath(path).startswith(os.path.realpath(INPUT_DIR) + os.sep):
+        return outside
+    if not os.path.isfile(path):
+        return f"local input file not found: {path}"
+    if os.path.splitext(path)[1].lower() not in LOCAL_MEDIA_EXTENSIONS:
+        return (f"not an audio or video file: {path} "
+                f"(supported: {' '.join(LOCAL_MEDIA_EXTENSIONS)})")
+    return None
+
+
+def is_local_media(url: str) -> bool:
+    """A song-list cell naming a file instead of a link (or a skip)."""
+    return bool(url) and url != "skip" and not url.startswith("https://")
+
+
+# the report's words for media_source() values
+MEDIA_SOURCE_TEXT = {"local file": "local file",
+                     "usdb linked video": "USDB's linked video (the local file is not used)",
+                     "usdb local file": "local file, with USDB's notes (USDB's linked video "
+                                        "is missing or could not be downloaded)",
+                     "song list link": "the song list's link"}
+
+
+def media_source(job: dict, usdb_match) -> str:
+    """Which media a new song was made from, for the report: what a USDB
+    staging used (prepare_usdb_job()), "local file" for a generated song
+    whose request names a file, None for a plain link."""
+    if usdb_match:
+        return usdb_match.get("media")
+    return "local file" if is_local_media(job.get("url", "")) else None
 
 
 def unused_path(path: str) -> str:
@@ -2469,11 +2570,11 @@ class JobRunner:
         self._try_usdb_source()
 
         if (self.job["kind"] == "new" and not self._usdb_match
-                and not self.job["url"].startswith("https://")):
-            resolved = resolve_song_input(self.job["url"])
-            if not os.path.isfile(resolved):
+                and is_local_media(self.job["url"])):
+            problem = local_media_problem(self.job["url"])
+            if problem:
                 return {"status": "failed",
-                        "error": f"local input file not found: {resolved}",
+                        "error": problem,
                         "output_path": None, "duration_s": 0.0,
                         "quarantined_output": None, "repair_mode_result": None,
                         "lyrics_source_result": None, "usdb_song_id": None}
@@ -2613,6 +2714,7 @@ class JobRunner:
                 "repair_mode_result": repair_mode_result,
                 "lyrics_source_result": lyrics_source_result,
                 "gap_check_result": gap_check_result,
+                "media_source": media_source(self.job, self._usdb_match),
                 "usdb_song_id": self._usdb_match["song_id"] if self._usdb_match else None}
 
     def _terminate(self, reason):
@@ -2811,6 +2913,7 @@ def cmd_run(state, selection=None, control=None):
         if result.get("lyrics_source_result"):
             job["lyrics_source"] = result["lyrics_source_result"]
         job["gap_check"] = result.get("gap_check_result")
+        job["media_source"] = result.get("media_source")
         job["finished_at"] = now_iso()
         job["duration_s"] = result["duration_s"]
         state.save()
@@ -2876,8 +2979,9 @@ def cmd_progress(watch=False, interval=10):
 
 
 def cmd_run_one(url):
-    if not url.startswith("http"):
-        print("run-one expects a youtube url")
+    problem = local_media_problem(url) if is_local_media(url) else None
+    if problem:
+        print(f"run-one expects a youtube url or an audio/video file in the input: {problem}")
         sys.exit(1)
     fake = {"id": f"new|{url}", "kind": "new", "label": url, "url": url, "attempts": 1}
     runner = JobRunner(fake)

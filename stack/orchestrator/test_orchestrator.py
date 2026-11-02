@@ -3236,6 +3236,130 @@ finally:
     orch.CREATOR_NAME, orch.CREATOR_FACTORY_SUFFIX = _saved_creator
     shutil.rmtree(_tags_dir)
 
+# --------------------------------------------------------------------------
+# local song files: a song-list cell that is no link names an audio or video
+# file in the stack input (input/videos/); anything outside the input has to
+# be copied in first (utilities/import_local_media.py)
+# --------------------------------------------------------------------------
+
+_videos = os.path.join(orch.INPUT_DIR, "videos")
+os.makedirs(_videos, exist_ok=True)
+for _name in ("Band - Clip.mp4", "Band - Song.mp3", "notes.txt"):
+    with open(os.path.join(_videos, _name), "wb") as f:
+        f.write(b"media")
+check("local_media_problem: a video or audio file in the input is fine (relative or absolute)",
+      orch.local_media_problem("videos/Band - Clip.mp4") is None
+      and orch.local_media_problem("videos/Band - Song.mp3") is None
+      and orch.local_media_problem(os.path.join(_videos, "Band - Clip.mp4")) is None)
+check("local_media_problem: a missing file is named",
+      "not found" in (orch.local_media_problem("videos/gone.mp4") or ""))
+check("local_media_problem: a file that is no audio or video",
+      "not an audio or video file" in (orch.local_media_problem("videos/notes.txt") or ""))
+check("local_media_problem: a folder is no song file",
+      "not found" in (orch.local_media_problem("videos") or ""))
+for _outside in ("/mnt/nas/videos/Band - Clip.mp4", "smb://192.168.0.176/media/a.mp4",
+                 "nfs://nas/export/a.mp4", "\\\\nas\\share\\a.mp4"):
+    check(f"local_media_problem: {_outside} is outside the input -> copy it in first",
+          "import_local_media.py" in (orch.local_media_problem(_outside) or ""))
+
+_saved_usdb_mode = orch.USDB_MODE
+orch.USDB_MODE = "off"
+try:
+    _r = orch.JobRunner({"id": "new|smb://nas/a.mp4", "kind": "new", "label": "A - B",
+                         "url": "smb://nas/a.mp4", "attempts": 1}).run()
+finally:
+    orch.USDB_MODE = _saved_usdb_mode
+check(f"JobRunner.run: a file outside the input fails at once with the hint (got {_r['error']})",
+      _r["status"] == "failed" and "import_local_media.py" in _r["error"])
+
+check("media_source: a local file without USDB",
+      orch.media_source({"url": "videos/Band - Clip.mp4"}, None) == "local file")
+check("media_source: a link without USDB is not noted",
+      orch.media_source({"url": "https://youtu.be/x"}, None) is None)
+check("media_source: a USDB song names the media its staging used",
+      orch.media_source({"url": "videos/Band - Clip.mp4"}, {"media": "usdb linked video"})
+      == "usdb linked video")
+
+# prepare_usdb_job() with a local file in the request: USDB's linked video
+# first, the local file when there is none or it cannot be downloaded
+orch.USDB_USERNAME, orch.USDB_PASSWORD = "me", "secret"
+orch._usdb_session = None
+orch._usdb_catalog = None
+orch._usdb_unavailable = False
+orch.usdb_lookup.login = lambda u, p: "session"
+orch.usdb_lookup.load_catalog = lambda session, path, **kw: [{"song_id": "1"}]
+_usdb_txt = "#TITLE:Song\n#ARTIST:Band\n#MP3:theirs.mp3\n#VIDEO:theirs.mp4\n#VIDEOGAP:1.5\n#BPM:100\n: 0 4 0 la\nE\n"
+_saved_dl, _saved_ex = orch.download_media, orch.extract_audio_mp3
+_dl = []
+orch.extract_audio_mp3 = fake_extract_audio_mp3
+try:
+    orch.usdb_lookup.find_usdb_song = lambda *a: {"song_id": "7", "txt": _usdb_txt,
+                                                  "details": FakeUsdbDetails(), "video_url": None}
+    orch.download_media = lambda url, dest, want_video, log_path: _dl.append(url) or False
+    _lv = orch.prepare_usdb_job({"id": "new|videos/Band - Clip.mp4", "band": "Band", "title": "Clip",
+                                 "url": "videos/Band - Clip.mp4"})
+    with open(os.path.join(_lv["staging_dir"], "song.txt"), encoding="utf-8") as f:
+        _lv_txt = f.read()
+    check(f"prepare_usdb_job: no linked video -> the local video, nothing downloaded (got {_lv})",
+          _lv["media"] == "usdb local file" and not _dl
+          and os.path.isfile(os.path.join(_lv["staging_dir"], "video.mp4"))
+          and "#VIDEO:video.mp4" in _lv_txt and "#MP3:Band - Clip.mp3" in _lv_txt)
+
+    orch.usdb_lookup.find_usdb_song = lambda *a: {"song_id": "8", "txt": _usdb_txt,
+                                                  "details": FakeUsdbDetails(),
+                                                  "video_url": "https://youtu.be/linked"}
+    _la = orch.prepare_usdb_job({"id": "new|videos/Band - Song.mp3", "band": "Band", "title": "Song",
+                                 "url": "videos/Band - Song.mp3"})
+    with open(os.path.join(_la["staging_dir"], "song.txt"), encoding="utf-8") as f:
+        _la_txt = f.read()
+    check(f"prepare_usdb_job: linked video not downloadable -> the local mp3, no #VIDEO "
+          f"(got {_la_txt!r})",
+          _dl == ["https://youtu.be/linked"] and _la["media"] == "usdb local file"
+          and "#VIDEO" not in _la_txt and "#MP3:Band - Song.mp3" in _la_txt
+          and os.path.isfile(os.path.join(_la["staging_dir"], "Band - Song.mp3")))
+
+    orch.download_media = fake_download_media
+    _lu = orch.prepare_usdb_job({"id": "new|videos/Band - Song.mp3", "band": "Band", "title": "Song",
+                                 "url": "videos/Band - Song.mp3"})
+    check("prepare_usdb_job: the linked video downloads -> it is used, the report says so",
+          _lu["media"] == "usdb linked video")
+    orch.usdb_lookup.find_usdb_song = lambda *a: {"song_id": "9", "txt": _usdb_txt,
+                                                  "details": FakeUsdbDetails(), "video_url": None}
+    _ly = orch.prepare_usdb_job({"id": "new|https://youtu.be/own", "band": "Band", "title": "Song",
+                                 "url": "https://youtu.be/own"})
+    check("prepare_usdb_job: a song-list link is downloaded as before",
+          _ly["media"] == "song list link")
+finally:
+    orch.download_media, orch.extract_audio_mp3 = _saved_dl, _saved_ex
+    orch.usdb_lookup.find_usdb_song = fake_find_usdb_song
+
+_media_report = orch.render_report({"jobs": {
+    "new|videos/Band - Clip.mp4": {"id": "new|videos/Band - Clip.mp4", "kind": "new", "status": "done",
+                                   "label": "Band - Clip", "url": "videos/Band - Clip.mp4",
+                                   "media_source": "local file", "output_path": "/o/x/x.txt"},
+    "new|videos/Band - Song.mp3": {"id": "new|videos/Band - Song.mp3", "kind": "new", "status": "done",
+                                   "label": "Band - Song", "url": "videos/Band - Song.mp3",
+                                   "media_source": "usdb linked video", "output_path": "/o/y/y.txt"},
+    "new|videos/Band - Live.mp4": {"id": "new|videos/Band - Live.mp4", "kind": "new", "status": "done",
+                                   "label": "Band - Live", "url": "videos/Band - Live.mp4",
+                                   "media_source": "usdb local file", "output_path": "/o/w/w.txt"},
+    "new|https://y/1": {"id": "new|https://y/1", "kind": "new", "status": "done", "label": "Other",
+                        "url": "https://y/1", "output_path": "/o/z/z.txt"}}})
+check(f"render_report: songs with a local file and the media used",
+      "## Songs with a local file (3)" in _media_report
+      and "| Band - Live | `videos/Band - Live.mp4` | local file, with USDB's notes (USDB's linked "
+          "video is missing or could not be downloaded) |" in _media_report
+      and "| Band - Clip | `videos/Band - Clip.mp4` | local file |" in _media_report
+      and "| Band - Song | `videos/Band - Song.mp3` | USDB's linked video (the local file is not used) |"
+      in _media_report and "| Other |" not in _media_report.split("## Songs with a local file")[1])
+
+try:
+    orch.cmd_run_one("smb://nas/a.mp4")
+    _exit = None
+except SystemExit as exc:
+    _exit = exc.code
+check("cmd_run_one: a file outside the input is refused", _exit == 1)
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")

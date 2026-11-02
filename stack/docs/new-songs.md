@@ -26,16 +26,17 @@ spelling (`band name,song name,youtube link` or `band,title,url`):
 band,title,url
 ASP,Denn Ich bin der Meister,https://www.youtube.com/watch?v=U6bmr2zcCos
 ASP,Zaubererbruder,https://www.youtube.com/watch?v=sifM_9DIVbI
-Local Band,A Song I Already Have,media/local-band-a-song.mp3
+Local Band,A Song I Already Have,videos/Local Band - A Song I Already Have.mp3
 ```
 
 * The `url` cell is either a **YouTube link** (it must start with `https://`
   - that is the only thing that marks it as a link, nothing is guessed) or a
-  **local audio/video file path** (`.mp3`, `.mp4`, ...), resolved relative to
-  `input/` when not absolute. Drop the file under `input/` (for example
-  `input/media/local-band-a-song.mp3`) and reference it by that relative path.
-  A local file is handled exactly like a download: if it has no video track,
-  the song simply has no `#VIDEO` (UltraStar Deluxe falls back to its built-in
+  **local song file** for a song that is not on YouTube: an audio or video
+  file (`.mp3 .m4a .wav .ogg .flac .opus`, `.mp4 .webm .mkv .avi .mov`) in
+  `input/videos/`, named relative to `input/` (`videos/<file name>`). See
+  [Local song files](#local-song-files).
+  A local file is handled exactly like a download: an audio file gives a
+  song without `#VIDEO` (UltraStar Deluxe falls back to its built-in
   visualization).
 * A row with `skip` (or `-`, or empty) as url is skipped - for example songs
   you already own: `Aequitas,He's a Pirate,skip`. The finishing report lists
@@ -123,6 +124,35 @@ Lacrimosa,Lichtgestalt,https://www.youtube.com/watch?v=XYZ,de,,,,
   too, `default` left out; a row with no other genre gets no `#GENRE` line
   (UltraSinger's MusicBrainz genres are removed). A song taken from USDB
   keeps the `#GENRE` of its USDB file.
+
+### Local song files
+
+The dashboard may give a path to a file instead of a link: a path in
+`input/videos/`, any absolute path on this machine, an `smb://` or `nfs://`
+URL or a Windows/UNC path (`\\nas\share\...`). The stack runs in a
+container that sees only its input folder, so files from anywhere else are
+copied in first, on the host, after saving the export:
+
+```bash
+python3 utilities/import_local_media.py           # dry run: what would be copied
+python3 utilities/import_local_media.py --apply   # copies into input/videos/, rewrites the song list
+```
+
+It copies each file into `stack/input/videos/` (its own name; a different
+file of the same name gets ` (1)`, a file copied before is reused) and
+writes `videos/<file name>` into the row. Shares mounted on this machine
+(`smb://192.168.0.176/media/...` -> `/dhuaddan/media/...`) are read through
+their mount point. Details and the untested path types:
+[utilities/README.md](../../utilities/README.md#local-song-files).
+
+A row the tool was not run for fails at once with the hint to run it; a file
+that is no audio or video, a missing file or a folder fail with their reason.
+
+**USDB:** when USDB has the song, its notes are used as usual. The media is
+USDB's linked video when it has one that can still be downloaded, else the
+local file (an audio file gives no `#VIDEO`). The report lists every song
+with a local file under "Songs with a local file" and which media it was
+made from.
 
 ### `songs.txt` (plain list)
 

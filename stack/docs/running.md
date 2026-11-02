@@ -183,6 +183,7 @@ stack/
 │   ├── song-requests.csv   want-list for new songs (band,title,url,...)
 │   ├── broken.csv          optional: broken-song reports (band,song name,category,description)
 │   ├── songtexts/          optional: lyrics files that a lyrics_url column points at
+│   ├── videos/             optional: local song files (audio/video) the song list names
 │   └── repairs/            broken songs to repair (one folder per song)
 │       └── <song folder>/
 │           └── lyrics.txt  optional: trusted lyrics -> repair "lyrics" mode

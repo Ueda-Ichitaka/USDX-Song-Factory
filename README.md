@@ -108,7 +108,9 @@ The two input files are designed to come from the companion project
 app where people request songs and report broken ones. Its admin exports go
 straight into `stack/input/`. The songs to repair go into
 `stack/input/repairs/` (one folder per song), lyrics files the lists point to
-into `stack/input/songtexts/`:
+into `stack/input/songtexts/`, local song files (songs not on YouTube) into
+`stack/input/videos/` - `utilities/import_local_media.py` copies them there
+from the paths in the export:
 
 | Dashboard export | Save as | Used for |
 |---|---|---|
@@ -153,6 +155,7 @@ genres you checked (backups of every changed file are kept).
 | `import_broken_songs.py` | copies the songs the scan found into `stack/input/repairs/` and adds their `broken.csv` rows |
 | `fill_lyrics_links.py` | fills empty `lyrics_url` cells of `broken.csv` (lrclib.net, Genius) |
 | `copy_reported_songs.py` | copies the songs of a karaoke-dashboard `broken.csv` export into `stack/input/repairs/` |
+| `import_local_media.py` | copies the local song files a song list names (absolute paths, `smb://`, UNC) into `stack/input/videos/` and rewrites the list |
 | `genre_lookup.py` | lists every song's `#GENRE`, looks up the missing ones online (MusicBrainz, Wikidata, Metal Archives, Last.fm) |
 | `apply_genres.sh` | writes the looked-up genres into the song files (the only tool that changes the library) |
 

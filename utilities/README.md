@@ -10,7 +10,8 @@ songs back into the library. Two more tools fill in missing `#GENRE` tags
 
 The stack input: `stack/input/` holds `broken.csv` and `song-requests.csv`,
 `stack/input/repairs/` the song folders to repair, `stack/input/songtexts/`
-lyrics files the csv rows point to.
+lyrics files the csv rows point to, `stack/input/videos/` local song files
+(see [Local song files](#local-song-files)).
 
 All commands below run from the repository root (not from `stack/`).
 
@@ -21,6 +22,7 @@ All commands below run from the repository root (not from `stack/`).
 | 3. Lyrics links | `fill_lyrics_links.py` | host | fills empty `lyrics_url` cells of `broken.csv` |
 | 4. Repair, copy back | the stack, a file manager | stack container, host | writes `stack/output/repaired/<repair>/`; you copy the songs into the library |
 | Dashboard export | `copy_reported_songs.py` | host | copies the reported song folders into the stack input, merges the rows into `broken.csv` |
+| Local song files | `import_local_media.py` | host | copies the files a song list names into `stack/input/videos/`, rewrites the list |
 | Genres | `genre_lookup.py` | host | nothing in the library; writes the genre list and the predictions |
 | Genres | `apply_genres.sh` | host | writes the predicted genres into the song files (backup kept) |
 
@@ -236,6 +238,50 @@ with or without the header line; `--csv` can be given more than once):
 Option: `--input DIR` (the stack input, default `stack/input`; the folders go
 to its `repairs/`).
 
+## Local song files
+
+```sh
+python3 utilities/import_local_media.py            # dry run
+python3 utilities/import_local_media.py --apply
+```
+
+A song-request row may name an audio or video file instead of a YouTube
+link (a song that is not on YouTube). The stack runs in a container that
+only sees its input folder, so this tool copies every such file into
+`stack/input/videos/` and writes `videos/<file name>` into the row. Run it
+after saving a fresh dashboard export; links, `skip` rows and paths already
+in the input stay (an absolute path into the input, or `/data/input/...`,
+is made relative).
+
+- Accepted: `.mp3 .m4a .wav .ogg .flac .opus` and `.mp4 .webm .mkv .avi
+  .mov` (the stack's list). A folder, a missing file or another type is
+  listed as an error and the row stays; the stack then fails that song
+  with the reason.
+- The file keeps its name. A file of the same name and size in
+  `input/videos/` counts as copied before and is reused; a different file
+  of that name gets ` (1)`. The copy keeps the file's date.
+- With `--apply` the song list is rewritten (a backup
+  `song-requests.csv.bak-<time>` is kept), without it the tool only lists
+  what it would do.
+
+Where a path is read from:
+
+| Path in the song list | Read from | Tested |
+|---|---|---|
+| `videos/x.mp4`, `/data/input/...`, an absolute path inside the input | already in the input | ✅ |
+| `/any/absolute/path.mp4` | that path (local disk, a mounted share) | ✅ |
+| `smb://host/share/...`, `//host/share/...`, `\\host\share\...` on a mounted share | the share's mount point (`/proc/self/mounts`; host name or IP, share name in any case) | ✅ fstab CIFS mounts |
+| `nfs://host/export/...` on a mounted export | the export's mount point | ❌ reference |
+| `smb://`, `nfs://`, UNC on a share that is not mounted | `gio copy` (the desktop's network layer and stored logins) | ❌ reference |
+| anything named in `--map PREFIX=DIR` (e.g. `--map 'Z:\=/dhuaddan/video/'` for a Windows drive) | `DIR` + the rest of the path | ✅ |
+
+The two **reference** paths are written but not tested against a real
+server (there are no NFS mounts or unmounted shares on the machine this was
+built on) - open for contribution: whoever has such a setup, please test
+them and fix or extend `_nfs_mount()` and `gio_copy()` in
+`import_local_media.py`. A Windows drive letter without `--map` is an
+error, since its mount point here cannot be known.
+
 ## Genres
 
 ```sh
@@ -303,4 +349,5 @@ python3 test_fill_lyrics_links.py
 python3 test_copy_reported_songs.py
 python3 test_genre_lookup.py
 python3 test_apply_genres.py
+python3 test_import_local_media.py
 ```
