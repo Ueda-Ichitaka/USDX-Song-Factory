@@ -6,8 +6,8 @@ all subfolders) and writes two tab-separated files into the output folder:
 
   library-genres.tsv     every song: band, title, genre, path
   genre-predictions.tsv  the songs without a genre (no #GENRE, an empty one
-                         or a placeholder like "Unknown"/"No idea"): band,
-                         title, path, predicted genre, found
+                         or a placeholder: Unknown, No idea, Other, None,
+                         Misc): band, title, path, predicted genre, found
 
 For each song without a genre these sources are asked:
 
@@ -25,12 +25,14 @@ For each song without a genre these sources are asked:
                   MusicBrainz genres count, at most 5.
 
 combine() turns what the sources found into the predicted genre: each found
-genre is mapped to the stack's genre names (map_genre(): "power metal" ->
-Metal, "symphonic metal" -> Metal, Symphonic), a genre outside them is kept
-as found ("italo disco" -> Italo Disco); the ones most sources agree on come
-first, at most MAX_GENRES, joined with ", ". The "found" column lists each
-source's own genres for checking. apply_genres.sh writes the predicted
-genres into the song files.
+genre is broken down into its bases with genre_bases.py, against the
+MusicBrainz genre list and the library's own genres ("symphonic black
+metal" -> Symphonic, Black, Metal; "hip hop" -> Hip-Hop), the bases most
+sources agree on first, all of them, joined with ", ". The "found" column
+lists each source's own genres for checking. apply_genres.sh writes the
+predicted genres into the song files. The MusicBrainz genre list is
+downloaded once into musicbrainz-genres.txt in the output folder
+(load_mb_genres(), also used by genre_clusters.py).
 
 Answers are cached per artist (per song for MusicBrainz) in
 genre-cache.json in the output folder, so a second run only asks for what
@@ -54,14 +56,16 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
+import genre_bases  # noqa: E402
 import songfile  # noqa: E402
 
 OVERVIEW_FILE = "library-genres.tsv"
 PREDICTIONS_FILE = "genre-predictions.tsv"
 CACHE_FILE = "genre-cache.json"
-MAX_GENRES = 6
+MB_GENRES_FILE = "musicbrainz-genres.txt"
+MB_GENRES_URL = "https://musicbrainz.org/ws/2/genre/all"
 LASTFM_MAX_TAGS = 5
-PLACEHOLDERS = {"unknown", "no idea"}
+PLACEHOLDERS = {"unknown", "no idea", "other", "none", "misc"}
 MIN_SCORE = 90
 MIN_SIMILAR = 0.85
 # seconds between two requests to the same site
@@ -74,15 +78,6 @@ SITE_SOURCE = {"musicbrainz.org": "musicbrainz", "metal-archives.com": "metal-ar
 RETRY_WAITS = (5, 15, 30)
 # the answer of a site that blocks automated requests (403)
 BLOCKED = object()
-# genre words -> the stack's genre names (stack/orchestrator/song_style.py)
-GENRE_WORDS = {"metal": "Metal", "medieval": "Medieval", "mittelalter": "Medieval",
-               "folk": "Folk", "gothic": "Gothic", "goth": "Gothic",
-               "symphonic": "Symphonic", "punk": "Punk", "pop": "Pop", "rap": "Rap",
-               "hiphop": "Rap", "kpop": "K-Pop", "jpop": "J-Pop", "rock": "Rock",
-               "industrial": "Industrial", "ebm": "EBM"}
-SPELLINGS = ((re.compile(r"\bk[\s-]?pop\b"), "kpop"), (re.compile(r"\bj[\s-]?pop\b"), "jpop"),
-             (re.compile(r"\bhip[\s-]?hop\b"), "hiphop"),
-             (re.compile(r"\belectronic body music\b"), "ebm"))
 # genre nouns a Metal Archives "A/B Metal" shares between its parts
 NOUNS = ("metal", "rock", "punk", "pop", "core", "music")
 MUSIC_ACT_WORDS = ("band", "group", "singer", "musician", "rapper", "duo", "trio",
@@ -99,7 +94,9 @@ def needs_genre(value: str, keep_placeholders: bool = False) -> bool:
 
 
 def tsv_cell(value) -> str:
-    return " ".join(str(value or "").replace("\t", " ").replace("\r", " ").replace("\n", " ").split())
+    """A value as one TSV cell: tabs and line breaks become a space, every
+    other character stays (paths can hold two spaces in a row)."""
+    return re.sub(r"\r\n|[\t\r\n]", " ", str(value or ""))
 
 
 def write_tsv(path: str, header: list, rows: list) -> None:
@@ -145,42 +142,24 @@ def split_metal_archives(text: str) -> list:
     return [g for i, g in enumerate(out) if g not in out[:i]]
 
 
-def display(name: str) -> str:
-    """A found genre as written into #GENRE: each word starts upper case,
-    a word with '&' is all upper case (R&B); other letters stay."""
-    return " ".join(w.upper() if "&" in w else w[:1].upper() + w[1:] for w in name.split())
-
-
-def map_genre(name: str) -> list:
-    """The stack's genre names a found genre contains, in that order; the
-    found genre itself (display()) when it contains none."""
-    text = name.lower()
-    for pattern, word in SPELLINGS:
-        text = pattern.sub(word, text)
-    out = []
-    for word in re.split(r"[\s/\-]+", text):
-        code = GENRE_WORDS.get(word) or ("Metal" if word.startswith("metal") else None)
-        if code and code not in out:
-            out.append(code)
-    return out or [display(name)]
-
-
-def combine(found: dict) -> list:
+def combine(found: dict, splitter=None) -> list:
     """The predicted genres of what the sources found ({source: [genre,
-    ...]}): mapped with map_genre(), the ones the most sources name first,
-    then by their best place in a source's list; at most MAX_GENRES."""
+    ...]}): each genre's bases (splitter, a genre_bases.Splitter), the ones
+    the most sources name first, then by their best place in a source's
+    list."""
+    splitter = splitter or genre_bases.Splitter([])
     sources, best = {}, {}
     order = []
     for source, genres in found.items():
         for rank, genre in enumerate(genres or []):
-            for name in map_genre(genre):
+            for name in splitter.bases(genre):
                 if name not in sources:
                     sources[name], best[name] = set(), rank
                     order.append(name)
                 sources[name].add(source)
                 best[name] = min(best[name], rank)
     order.sort(key=lambda n: (-len(sources[n]), best[n]))
-    return order[:MAX_GENRES]
+    return order
 
 
 def describe_found(found: dict) -> str:
@@ -459,11 +438,40 @@ class Lookup:
         return found
 
 
+def split_genres(value: str) -> list:
+    """The genres of a #GENRE value: split at commas, trimmed, without empty
+    parts and placeholders."""
+    parts = [p.strip() for p in (value or "").split(",")]
+    return [p for p in parts if p and p.lower() not in PLACEHOLDERS]
+
+
+def load_mb_genres(out_dir: str, fetch=None) -> list:
+    """The MusicBrainz genre names, from out_dir or downloaded once."""
+    path = os.path.join(out_dir, MB_GENRES_FILE)
+    if not os.path.isfile(path):
+        fetch = fetch or (lambda: http_get(MB_GENRES_URL, {"fmt": "txt"},
+                                           {"User-Agent": user_agent()}, text=True))
+        text = fetch()
+        if not isinstance(text, str) or not text.strip():
+            sys.exit(f"could not download the MusicBrainz genre list ({MB_GENRES_URL})")
+        os.makedirs(out_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    with open(path, encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip()]
+
+
 def run(library: str, out_dir: str, lookup: Lookup, keep_placeholders: bool = False,
-        progress=None) -> dict:
+        progress=None, mb_genres=()) -> dict:
     """Scan, look up the songs without a genre, write both files; returns
-    {"songs", "without genre", "predicted"}."""
+    {"songs", "without genre", "predicted"}. The found genres are broken
+    down into bases against mb_genres and the library's own genres."""
     songs = scan(library)
+    counts = {}
+    for song in songs:
+        for spelling in set(split_genres(song["genre"])):
+            counts[spelling] = counts.get(spelling, 0) + 1
+    splitter = genre_bases.Splitter(mb_genres, counts)
     os.makedirs(out_dir, exist_ok=True)
     write_tsv(os.path.join(out_dir, OVERVIEW_FILE), ["band", "title", "genre", "path"],
               [[s["band"], s["title"], s["genre"], s["path"]] for s in songs])
@@ -471,7 +479,7 @@ def run(library: str, out_dir: str, lookup: Lookup, keep_placeholders: bool = Fa
     rows, predicted = [], 0
     for i, song in enumerate(missing, 1):
         found = lookup.find(song["band"], song["title"])
-        genres = combine(found)
+        genres = combine(found, splitter)
         predicted += bool(genres)
         rows.append([song["band"], song["title"], song["path"], ", ".join(genres),
                      describe_found(found)])
@@ -492,7 +500,7 @@ def main():
     parser.add_argument("--out", default=os.path.join(REPO, "library analysis"),
                         help="the folder for the result files and the cache")
     parser.add_argument("--keep-placeholders", action="store_true",
-                        help="'Unknown' and 'No idea' count as a genre")
+                        help="the placeholders (Unknown, No idea, Other, None, Misc) count as a genre")
     parser.add_argument("--no-lastfm", action="store_true", help="do not ask Last.fm")
     args = parser.parse_args()
     key = None if args.no_lastfm else lastfm_key()
@@ -500,7 +508,8 @@ def main():
         print("Last.fm: no LASTFM_API_KEY set, asking MusicBrainz, Metal Archives and Wikidata")
     lookup = Lookup(cache_path=os.path.join(args.out, CACHE_FILE), lastfm_key=key)
     os.makedirs(args.out, exist_ok=True)
-    summary = run(args.library, args.out, lookup, args.keep_placeholders, progress=print)
+    summary = run(args.library, args.out, lookup, args.keep_placeholders, progress=print,
+                  mb_genres=load_mb_genres(args.out))
     print(f"\n{summary['songs']} songs, {summary['without genre']} without a genre, "
           f"{summary['predicted']} with a predicted genre")
     print(f"written: {os.path.join(args.out, OVERVIEW_FILE)}")

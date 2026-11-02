@@ -46,7 +46,10 @@ crlf = song("C - Crlf", b"\xef\xbb\xbf#ARTIST:C\r\n#TITLE:Crlf\r\n#BPM:300\r\n: 
 cp1252 = song("D - Cp", "#ARTIST:D\n#TITLE:Café\n#BPM:300\n: 0 4 0 la\nE\n".encode("cp1252"))
 has_genre = song("E - Has", b"#ARTIST:E\n#TITLE:Has\n#GENRE:Pop\n#BPM:300\n: 0 4 0 la\nE\n")
 nothing = song("F - Nothing", b"#ARTIST:F\n#TITLE:Nothing\n#BPM:300\n: 0 4 0 la\nE\n")
-originals = {p: read(p) for p in (plain, placeholder, crlf, cp1252, has_genre, nothing)}
+others = [song(f"H - {v}", f"#ARTIST:H\n#TITLE:{v}\n#GENRE:{v}\n#BPM:300\n: 0 4 0 la\nE\n".encode())
+          for v in ("Other", "None", "Misc")]
+no_band = song("I - No band", b"#ARTIST:\n#TITLE:No band\n#BPM:300\n: 0 4 0 la\nE\n")
+originals = {p: read(p) for p in (plain, placeholder, crlf, cp1252, has_genre, nothing, *others, no_band)}
 
 tsv = os.path.join(root, "genre-predictions.tsv")
 with open(tsv, "w", encoding="utf-8") as f:
@@ -57,6 +60,9 @@ with open(tsv, "w", encoding="utf-8") as f:
     f.write(f"D\tCafé\t{cp1252}\tNeue Deutsche Härte\tmusicbrainz: neue deutsche härte\n")
     f.write(f"E\tHas\t{has_genre}\tMetal\tmusicbrainz: metal\n")
     f.write(f"F\tNothing\t{nothing}\t\t\n")
+    for v, path in zip(("Other", "None", "Misc"), others):
+        f.write(f"H\t{v}\t{path}\tPop\tmusicbrainz: pop\n")
+    f.write(f"\tNo band\t{no_band}\tPop\tmusicbrainz: pop\n")
     f.write(f"G\tGone\t{os.path.join(lib, 'gone.txt')}\tPop\tmusicbrainz: pop\n")
 
 dry = subprocess.run(["bash", SCRIPT, tsv], capture_output=True, text=True)
@@ -72,6 +78,11 @@ check(f"apply: a missing #GENRE is added after the header (got {read(plain)!r})"
       read(plain) == b"#ARTIST:A\n#TITLE:Plain\n#BPM:300\n#GENRE:Metal, Symphonic\n: 0 4 0 la\nE\n")
 check(f"apply: a placeholder #GENRE is replaced in place (got {read(placeholder)!r})",
       read(placeholder) == b"#ARTIST:B\n#TITLE:Placeholder\n#GENRE:Rock\n#BPM:300\n: 0 4 0 la\nE\n")
+check(f"apply: the placeholders Other, None and Misc are replaced (got {[read(p) for p in others]})",
+      all(read(p) == f"#ARTIST:H\n#TITLE:{v}\n#GENRE:Pop\n#BPM:300\n: 0 4 0 la\nE\n".encode()
+          for v, p in zip(("Other", "None", "Misc"), others)))
+check(f"apply: an empty band cell keeps the columns in place (got {read(no_band)!r})",
+      read(no_band) == b"#ARTIST:\n#TITLE:No band\n#BPM:300\n#GENRE:Pop\n: 0 4 0 la\nE\n")
 check(f"apply: byte order mark and CRLF kept, quoted cell unquoted (got {read(crlf)!r})",
       read(crlf) == b"\xef\xbb\xbf#ARTIST:C\r\n#TITLE:Crlf\r\n#BPM:300\r\n#GENRE:Gothic, Rock\r\n"
                     b": 0 4 0 la\r\nE\r\n")
@@ -86,7 +97,7 @@ check("apply: the changed files are backed up with their full path",
       read(os.path.join(backup, plain.lstrip("/"))) == originals[plain]
       and not os.path.exists(os.path.join(backup, has_genre.lstrip("/"))))
 check(f"apply: summary line (got {run.stdout.splitlines()[-1:]})",
-      "4 set" in run.stdout)
+      "8 set" in run.stdout)
 
 again = subprocess.run(["bash", SCRIPT, "--apply", "--backup", backup + "2", tsv],
                        capture_output=True, text=True)

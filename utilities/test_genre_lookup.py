@@ -11,6 +11,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import genre_bases  # noqa: E402
 import genre_lookup as gl  # noqa: E402
 
 failures = []
@@ -30,6 +31,8 @@ def check(name, condition):
 check("needs_genre: empty and placeholders (any case) need one",
       gl.needs_genre("") and gl.needs_genre("  ") and gl.needs_genre("Unknown")
       and gl.needs_genre("no idea"))
+check("needs_genre: Other, None and Misc are placeholders too",
+      gl.needs_genre("Other") and gl.needs_genre("none") and gl.needs_genre("MISC"))
 check("needs_genre: a real genre does not",
       not gl.needs_genre("Pop") and not gl.needs_genre("Power Metal"))
 check("needs_genre: placeholders kept with keep_placeholders",
@@ -49,38 +52,31 @@ check("split_metal_archives: 'Progressive Metal/Rock' keeps each part's own noun
       gl.split_metal_archives("Progressive Metal/Rock") == ["progressive metal", "rock"])
 
 # --------------------------------------------------------------------------
-# map_genre(): a found genre as the stack's genre names where one fits,
-# else the found name itself
+# combine(): the predicted genres as bases (genre_bases.py) - the ones most
+# sources agree on first, then each source's own order, no cap
 # --------------------------------------------------------------------------
 
-check("map_genre: genre words map to the stack's names, in the found order",
-      gl.map_genre("power metal") == ["Metal"]
-      and gl.map_genre("symphonic metal") == ["Symphonic", "Metal"]
-      and gl.map_genre("pop music") == ["Pop"]
-      and gl.map_genre("Gothic/Doom Metal") == ["Gothic", "Metal"])
-check("map_genre: K-Pop, J-Pop, hip hop and EBM",
-      gl.map_genre("k-pop") == ["K-Pop"] and gl.map_genre("J-Pop") == ["J-Pop"]
-      and gl.map_genre("hip hop") == ["Rap"] and gl.map_genre("electronic body music") == ["EBM"])
-check("map_genre: a genre outside the stack's names is kept, words capitalized",
-      gl.map_genre("italo disco") == ["Italo Disco"] and gl.map_genre("Hi-NRG") == ["Hi-NRG"]
-      and gl.map_genre("r&b") == ["R&B"])
-
-# --------------------------------------------------------------------------
-# combine(): the predicted genres - the ones most sources agree on first,
-# then each source's own order, at most MAX_GENRES
-# --------------------------------------------------------------------------
-
+_sp = genre_bases.Splitter(["power metal", "speed metal", "heavy metal", "symphonic metal", "metal",
+                            "pop", "disco", "italo disco", "reggae", "soul"])
+check(f"combine: found genres become bases (got {gl.combine({'wikidata': ['symphonic black metal']}, _sp)})",
+      gl.combine({"wikidata": ["symphonic black metal"]}, _sp) == ["Symphonic", "Black", "Metal"]
+      and gl.combine({"wikidata": ["k-pop", "hip hop", "electronic body music", "r&b", "Hi-NRG", "pop music"]}, _sp)
+      == ["K-Pop", "Hip-Hop", "EBM", "R&B", "Hi-NRG", "Pop"])
+check(f"combine: Gothic/Doom Metal splits at the slash (got {gl.combine({'metal-archives': ['Gothic/Doom Metal']}, _sp)})",
+      gl.combine({"metal-archives": ["Gothic/Doom Metal"]}, _sp) == ["Gothic", "Doom", "Metal"])
 _found = {"musicbrainz": ["power metal", "speed metal"],
           "metal-archives": ["speed metal", "power metal"],
           "wikidata": ["heavy metal", "symphonic metal"]}
-check(f"combine: shared genres first (got {gl.combine(_found)})",
-      gl.combine(_found) == ["Metal", "Symphonic"])
+check(f"combine: shared bases first (got {gl.combine(_found, _sp)})",
+      gl.combine(_found, _sp) == ["Metal", "Power", "Speed", "Heavy", "Symphonic"])
 _boney = {"wikidata": ["reggae", "pop music", "disco", "soul", "Hi-NRG", "Italo disco", "Eurodisco"]}
-check(f"combine: at most {gl.MAX_GENRES} genres (got {gl.combine(_boney)})",
-      gl.combine(_boney) == ["Reggae", "Pop", "Disco", "Soul", "Hi-NRG", "Italo Disco"])
+check(f"combine: no cap (got {gl.combine(_boney, _sp)})",
+      gl.combine(_boney, _sp) == ["Reggae", "Pop", "Disco", "Soul", "Hi-NRG", "Italo", "Eurodisco"])
 check("combine: two sources agreeing outrank one source's first genre",
-      gl.combine({"wikidata": ["disco", "pop"], "lastfm": ["pop"]}) == ["Pop", "Disco"])
-check("combine: nothing found -> []", gl.combine({}) == [] and gl.combine({"wikidata": []}) == [])
+      gl.combine({"wikidata": ["disco", "pop"], "lastfm": ["pop"]}, _sp) == ["Pop", "Disco"])
+check("combine: dropped genres give no base",
+      gl.combine({"lastfm": ["easy listening", "pop", "singer-songwriter"]}, _sp) == ["Pop"])
+check("combine: nothing found -> []", gl.combine({}, _sp) == [] and gl.combine({"wikidata": []}) == [])
 check("describe_found: each source with its genres",
       gl.describe_found({"musicbrainz": ["a", "b"], "wikidata": [], "lastfm": ["c"]})
       == "musicbrainz: a, b | lastfm: c")
@@ -195,7 +191,7 @@ check(f"scan: every song file with band, title, genre and path (got {_songs})",
       and _songs[2]["path"] == os.path.join(_lib, "Toto - Africa", "Toto - Africa.txt"))
 
 _out = tempfile.mkdtemp()
-_summary = gl.run(_lib, _out, _lookup2)
+_summary = gl.run(_lib, _out, _lookup2, mb_genres=["power metal", "speed metal", "metal"])
 with open(os.path.join(_out, gl.OVERVIEW_FILE), encoding="utf-8") as f:
     _overview = f.read().splitlines()
 with open(os.path.join(_out, gl.PREDICTIONS_FILE), encoding="utf-8") as f:
@@ -205,14 +201,29 @@ check(f"run: the overview lists every song (got {_overview})",
       and _overview[3].startswith("Toto\tAfrica\tRock\t"))
 check(f"run: predictions for the songs without a genre, nothing found -> empty (got {_pred})",
       _pred[0] == ["band", "title", "path", "predicted genre", "found"]
-      and _pred[1][:2] == ["Blind Guardian", "Valhalla"] and _pred[1][3] == "Metal"
+      and _pred[1][:2] == ["Blind Guardian", "Valhalla"] and _pred[1][3] == "Power, Metal, Speed"
       and _pred[1][4].startswith("musicbrainz: power metal, speed metal")
       and _pred[2][:2] == ["Nobody", "Nothing"] and _pred[2][3] == ""
       and len(_pred) == 3)
 check(f"run: summary counts (got {_summary})",
       _summary == {"songs": 3, "without genre": 2, "predicted": 1})
-check("tsv_cell: tabs and line breaks become spaces",
-      gl.tsv_cell("a\tb\nc\r") == "a b c")
+_mbdir = tempfile.mkdtemp()
+_fetches = []
+
+
+def _mb_fetch():
+    _fetches.append(1)
+    return "metal\npower metal\n"
+
+
+check("load_mb_genres: downloaded once into the output folder, then read from there",
+      gl.load_mb_genres(_mbdir, fetch=_mb_fetch) == ["metal", "power metal"]
+      and gl.load_mb_genres(_mbdir, fetch=_mb_fetch) == ["metal", "power metal"]
+      and len(_fetches) == 1 and os.path.isfile(os.path.join(_mbdir, "musicbrainz-genres.txt")))
+check(f"tsv_cell: tabs and line breaks become spaces (got {gl.tsv_cell('a' + chr(9) + 'b')!r})",
+      gl.tsv_cell("a\tb\nc") == "a b c" and gl.tsv_cell("a\r\nb") == "a b")
+check(f"tsv_cell: other spaces stay - a path can hold two in a row (got {gl.tsv_cell('/x/Boom  Pow.txt')!r})",
+      gl.tsv_cell("/x/Boom  Pow.txt") == "/x/Boom  Pow.txt")
 
 # --------------------------------------------------------------------------
 # http_get(): 429/503 (rate limit) tried again after a wait; 403 is BLOCKED

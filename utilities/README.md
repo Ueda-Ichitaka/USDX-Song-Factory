@@ -25,10 +25,14 @@ All commands below run from the repository root (not from `stack/`).
 | Local song files | `import_local_media.py` | host | copies the files a song list names into `stack/input/videos/`, rewrites the list |
 | Genres | `genre_lookup.py` | host | nothing in the library; writes the genre list and the predictions |
 | Genres | `apply_genres.sh` | host | writes the predicted genres into the song files (backup kept) |
+| Genre bases | `genre_clusters.py` | host | nothing in the library; writes each genre spelling with its proposed bases |
+| Genre bases | `normalize_genres.sh` | host | rewrites `#GENRE` with the bases (backup kept) |
 
 `songfile.py` is no tool of its own: the other tools use it to read song
 file headers (the same rules as USDX) and to turn `#LANGUAGE`/`#GENRE` into
-dashboard codes.
+dashboard codes. `genre_bases.py` and `genre_tags.sh` are no tools either:
+the genre tools share them (how a genre becomes bases; reading and writing
+`#GENRE`).
 
 Requirements:
 
@@ -37,7 +41,8 @@ Requirements:
   separation and the aligner on the GPU (the service maps `/dev/kfd` and
   `/dev/dri`); Docker with the Compose plugin
 - the host tools: Python 3 with `requests`, and `ffprobe` (ffmpeg) for the
-  audio length checks; `apply_genres.sh`: bash, GNU awk and iconv
+  audio length checks; `apply_genres.sh` and `normalize_genres.sh`: bash,
+  GNU awk and iconv (both use `genre_tags.sh`)
 
 ## 1. Scan a library
 
@@ -284,6 +289,10 @@ error, since its mount point here cannot be known.
 
 ## Genres
 
+[genre-workflow.html](genre-workflow.html) shows the four genre tools in one
+picture - what each reads and writes, your review steps and the steps that
+change the library (open it in a browser).
+
 ```sh
 python3 utilities/genre_lookup.py --library /path/to/library     # writes the two lists, changes nothing
 utilities/apply_genres.sh                                         # dry run: what would be set
@@ -295,9 +304,9 @@ writes into `library analysis/` (`--out DIR`):
 
 - `library-genres.tsv`: every song - band, title, genre, path;
 - `genre-predictions.tsv`: the songs without a genre - no `#GENRE`, an empty
-  one, or `Unknown`/`No idea` (`--keep-placeholders` counts these as a
-  genre) - with band, title, path, predicted genre and found (each source's
-  own genres, for checking).
+  one, or a placeholder: `Unknown`, `No idea`, `Other`, `None`, `Misc`
+  (`--keep-placeholders` counts these as a genre) - with band, title, path,
+  predicted genre and found (each source's own genres, for checking).
 
 The sources, per song without a genre:
 
@@ -316,11 +325,11 @@ The sources, per song without a genre:
   https://www.last.fm/api/account/create); only tags that are MusicBrainz
   genres count. `--no-lastfm` leaves it out.
 
-The predicted genre: each found genre in the stack's genre names where one
-fits (`power metal` -> `Metal`, `symphonic metal` -> `Symphonic, Metal`,
-`pop music` -> `Pop`, `k-pop` -> `K-Pop`), other genres as found
-(`Italo Disco`, `Dark Wave`); the genres most sources agree on first, at
-most 6. Rate-limit answers (429/503) are asked again after 5, 15 and 30 s.
+The predicted genre: each found genre broken down into its bases, the same
+way as the library's genres (see [Genre bases](#genre-bases):
+`symphonic black metal` -> `Symphonic, Black, Metal`, `pop music` -> `Pop`,
+`k-pop` -> `K-Pop`); the bases most sources agree on first, all of them.
+Rate-limit answers (429/503) are asked again after 5, 15 and 30 s.
 Answers are cached in `library analysis/genre-cache.json`, so a second run
 only asks for new songs (a failed request is asked again). A library of 750
 songs without a genre (about 280 artists) takes about 45 minutes.
@@ -338,6 +347,81 @@ cp1252). Without `--apply` it only lists what it would set. With `--apply`
 every changed file is copied first into `library analysis/genre-backup-<time>/`
 under its full path.
 
+### Genre bases
+
+Every genre is broken down into its bases, so a library with hundreds of
+genre combinations ends up with a short list of bases (and a genre map in
+the dashboard stays readable): `Alternative Metal` -> `Alternative, Metal`,
+`Symphonic Black Metal` -> `Symphonic, Black, Metal`, `Mittelalter-Rock` ->
+`Mittelalter, Rock`.
+
+```sh
+python3 utilities/genre_clusters.py --library /path/to/library   # writes the proposals, changes nothing
+utilities/normalize_genres.sh                                     # dry run: what would change
+utilities/normalize_genres.sh --apply                             # rewrites #GENRE in the song files
+```
+
+The rules live in `genre_bases.py` (the lists there can be edited); the
+genre lookup uses the same rules:
+
+- a genre is split at spaces, hyphens and slashes;
+- names in `KEEP_WHOLE` stay one base in any spelling: `Hip Hop`, `hiphop`
+  -> `Hip-Hop`; `Rock'n'Roll` -> `Rock and Roll`; `A capella` ->
+  `A cappella`; also R&B, K-Pop, J-Pop, J-Rock, Drum and Bass, Neue
+  Deutsche Härte, New Wave, Hi-NRG, EBM, ...;
+- names in `DROPPED` are no genre for this library and are removed wherever
+  they appear: Easy Listening, Singer-Songwriter. `PHRASES` turn a name
+  into another base: Video Game Music -> Soundtrack;
+- filler words (`FILLER`: music, general, and, &, ...) are dropped:
+  `Electronic Music` -> `Electronic`;
+- translations and short forms: `Alternativo` -> Alternative, `Sinfonico`
+  -> Symphonic, `BSO` -> Soundtrack, `Alt.` -> Alternative, `Goth` ->
+  Gothic. `Mittelalter` stays German (MusicBrainz's `medieval` stays
+  Medieval);
+- a one-word genre splits into two halves when both halves are genres
+  themselves - a one-word MusicBrainz genre or a base in the library:
+  `Synthpop` -> Synth, Pop; `Darkwave` -> Dark, Wave; `Electropop` ->
+  Electro, Pop. `Metalcore`, `Hardcore`, `Tanzmetal` stay (`core`, `tanz`
+  are no genres). `KEEP_ONE_WORD` lists one-word genres that never split;
+- typos: a word that is not in the
+  [MusicBrainz genre list](https://musicbrainz.org/ws/2/genre/all?fmt=txt)
+  and has exactly one close word in it that the library also uses
+  (`Ghotic` -> Gothic, `Trash` -> Thrash). Real genres close to each other
+  (`Punk`, `Funk`) stay apart. The list is downloaded once into
+  `library analysis/musicbrainz-genres.txt` (delete it to get a new one).
+
+A base is written the way most library songs write it (first letter upper
+case). The bases of a song keep their order of appearance, duplicates
+dropped: `Gothic Rock, Symphonic Black Metal, Gothic Metal` -> `Gothic,
+Rock, Symphonic, Black, Metal`. The placeholders above are left out.
+
+`genre_clusters.py` writes into `library analysis/` (`--out DIR`):
+
+- `genre-clusters.tsv`: one row per spelling - genre (its proposed bases),
+  spelling, songs, why (`unchanged`, `spelling`, `split`, `kept whole: ...`,
+  `translation ...`, `synonym ...`, `filler dropped: ...`, `compound ...`,
+  `typo? ...`);
+- `genre-overview.tsv`: one row per base - base, songs, the spellings it
+  comes from with their song counts;
+- `library-genres.tsv`: every song, as above.
+
+Check `genre-clusters.tsv` before using it: change a `genre` cell to the
+bases you want (comma-separated), `-` to drop that spelling from the songs,
+or empty it to leave that spelling as it is.
+
+`normalize_genres.sh [--apply] [--backup DIR] [--songs FILE] [clusters file]`
+goes through the songs of `library-genres.tsv` (`--songs`) and, for each song
+with a genre, replaces every comma-separated part by its bases from the
+clusters file, drops duplicates (any case) and joins the bases with `, `.
+Parts the file does not name stay. A song left without any base loses its
+`#GENRE` line (the genre lookup then counts it as without a genre). A song without a genre or with a
+placeholder is left alone. Byte order mark, line endings and the encoding
+stay. Without `--apply` it only lists what it would change (`old -> new`).
+With `--apply` every changed file is copied first into
+`library analysis/genre-normalize-backup-<time>/` under its full path.
+
+Run it after `apply_genres.sh`, so the genres just added are checked too.
+
 ## Tests
 
 ```sh
@@ -349,5 +433,8 @@ python3 test_fill_lyrics_links.py
 python3 test_copy_reported_songs.py
 python3 test_genre_lookup.py
 python3 test_apply_genres.py
+python3 test_genre_bases.py
+python3 test_genre_clusters.py
+python3 test_normalize_genres.py
 python3 test_import_local_media.py
 ```

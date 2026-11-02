@@ -1,0 +1,439 @@
+<!doctype html>
+<!--
+  About me: a picture of the genre utilities (genre_lookup.py, apply_genres.sh,
+  genre_clusters.py, normalize_genres.sh) - what each reads and writes, which
+  steps you review and which change the song library - for opening in a
+  browser. The text details live in README.md ("Genres"). The numbers are
+  from the scan of the library on 2026-11-02.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Genre Utilities Workflow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: one wide flow diagram (two lanes, left library -> right library), then tool sheets and the run order */
+:root {
+  --bg: #f3f4f1;
+  --surface: #ffffff;
+  --fg: #1d2421;
+  --muted: #5c6862;
+  --line: #36403b;
+  --rule: #d5dad5;
+  --lane: #e8ebe6;
+  --file: #f7f8f5;
+  --online: #2f62a8;
+  --human: #a86412;
+  --write: #b3361f;
+  --tint-online: #e6eef9;
+  --tint-human: #fbefdf;
+  --tint-write: #fbe7e2;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #151a18; --surface: #1d2421; --fg: #e4e9e5; --muted: #9aa69f; --line: #c3ccc6;
+    --rule: #2f3834; --lane: #1a201d; --file: #222a26;
+    --online: #7fa9e8; --human: #e2a457; --write: #f07a62;
+    --tint-online: #1d2a3d; --tint-human: #33281a; --tint-write: #3a221d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #151a18; --surface: #1d2421; --fg: #e4e9e5; --muted: #9aa69f; --line: #c3ccc6;
+  --rule: #2f3834; --lane: #1a201d; --file: #222a26;
+  --online: #7fa9e8; --human: #e2a457; --write: #f07a62;
+  --tint-online: #1d2a3d; --tint-human: #33281a; --tint-write: #3a221d;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+.page {
+  max-width: 1200px; margin: 0 auto;
+  padding-block: 40px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 40px;
+}
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(28px, 4vw, 40px); line-height: 1.1; }
+h2 { font-size: 22px; }
+h3 { font-size: 17px; font-family: var(--mono); font-weight: 600; letter-spacing: 0; }
+p { margin: 0; max-width: 68ch; }
+code, .mono { font-family: var(--mono); font-size: 0.92em; }
+.eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+header { display: grid; gap: 10px; }
+header p { color: var(--muted); }
+
+/* numbers */
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.stat { padding: 14px 16px 14px 0; display: grid; gap: 2px; min-width: 0; }
+.stat + .stat { padding-left: 16px; border-left: 1px solid var(--rule); }
+.stat b { font-family: var(--display); font-size: 28px; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.stat span { color: var(--muted); font-size: 13px; }
+@media (max-width: 700px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat:nth-child(3) { padding-left: 0; border-left: 0; }
+  .stat:nth-child(n+3) { border-top: 1px solid var(--rule); }
+}
+
+/* diagram */
+figure { margin: 0; display: grid; gap: 12px; }
+.scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; }
+.scroll svg { display: block; width: 100%; min-width: 980px; height: auto; color: var(--line); }
+figcaption { color: var(--muted); font-size: 14px; max-width: 80ch; }
+svg text { font-family: var(--body); font-size: 12px; fill: var(--fg); }
+svg .t-tool { font-family: var(--mono); font-size: 13.5px; font-weight: 600; }
+svg .t-file { font-family: var(--mono); font-size: 12px; font-weight: 500; }
+svg .t-small { font-size: 11px; fill: var(--muted); }
+svg .t-lane { font-family: var(--display); font-size: 15px; font-weight: 700; }
+svg .t-label { font-size: 11px; fill: var(--muted); }
+svg .t-write { font-size: 11.5px; fill: var(--write); font-weight: 600; }
+svg .t-online { fill: var(--online); }
+svg .t-human { fill: var(--human); font-weight: 600; }
+svg .t-strike { fill: var(--muted); text-decoration: line-through; }
+svg .lane { fill: var(--lane); }
+svg .tool { fill: var(--surface); stroke: var(--line); stroke-width: 1.6; }
+svg .file { fill: var(--file); stroke: var(--line); stroke-width: 1; }
+svg .file-key { fill: var(--file); stroke: var(--line); stroke-width: 1.6; }
+svg .online { fill: var(--tint-online); stroke: var(--online); stroke-width: 1.3; stroke-dasharray: 5 4; }
+svg .human { fill: var(--tint-human); stroke: var(--human); stroke-width: 1.3; stroke-dasharray: 5 4; }
+svg .lib { fill: var(--surface); stroke: var(--line); stroke-width: 1.6; }
+svg .lib-w { fill: var(--tint-write); stroke: var(--write); stroke-width: 1.6; }
+svg .flow { fill: none; stroke: var(--line); stroke-width: 1.4; }
+svg .flow-w { fill: none; stroke: var(--write); stroke-width: 2.2; }
+svg .flow-o { fill: none; stroke: var(--online); stroke-width: 1.4; }
+svg .ah { fill: var(--line); }
+svg .ah-w { fill: var(--write); }
+svg .ah-o { fill: var(--online); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 26px; height: 14px; border-radius: 2px; display: inline-block; flex: none; }
+.sw-tool { background: var(--surface); border: 1.6px solid var(--line); }
+.sw-file { background: var(--file); border: 1px solid var(--line); }
+.sw-online { background: var(--tint-online); border: 1.3px dashed var(--online); }
+.sw-human { background: var(--tint-human); border: 1.3px dashed var(--human); }
+.sw-write { height: 0; border-top: 2.2px solid var(--write); border-radius: 0; }
+
+/* tool sheets */
+.tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 820px) { .tools { grid-template-columns: minmax(0, 1fr); } }
+.sheet { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 20px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+.sheet-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
+.pill { font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.pill-read { background: var(--lane); color: var(--muted); }
+.pill-write { background: var(--tint-write); color: var(--write); }
+.sheet p { color: var(--muted); font-size: 14px; }
+dl { margin: 0; display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 6px 12px; font-size: 14px; }
+dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; padding-top: 2px; }
+dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+dd ul { margin: 0; padding-left: 18px; }
+pre { margin: 0; overflow-x: auto; background: var(--lane); border-radius: 4px; padding: 10px 12px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; }
+
+/* run order */
+.steps { display: grid; gap: 14px; counter-reset: step; padding: 0; margin: 0; list-style: none; }
+.steps li { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 12px; align-items: start; counter-increment: step; }
+.steps li::before { content: counter(step); font-family: var(--display); font-weight: 700; font-size: 15px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; border: 1.5px solid var(--line); }
+.steps li > div { display: grid; gap: 6px; min-width: 0; }
+.steps .who { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+.who-you { color: var(--human); }
+.who-tool { color: var(--muted); }
+.who-write { color: var(--write); }
+section { display: grid; gap: 16px; }
+.note { font-size: 14px; color: var(--muted); }
+</style>
+<style>
+html { color-scheme: light; }
+body { margin: 0; }
+</style>
+</head>
+<body>
+<main class="page">
+  <header>
+    <span class="eyebrow">USDX-Song-Factory · utilities/</span>
+    <h1>Genre utilities workflow</h1>
+    <p>Four host tools. The first two fill in genres that are missing; the other two break every genre down into its bases, so <span class="mono">Symphonic Black Metal</span> becomes <span class="mono">Symphonic, Black, Metal</span>. Each pair writes a tab-separated file for you to check, and the library only changes when you run the second script with <code>--apply</code>.</p>
+  </header>
+
+  <div class="stats" aria-label="Your library, scanned 2026-11-02">
+    <div class="stat"><b>1803</b><span>songs in the library</span></div>
+    <div class="stat"><b>823</b><span>need a genre (302 artists)</span></div>
+    <div class="stat"><b>143 → 89</b><span>genre spellings → bases</span></div>
+    <div class="stat"><b>220</b><span>songs the base proposals change</span></div>
+  </div>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 1170 590" role="img" aria-label="Two lanes from the song library back to the same library. Lane 1: genre_lookup.py asks MusicBrainz, Wikidata and Last.fm, writes genre-predictions.tsv, you edit it, apply_genres.sh writes #GENRE into songs without one. Lane 2: genre_clusters.py uses the MusicBrainz genre list, writes genre-clusters.tsv, you edit it, normalize_genres.sh rewrites #GENRE with the bases of each genre. Both scripts back up each file before changing it.">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
+          <marker id="arr-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="ah-w" d="M0 0 L10 5 L0 10 z"/></marker>
+          <marker id="arr-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-o" d="M0 0 L10 5 L0 10 z"/></marker>
+        </defs>
+
+        <!-- lanes -->
+        <rect class="lane" x="186" y="14" width="836" height="268" rx="6"/>
+        <rect class="lane" x="186" y="300" width="836" height="272" rx="6"/>
+        <text class="t-lane" x="204" y="36">1  Fill in missing genres</text>
+        <text class="t-lane" x="204" y="322">2  Break genres into bases</text>
+
+        <!-- library, read (left) -->
+        <path class="lib" d="M20 240 V362 A65 11 0 0 0 150 362 V240"/>
+        <ellipse class="lib" cx="85" cy="240" rx="65" ry="11"/>
+        <text x="85" y="282" text-anchor="middle" font-weight="600">song library</text>
+        <text class="t-small" x="85" y="300" text-anchor="middle">/dhuaddan/media/</text>
+        <text class="t-small" x="85" y="314" text-anchor="middle">ultrastar/songs</text>
+        <text class="t-label" x="85" y="342" text-anchor="middle">read only</text>
+
+        <!-- library, written (right) -->
+        <path class="lib-w" d="M1040 240 V362 A55 11 0 0 0 1150 362 V240"/>
+        <ellipse class="lib-w" cx="1095" cy="240" rx="55" ry="11"/>
+        <text x="1095" y="282" text-anchor="middle" font-weight="600">song library</text>
+        <text class="t-small" x="1095" y="300" text-anchor="middle">the same folders,</text>
+        <text class="t-small" x="1095" y="314" text-anchor="middle">#GENRE lines</text>
+        <text class="t-small" x="1095" y="328" text-anchor="middle">rewritten</text>
+
+        <!-- library -> both tools -->
+        <path class="flow" d="M150 262 H174 V188 H198" marker-end="url(#arr)"/>
+        <path class="flow" d="M150 340 H174 V424 H198" marker-end="url(#arr)"/>
+        <text class="t-label" x="160" y="226" text-anchor="middle" transform="rotate(-90 160 226)">#ARTIST #TITLE #GENRE</text>
+
+        <!-- ===== lane 1 ===== -->
+        <!-- .env key -->
+        <rect class="file" x="20" y="92" width="130" height="42" rx="3"/>
+        <text class="t-file" x="85" y="109" text-anchor="middle">stack/.env</text>
+        <text class="t-small" x="85" y="125" text-anchor="middle">LASTFM_API_KEY</text>
+        <path class="flow" d="M150 113 H198" marker-end="url(#arr)"/>
+
+        <!-- online sources -->
+        <rect class="online" x="200" y="48" width="170" height="96" rx="5"/>
+        <text class="t-online" x="214" y="66" font-weight="600">online, asked live</text>
+        <text x="214" y="84">MusicBrainz <tspan class="t-small">· each song</tspan></text>
+        <text x="214" y="100">Wikidata <tspan class="t-small">· each artist</tspan></text>
+        <text x="214" y="116">Last.fm <tspan class="t-small">· each artist</tspan></text>
+        <text class="t-strike" x="214" y="132">Metal Archives</text>
+        <text class="t-small" x="306" y="132">403, skipped</text>
+        <path class="flow-o" d="M285 144 V162" marker-end="url(#arr-o)"/>
+
+        <!-- genre_lookup.py -->
+        <rect class="tool" x="200" y="164" width="170" height="50" rx="4"/>
+        <text class="t-tool" x="285" y="186" text-anchor="middle">genre_lookup.py</text>
+        <text class="t-small" x="285" y="203" text-anchor="middle">songs without a genre only</text>
+
+        <!-- cache -->
+        <rect class="file" x="200" y="238" width="170" height="30" rx="3"/>
+        <text class="t-file" x="285" y="257" text-anchor="middle">genre-cache.json</text>
+        <path class="flow" d="M285 216 V236" marker-start="url(#arr)" marker-end="url(#arr)"/>
+        <text class="t-label" x="294" y="230">kept for next run</text>
+
+        <!-- lane 1 outputs -->
+        <rect class="file-key" x="420" y="150" width="190" height="40" rx="3"/>
+        <text class="t-file" x="515" y="167" text-anchor="middle">genre-predictions.tsv</text>
+        <text class="t-small" x="515" y="182" text-anchor="middle">band · title · path · predicted · found</text>
+        <path class="flow" d="M370 174 H418" marker-end="url(#arr)"/>
+
+        <rect class="file" x="420" y="208" width="190" height="30" rx="3"/>
+        <text class="t-file" x="515" y="227" text-anchor="middle">library-genres.tsv</text>
+        <path class="flow" d="M370 202 H394 V223 H418" marker-end="url(#arr)"/>
+        <text class="t-label" x="515" y="254" text-anchor="middle">every song with its current genre</text>
+
+        <!-- review 1 -->
+        <rect class="human" x="650" y="148" width="140" height="44" rx="5"/>
+        <text class="t-human" x="720" y="166" text-anchor="middle">you edit</text>
+        <text x="720" y="182" text-anchor="middle">predicted genre</text>
+        <path class="flow" d="M610 170 H648" marker-end="url(#arr)"/>
+
+        <!-- apply_genres.sh -->
+        <rect class="tool" x="830" y="146" width="170" height="48" rx="4"/>
+        <text class="t-tool" x="915" y="167" text-anchor="middle">apply_genres.sh</text>
+        <text class="t-small" x="915" y="184" text-anchor="middle">dry run unless --apply</text>
+        <path class="flow" d="M790 170 H828" marker-end="url(#arr)"/>
+
+        <rect class="file" x="830" y="226" width="170" height="30" rx="3"/>
+        <text class="t-file" x="915" y="245" text-anchor="middle">genre-backup-&lt;time&gt;/</text>
+        <path class="flow" d="M915 196 V224" marker-end="url(#arr)"/>
+        <text class="t-label" x="922" y="214">copies first</text>
+
+        <path class="flow-w" d="M1000 170 H1062 V228" marker-end="url(#arr-w)"/>
+        <text class="t-write" x="1008" y="160">sets #GENRE</text>
+        <text class="t-label" x="1070" y="196">only empty</text>
+        <text class="t-label" x="1070" y="209">or placeholder</text>
+
+        <!-- ===== lane 2 ===== -->
+        <rect class="file" x="200" y="334" width="170" height="42" rx="3"/>
+        <text class="t-file" x="285" y="351" text-anchor="middle">musicbrainz-genres.txt</text>
+        <text class="t-small" x="285" y="367" text-anchor="middle">2219 genres, downloaded once</text>
+        <path class="flow" d="M285 376 V398" marker-end="url(#arr)"/>
+        <text class="t-label" x="294" y="392">genres, spellings</text>
+
+        <rect class="tool" x="200" y="400" width="170" height="50" rx="4"/>
+        <text class="t-tool" x="285" y="422" text-anchor="middle">genre_clusters.py</text>
+        <text class="t-small" x="285" y="439" text-anchor="middle">proposes bases per spelling</text>
+
+        <!-- lane 2 outputs -->
+        <rect class="file-key" x="420" y="386" width="190" height="40" rx="3"/>
+        <text class="t-file" x="515" y="403" text-anchor="middle">genre-clusters.tsv</text>
+        <text class="t-small" x="515" y="418" text-anchor="middle">bases · spelling · songs · why</text>
+        <path class="flow" d="M370 410 H418" marker-end="url(#arr)"/>
+
+        <rect class="file" x="420" y="440" width="190" height="30" rx="3"/>
+        <text class="t-file" x="515" y="459" text-anchor="middle">genre-overview.tsv</text>
+        <path class="flow" d="M370 428 H394 V455 H418" marker-end="url(#arr)"/>
+
+        <rect class="file" x="420" y="484" width="190" height="30" rx="3"/>
+        <text class="t-file" x="515" y="503" text-anchor="middle">library-genres.tsv</text>
+        <path class="flow" d="M370 442 H384 V499 H418" marker-end="url(#arr)"/>
+        <text class="t-label" x="515" y="534" text-anchor="middle">song list with paths</text>
+
+        <!-- review 2 -->
+        <rect class="human" x="650" y="384" width="140" height="44" rx="5"/>
+        <text class="t-human" x="720" y="402" text-anchor="middle">you edit</text>
+        <text x="720" y="418" text-anchor="middle">genre column</text>
+        <path class="flow" d="M610 406 H648" marker-end="url(#arr)"/>
+
+        <!-- normalize_genres.sh -->
+        <rect class="tool" x="830" y="382" width="170" height="48" rx="4"/>
+        <text class="t-tool" x="915" y="403" text-anchor="middle">normalize_genres.sh</text>
+        <text class="t-small" x="915" y="420" text-anchor="middle">dry run unless --apply</text>
+        <path class="flow" d="M790 406 H828" marker-end="url(#arr)"/>
+        <path class="flow" d="M610 499 H870 V432" marker-end="url(#arr)"/>
+        <text class="t-label" x="740" y="492" text-anchor="middle">which files to open</text>
+
+        <rect class="file" x="890" y="500" width="120" height="30" rx="3"/>
+        <text class="t-file" x="950" y="519" text-anchor="middle">…-backup-&lt;time&gt;/</text>
+        <path class="flow" d="M950 432 V498" marker-end="url(#arr)"/>
+        <text class="t-label" x="957" y="470">copies first</text>
+
+        <path class="flow-w" d="M1000 406 H1062 V374" marker-end="url(#arr-w)"/>
+        <text class="t-write" x="1008" y="398">rewrites #GENRE</text>
+        <text class="t-label" x="1008" y="426">bases, no duplicates</text>
+
+        <!-- shared helper note -->
+        <text class="t-label" x="600" y="293" text-anchor="middle">both scripts read and write tags through genre_tags.sh</text>
+      </svg>
+    </div>
+    <div class="legend">
+      <span><i class="sw sw-tool"></i>tool you run</span>
+      <span><i class="sw sw-file"></i>file in <code>library analysis/</code> (bold border: the one you edit)</span>
+      <span><i class="sw sw-online"></i>asked online</span>
+      <span><i class="sw sw-human"></i>your review</span>
+      <span><i class="sw sw-write"></i>writes to the library</span>
+    </div>
+    <figcaption>Both lanes read the library and write into <code>library analysis/</code> in the repository. Only the two shell scripts change song files, and only with <code>--apply</code>; each one copies a file into its backup folder, under the file's full path, before changing it.</figcaption>
+  </figure>
+
+  <section aria-labelledby="tools-h">
+    <h2 id="tools-h">The four tools</h2>
+    <div class="tools">
+      <article class="sheet">
+        <div class="sheet-head"><h3>genre_lookup.py</h3><span class="pill pill-read">reads library</span></div>
+        <p>Finds songs without a genre and asks online sources which genres they belong to.</p>
+        <dl>
+          <dt>Reads</dt>
+          <dd><ul>
+            <li>every song file under <code>--library</code></li>
+            <li>MusicBrainz for each song: the recording, else its album, else the artist</li>
+            <li>Wikidata and Last.fm, once per artist</li>
+            <li><code>LASTFM_API_KEY</code> from the environment or <code>stack/.env</code></li>
+          </ul></dd>
+          <dt>Writes</dt>
+          <dd><ul>
+            <li><code>library-genres.tsv</code>: every song</li>
+            <li><code>genre-predictions.tsv</code>: songs without a genre, with the predicted bases (all of them) and each source's raw answer</li>
+            <li><code>genre-cache.json</code></li>
+          </ul></dd>
+          <dt>Missing</dt>
+          <dd>no <code>#GENRE</code>, an empty one, or Unknown, No idea, Other, None, Misc (<code>--keep-placeholders</code> keeps those)</dd>
+          <dt>Time</dt>
+          <dd>about an hour for 823 songs; MusicBrainz allows about one request a second</dd>
+        </dl>
+      </article>
+
+      <article class="sheet">
+        <div class="sheet-head"><h3>apply_genres.sh</h3><span class="pill pill-write">writes library</span></div>
+        <p>Writes the predicted genres you kept into the song files.</p>
+        <dl>
+          <dt>Reads</dt>
+          <dd><code>genre-predictions.tsv</code>; an empty <em>predicted genre</em> cell skips that song</dd>
+          <dt>Writes</dt>
+          <dd><code>#GENRE</code> into songs that still have no genre or a placeholder; a song that got a genre since the lookup is left alone</dd>
+          <dt>Backup</dt>
+          <dd><code>library analysis/genre-backup-&lt;time&gt;/</code>, or <code>--backup DIR</code></dd>
+          <dt>Keeps</dt>
+          <dd>byte order mark, line endings, cp1252 encoding</dd>
+        </dl>
+      </article>
+
+      <article class="sheet">
+        <div class="sheet-head"><h3>genre_clusters.py</h3><span class="pill pill-read">reads library</span></div>
+        <p>Breaks every genre spelling down into its bases. The same rules (<code>genre_bases.py</code>) turn looked-up genres into bases.</p>
+        <dl>
+          <dt>Reads</dt>
+          <dd><ul>
+            <li>every <code>#GENRE</code> under <code>--library</code>, split at commas</li>
+            <li>the MusicBrainz genre list, downloaded once</li>
+          </ul></dd>
+          <dt>Splits</dt>
+          <dd><ul>
+            <li>at spaces, hyphens, slashes: <span class="mono">Mittelalter-Rock</span> → Mittelalter, Rock</li>
+            <li>one-word genres whose halves are genres: <span class="mono">Synthpop</span> → Synth, Pop</li>
+          </ul></dd>
+          <dt>Keeps</dt>
+          <dd>names that mean one thing: Hip-Hop, R&amp;B, K-Pop, Rock and Roll, A cappella, ...; <span class="mono">Metalcore</span>, <span class="mono">Tanzmetal</span></dd>
+          <dt>Fixes</dt>
+          <dd><ul>
+            <li>translations, short forms: <span class="mono">Alternativo</span>, <span class="mono">Alt.</span>, <span class="mono">BSO</span>; Mittelalter stays</li>
+            <li>filler words: <span class="mono">Electronic Music</span> → Electronic</li>
+            <li>dropped: Easy Listening, Singer-Songwriter; Video Game Music → Soundtrack</li>
+            <li>typos: <span class="mono">Ghotic</span>, <span class="mono">Trash</span></li>
+          </ul></dd>
+          <dt>Writes</dt>
+          <dd><code>genre-clusters.tsv</code>, <code>genre-overview.tsv</code>, <code>library-genres.tsv</code></dd>
+        </dl>
+      </article>
+
+      <article class="sheet">
+        <div class="sheet-head"><h3>normalize_genres.sh</h3><span class="pill pill-write">writes library</span></div>
+        <p>Rewrites the existing genre tags with the bases you settled on.</p>
+        <dl>
+          <dt>Reads</dt>
+          <dd><code>genre-clusters.tsv</code> (spelling → bases) and <code>library-genres.tsv</code> (<code>--songs</code>, the paths)</dd>
+          <dt>Writes</dt>
+          <dd>each part replaced by its bases, in order, duplicates dropped, joined with ", "; parts the file doesn't list stay as they are</dd>
+          <dt>Skips</dt>
+          <dd>songs without a genre or with a placeholder; an empty <em>genre</em> cell leaves that spelling as it is</dd>
+          <dt>Backup</dt>
+          <dd><code>library analysis/genre-normalize-backup-&lt;time&gt;/</code></dd>
+        </dl>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="order-h">
+    <h2 id="order-h">Run order</h2>
+    <ol class="steps">
+      <li><div><span class="who who-tool">Look up</span>
+        <pre>python3 utilities/genre_lookup.py --library /dhuaddan/media/ultrastar/songs</pre></div></li>
+      <li><div><span class="who who-you">You check</span>
+        <p>Open <code>library analysis/genre-predictions.tsv</code> in LibreOffice as tab-separated text. Correct the <em>predicted genre</em> column, empty a cell to skip that song, and save in the same format.</p></div></li>
+      <li><div><span class="who who-write">Write genres</span>
+        <pre>utilities/apply_genres.sh            # dry run: lists what it would set
+utilities/apply_genres.sh --apply</pre></div></li>
+      <li><div><span class="who who-tool">Propose bases</span>
+        <pre>python3 utilities/genre_clusters.py --library /dhuaddan/media/ultrastar/songs</pre>
+        <p class="note">Run it after step 3, so the genres you just added are checked too.</p></div></li>
+      <li><div><span class="who who-you">You check</span>
+        <p>In <code>genre-clusters.tsv</code>, change a <em>genre</em> cell to the bases you want (comma-separated), <code>-</code> to drop that spelling, or empty it to keep that spelling. Worth a look: <span class="mono">Grog’n Roll</span>, <span class="mono">Electro Hop</span> (gives a base "Hop"), <span class="mono">Neo-Classical</span>.</p></div></li>
+      <li><div><span class="who who-write">Write bases</span>
+        <pre>utilities/normalize_genres.sh        # dry run: old -&gt; new per song
+utilities/normalize_genres.sh --apply</pre></div></li>
+    </ol>
+  </section>
+</main>
+</body>
+</html>
