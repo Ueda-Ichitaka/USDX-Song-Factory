@@ -14,8 +14,8 @@ Rules, in this order:
 - names in KEEP_WHOLE stay one base in any spelling ("Hip Hop", "hiphop" ->
   Hip-Hop; "Rock'n'Roll" -> Rock and Roll; "A capella" -> A cappella);
 - names in DROPPED are no genre for this library and are dropped (Easy
-  Listening, Singer-Songwriter); PHRASES are another base (Video Game
-  Music -> Soundtrack);
+  Listening, Singer-Songwriter); PHRASES are other bases (Video Game
+  Music -> Soundtrack, Electro Hop -> Electro, Hip-Hop);
 - FILLER words are dropped ("Electronic Music" -> Electronic);
 - TRANSLATIONS and SYNONYMS replace a word (Alternativo -> Alternative,
   Alt. -> Alternative, BSO -> Soundtrack); Mittelalter stays German;
@@ -51,13 +51,15 @@ KEEP_WHOLE = {
     "Lo-Fi": ["lofi"], "Hi-NRG": ["hinrg"], "Doo-Wop": ["doowop"],
     "Bossa Nova": ["bossanova"], "Big Band": ["bigband"],
     "EBM": ["ebm", "electronicbodymusic"],
+    "Grog’n Roll": ["grog'nroll"],
 }
 # names that are no genre for this library: dropped wherever they appear
 # (name -> spellings, lower case, spaces and hyphens removed)
 DROPPED = {"Easy Listening": ["easylistening"], "Singer-Songwriter": ["singersongwriter"]}
-# names that are another base (spellings as in KEEP_WHOLE -> base)
-PHRASES = {"videogamemusic": "soundtrack", "videogamesoundtrack": "soundtrack",
-           "videogame": "soundtrack", "gamemusic": "soundtrack"}
+# names that are other bases (spellings as in KEEP_WHOLE -> bases)
+PHRASES = {"videogamemusic": ["soundtrack"], "videogamesoundtrack": ["soundtrack"],
+           "videogame": ["soundtrack"], "gamemusic": ["soundtrack"],
+           "electrohop": ["electro", "hip-hop"]}
 # one-word genres that are never split into halves (lower case)
 KEEP_ONE_WORD = set()
 # words that are no genre on their own
@@ -139,8 +141,9 @@ class Splitter:
                 elif compact in _DROPPED:
                     out.append((None, None, f"dropped: {_DROPPED[compact]}"))
                 elif compact in PHRASES:
-                    phrase = " ".join(lower[i:j])
-                    out.append((PHRASES[compact], None, f"synonym {phrase} -> {PHRASES[compact]}"))
+                    phrase, bases = " ".join(lower[i:j]), PHRASES[compact]
+                    out += [(base, None, None) for base in bases]
+                    out.append((None, None, f"synonym {phrase} -> {', '.join(bases)}"))
                 else:
                     continue
                 i = j

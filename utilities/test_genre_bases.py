@@ -48,8 +48,13 @@ check(f"bases: words become bases (got {b('Alternative Metal')}, {b('Symphonic B
 check(f"bases: Mittelalter stays German (got {b('Mittelalter')}, {b('Mittelalter-Rock')})",
       b("Mittelalter") == ["Mittelalter"] and b("Mittelalter-Rock") == ["Mittelalter", "Rock"]
       and b("Medieval Rock") == ["Medieval", "Rock"])
-check(f"bases: a base keeps its apostrophe as written (got {b('Grog’n Roll')})",
-      b("Grog’n Roll") == ["Grog’n", "Roll"])
+check(f"bases: a base keeps its apostrophe as written (got {b('Pirate’s Folk')})",
+      b("Pirate’s Folk") == ["Pirate’s", "Folk"])
+check(f"bases: Grog’n Roll stays one base (got {b('Grog’n Roll')}, {b(chr(71) + 'rog' + chr(39) + 'n Roll')})",
+      b("Grog’n Roll") == b("Grog'n Roll") == ["Grog’n Roll"])
+check(f"bases: Electro Hop -> Electro, Hip-Hop (got {b('Electro Hop')}, {b('Electrohop')})",
+      b("Electro Hop") == b("Electrohop") == b("electro-hop") == ["Electro", "Hip-Hop"]
+      and "synonym electro hop -> electro, hip-hop" in lib.explain("Electro Hop")[1])
 check(f"bases: slashes split (got {b('Gothic/Doom Metal')})",
       b("Gothic/Doom Metal") == ["Gothic", "Doom", "Metal"])
 
