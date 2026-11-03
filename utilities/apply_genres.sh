@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # About me: writes the genres genre_lookup.py predicted into the song files.
-#   apply_genres.sh [--apply] [--backup DIR] [predictions file]
+#   apply_genres.sh [--apply] [--replace] [--backup DIR] [predictions file]
 # Reads genre-predictions.tsv (default: "library analysis/genre-predictions.tsv"
 # in the repository; tab-separated: band, title, path, predicted genre,
-# found - edit the predicted genres before, an empty one is left out). For
-# every row with a predicted genre whose song file still has no genre (no
-# #GENRE, an empty one or a placeholder: Unknown, No idea, Other, None,
-# Misc), the #GENRE
-# line is replaced in place, or added after the last header line. The rest
+# found, ... - edit the predicted genres before, an empty one is left out).
+# For every row with a predicted genre whose song file still has no genre
+# (no #GENRE, an empty one or a placeholder: Unknown, No idea, Other, None,
+# Misc), the #GENRE line is replaced in place, or added after the last
+# header line. With --replace (for a genre check file, genre-check.tsv) a
+# song that has a genre gets the predicted one instead ("replace", the old
+# one is named; the same genre is left as it is). The rest
 # stays: byte order mark, each line's ending (LF/CRLF; a last line without
 # one gets one) and the encoding - a song file that is no valid UTF-8
 # (cp1252 in old libraries) gets the genre in cp1252.
@@ -20,13 +22,15 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 APPLY=0
+REPLACE=0
 BACKUP=""
 TSV=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --apply) APPLY=1 ;;
         --backup) shift; BACKUP="${1:?--backup needs a folder}" ;;
-        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+        --replace) REPLACE=1 ;;
+        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         *) TSV="$1" ;;
     esac
     shift
@@ -38,7 +42,7 @@ BACKUP="${BACKUP:-$REPO/library analysis/genre-backup-$(date +%Y%m%d-%H%M%S)}"
 # shellcheck source=genre_tags.sh
 source "$(dirname "$0")/genre_tags.sh"
 
-set_count=0; skipped=0; missing=0; empty=0; readonly=0
+set_count=0; replaced=0; same=0; skipped=0; missing=0; empty=0; readonly=0
 while IFS= read -r line || [ -n "$line" ]; do
     split_tsv "$line"
     band="$(unquote "${CELLS[0]:-}")"; title="$(unquote "${CELLS[1]:-}")"
@@ -50,23 +54,36 @@ while IFS= read -r line || [ -n "$line" ]; do
         echo "missing   $path"; missing=$((missing + 1)); continue
     fi
     now="$(read_genre "$path")"
+    action=set
     case "$(printf '%s' "$now" | tr '[:upper:]' '[:lower:]')" in
         ""|unknown|"no idea"|other|none|misc) ;;
-        *) echo "has genre $band - $title: $now (left alone)"; skipped=$((skipped + 1)); continue ;;
+        *)
+            if [ "$REPLACE" = 0 ]; then
+                echo "has genre $band - $title: $now (left alone)"; skipped=$((skipped + 1)); continue
+            fi
+            if [ "$now" = "$predicted" ]; then
+                same=$((same + 1)); continue
+            fi
+            action=replace ;;
     esac
     if [ ! -w "$path" ]; then
         echo "read-only $band - $title: $predicted"; readonly=$((readonly + 1)); continue
     fi
-    echo "set       $band - $title: $predicted"
-    set_count=$((set_count + 1))
+    if [ "$action" = replace ]; then
+        echo "replace   $band - $title: $now -> $predicted"
+        replaced=$((replaced + 1))
+    else
+        echo "set       $band - $title: $predicted"
+        set_count=$((set_count + 1))
+    fi
     [ "$APPLY" = 1 ] || continue
     write_genre "$path" "$predicted" "$BACKUP"
 done < <(tail -n +2 "$TSV")
 
 echo
-echo "$set_count set, $skipped already with a genre, $empty without a prediction, $missing missing, $readonly read-only"
+echo "$set_count set, $replaced replaced, $same unchanged, $skipped already with a genre, $empty without a prediction, $missing missing, $readonly read-only"
 if [ "$APPLY" = 1 ]; then
-    [ "$set_count" = 0 ] || echo "backup of the changed files: $BACKUP"
+    [ $((set_count + replaced)) = 0 ] || echo "backup of the changed files: $BACKUP"
     [ "$readonly" = 0 ] || echo "read-only files were not changed: clear their read-only attribute on the NAS and run again"
 else
     echo "dry run - nothing written, use --apply"

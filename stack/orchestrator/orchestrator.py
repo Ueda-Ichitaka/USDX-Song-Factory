@@ -5,6 +5,8 @@ Automates UltraSinger inside the docker stack:
 
   * creates new songs from the song list (songs.csv / songs.txt)
   * repairs existing songs placed in the input folder
+  * writes the genres of the dashboard's genre edits (input/genre-edits.tsv)
+    into the song files pulled into input/genres/ (output/genres/)
   * tracks per-song state (state/state.json) so runs can be resumed
   * streams verbose output of every job to stdout and to logs/<job>.log
   * renders a progress overview (created/left, repaired/left, ETA)
@@ -12,10 +14,12 @@ Automates UltraSinger inside the docker stack:
 Commands
 --------
   (no args)      run all pending jobs
-  run --only X   run only some jobs; X = generated, usdb, repairs (comma list)
+  run --only X   run only some jobs; X = generated, usdb, repairs, genres
+                 (comma list)
                  generated = new songs USDB does NOT have (created from scratch)
                  usdb      = new songs USDB has (pulled from USDB)
                  repairs   = songs repaired from the input folder
+                 genres    = genre edits (input/genre-edits.tsv)
                  (--only-new = generated,usdb; --only-repairs = repairs)
   run --match T  only jobs whose label contains T (combines with --only)
   run --no-usdb  developer override: generate every new song from scratch
@@ -34,7 +38,7 @@ Commands
                  --only / --match narrow it; not combinable with --done)
   reset --done --only X --match T
                  mark finished jobs as pending again, narrowed by category
-                 (generated / usdb / repairs) and/or label text; without
+                 (generated / usdb / repairs / genres) and/or label text; without
                  --done only the failed jobs of that selection are retried
   (list and report accept --only / --match too)
 
@@ -114,10 +118,16 @@ INPUT_DIR = os.environ.get("INPUT_DIR", "/data/input")
 # files and songtexts/, the lyrics files the csv rows point to)
 REPAIRS_DIR = os.environ.get("REPAIRS_DIR", os.path.join(INPUT_DIR, "repairs"))
 BROKEN_CSV = os.environ.get("BROKEN_CSV", "/data/input/broken.csv")
+# genre edits: the dashboard's export (song file relative to the library,
+# TAB, the wanted genres) and the song files pulled for it (factory.sh
+# pull-genres: input/genres/<folder>/<song file>)
+GENRE_EDITS = os.environ.get("GENRE_EDITS", os.path.join(INPUT_DIR, "genre-edits.tsv"))
+GENRES_DIR = os.environ.get("GENRES_DIR", os.path.join(INPUT_DIR, "genres"))
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/data/output")
 NEW_SONGS_DIR = os.environ.get("NEW_SONGS_DIR", os.path.join(OUTPUT_DIR, "new"))
 REPAIRED_DIR = os.environ.get("REPAIRED_DIR", os.path.join(OUTPUT_DIR, "repaired"))
 FAILED_DIR = os.environ.get("FAILED_DIR", os.path.join(OUTPUT_DIR, "failed"))
+GENRES_OUT_DIR = os.environ.get("GENRES_OUT_DIR", os.path.join(OUTPUT_DIR, "genres"))
 REPORT_FILE = os.environ.get("REPORT_FILE", os.path.join(OUTPUT_DIR, "report.md"))
 STATE_DIR = os.environ.get("STATE_DIR", "/data/state")
 LOGS_DIR = os.environ.get("LOGS_DIR", "/data/logs")
@@ -894,12 +904,12 @@ def find_lyrics_file(folder: str):
     return None
 
 
-SELECTION_CATEGORIES = ("generated", "usdb", "repairs")
+SELECTION_CATEGORIES = ("generated", "usdb", "repairs", "genres")
 
 
 class Selection:
     """Which jobs a command applies to: `categories` (None = all, else a set
-    of "generated" | "usdb" | "repairs"), `match` (case-insensitive label
+    of "generated" | "usdb" | "repairs" | "genres"), `match` (case-insensitive label
     substring, None = any) and `no_usdb` (developer override: generate every
     new song from scratch even when USDB has it)."""
 
@@ -914,7 +924,7 @@ def parse_selection(args: list) -> Selection:
     aliases) out of a command's arguments; other flags are ignored.
     Raises ValueError for an unknown or missing value.
 
-      --only generated,usdb,repairs   comma list, `--only X` or `--only=X`
+      --only generated,usdb,repairs,genres   comma list, `--only X` or `--only=X`
       --only-new                      = generated,usdb (every new song)
       --only-repairs                  = repairs
       --match TEXT / --match=TEXT     label contains TEXT
@@ -976,10 +986,12 @@ def new_song_mode(categories):
 
 
 def job_category(job: dict) -> str:
-    """"repairs", "usdb" (finished new song pulled from USDB) or
+    """"repairs", "genres", "usdb" (finished new song pulled from USDB) or
     "generated" (every other new song)."""
     if job.get("kind") == "repair":
         return "repairs"
+    if job.get("kind") == "genre":
+        return "genres"
     if (job.get("lyrics_source") or "").startswith("usdb:"):
         return "usdb"
     return "generated"
@@ -997,6 +1009,8 @@ def filter_jobs(jobs: list, categories, match) -> list:
             kinds.add("new")
         if "repairs" in categories:
             kinds.add("repair")
+        if "genres" in categories:
+            kinds.add("genre")
     needle = match.lower() if match else None
     return [j for j in jobs
             if (kinds is None or j["kind"] in kinds)
@@ -1052,12 +1066,129 @@ def repair_job_id(folder: str) -> str:
     return f"repair|{os.path.basename(folder.rstrip('/'))}"
 
 
+# files next to a song that are no song files (the genre edit export can
+# list them: it names every .txt of a folder)
+NOT_SONG_FILES = frozenset({"language.txt", "lyrics.txt", "song_end.txt", "anchors.txt",
+                            "license.txt", "readme.txt"})
+
+
+def genre_value(text: str) -> str:
+    """A genre list as written into #GENRE: the comma-separated genres in
+    their order, trimmed, duplicates (any case) dropped, ", "-joined."""
+    out, seen = [], set()
+    for genre in (g.strip() for g in (text or "").split(",")):
+        if genre and genre.casefold() not in seen:
+            seen.add(genre.casefold())
+            out.append(genre)
+    return ", ".join(out)
+
+
+def parse_genre_edits(path: str) -> list:
+    """The rows of the dashboard's genre edit export (no header; per line
+    "<folder>/<song file>", TAB, the wanted genres): [{"folder", "file",
+    "genres"}]; blank lines and lines without a TAB or folder are left out,
+    no file -> []."""
+    if not os.path.isfile(path):
+        return []
+    rows = []
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        for line in f:
+            line = line.rstrip("\r\n")
+            if "\t" not in line:
+                continue
+            rel, genres = line.split("\t", 1)
+            folder, _, name = rel.strip().replace("\\", "/").rpartition("/")
+            if folder and name:
+                rows.append({"folder": folder, "file": name, "genres": genre_value(genres)})
+    return rows
+
+
+def genre_job_id(folder: str, name: str) -> str:
+    return f"genre|{folder}/{name}"
+
+
+def _song_text(data: bytes):
+    """(byte order mark, text, encoding) of a song file: UTF-8, else cp1252."""
+    bom = b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b""
+    body = data[len(bom):]
+    try:
+        return bom, body.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        return bom, body.decode("cp1252", errors="replace"), "cp1252"
+
+
+def genre_of_bytes(data: bytes) -> str:
+    """The #GENRE value of a song file's header, '' without one."""
+    for line in _song_text(data)[1].splitlines():
+        if not line.startswith("#"):
+            break
+        if line[:7].upper() == "#GENRE:":
+            return line[7:].strip()
+    return ""
+
+
+def set_genre_bytes(data: bytes, genre: str) -> bytes:
+    """The song file with #GENRE set to `genre`: the first #GENRE header
+    line replaced (further ones dropped), else the line added after the last
+    header line. Byte order mark, every line's ending and the encoding
+    (UTF-8, else cp1252) stay."""
+    bom, text, encoding = _song_text(data)
+    lines = text.splitlines(keepends=True)
+    eol = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+    out, done, header = [], False, True
+    for line in lines:
+        if header and not line.startswith("#"):
+            header = False
+            if not done:
+                out.append(f"#GENRE:{genre}{eol}")
+                done = True
+        if header and line[:7].upper() == "#GENRE:":
+            if not done:
+                ending = line[len(line.rstrip("\r\n")):] or eol
+                out.append(f"#GENRE:{genre}{ending}")
+                done = True
+            continue
+        out.append(line)
+    if not done:
+        out.append(f"#GENRE:{genre}{eol}")
+    return bom + "".join(out).encode(encoding)
+
+
+def run_genre_job(job: dict) -> dict:
+    """Write the job's wanted genres into its song file: input/genres/
+    <folder>/<song file> -> output/genres/<folder>/<song file>. The input
+    copy stays as it is. Returns a result like JobRunner.run() plus
+    "genre_before" and "genres_written"."""
+    started = time.time()
+    source = os.path.join(GENRES_DIR, job["folder"], job["file"])
+    target_dir = os.path.join(GENRES_OUT_DIR, job["folder"])
+    result = {"status": "failed", "error": None, "output_path": None, "quarantined_output": None}
+    try:
+        with open(source, "rb") as f:
+            data = f.read()
+        os.makedirs(target_dir, exist_ok=True)
+        target = os.path.join(target_dir, job["file"])
+        tmp = target + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(set_genre_bytes(data, job["genres"]))
+        os.replace(tmp, target)
+        result.update(status="done", output_path=target, genre_before=genre_of_bytes(data),
+                      genres_written=job["genres"])
+        out(f"  .. #GENRE: {result['genre_before'] or '(none)'} -> {job['genres']}")
+    except (OSError, UnicodeEncodeError) as exc:
+        result["error"] = f"genre update failed: {exc}"
+        out(f"  !! {result['error']}")
+    result["duration_s"] = round(time.time() - started, 2)
+    return result
+
+
 def current_job_ids() -> set:
     """Ids of every job the song list and the input folder define right now
     (what build_job_plan() would register) - without touching the state.
     Jobs stored in the state but missing here are orphans (see cmd_prune())."""
     ids = {new_job_id(song) for song in parse_songs_file(SONGS_FILE)}
     ids |= {repair_job_id(folder) for folder in scan_repair_jobs(REPAIRS_DIR)}
+    ids |= {genre_job_id(r["folder"], r["file"]) for r in parse_genre_edits(GENRE_EDITS)}
     return ids
 
 
@@ -1143,6 +1274,24 @@ def build_job_plan(state: State) -> list:
         if report and category in ("", "other") and not lyrics_file \
                 and job["status"] == "pending":
             job["status"] = "needs_review"
+        jobs.append(job)
+
+    # genre edits: one job per row; a row waits ("skipped") until its song
+    # file is in input/genres/, a non-song file never runs; a done job runs
+    # again when the edit now wants other genres than it wrote
+    for row in parse_genre_edits(GENRE_EDITS):
+        job = state.get_or_create(
+            genre_job_id(row["folder"], row["file"]), kind="genre", label=row["folder"],
+            folder=row["folder"], file=row["file"], genres=row["genres"])
+        if row["file"].lower() in NOT_SONG_FILES:
+            job["status"], job["genre_skip"] = "skipped", "not_song"
+        elif not os.path.isfile(os.path.join(GENRES_DIR, row["folder"], row["file"])):
+            if job["status"] != "done":
+                job["status"], job["genre_skip"] = "skipped", "not_pulled"
+        elif job["status"] == "skipped" or (
+                job["status"] == "done" and job.get("genres_written") != row["genres"]):
+            job["status"], job["attempts"], job["error"] = "pending", 0, None
+            job.pop("genre_skip", None)
         jobs.append(job)
 
     return jobs
@@ -1235,6 +1384,7 @@ def render_progress(state_data, cpu_percent=None, ram_usage=None,
         jobs = [j for j in jobs if j["id"] in active_ids]
     new = count_statuses(jobs, "new")
     rep = count_statuses(jobs, "repair")
+    gen = count_statuses(jobs, "genre")
 
     done_jobs = [j for j in jobs if j["status"] == "done" and j.get("duration_s")]
     running = next((j for j in jobs if j["status"] == "running"), None)
@@ -1257,6 +1407,8 @@ def render_progress(state_data, cpu_percent=None, ram_usage=None,
 
     lines.append(row("NEW SONGS", new))
     lines.append(row("REPAIRS", rep))
+    if gen["total"]:
+        lines.append(row("GENRES", gen))
     lines.append(f"  Pulled from USDB: {count_usdb_sourced(jobs)}")
     if orphans:
         lines.append(f"  Not counted: {len(orphans)} stored job(s) no longer in the "
@@ -1325,6 +1477,11 @@ def skip_reason(job: dict, active_ids=None) -> str:
     if active_ids is not None and job["id"] not in active_ids:
         return ("no longer in the song list (stale record - the song may "
                 "have been created under a new entry; `reset --prune` removes it)")
+    if job.get("kind") == "genre":
+        if job.get("genre_skip") == "not_song":
+            return f"genre edit for {job.get('file')}: not a song file"
+        return (f"genre edit: {job.get('file')} is not in input/genres/ yet "
+                "(./factory.sh pull-genres copies it from the library)")
     if job.get("duet") and job.get("url") != "skip":
         return "duet version requested - duet generation is not available yet"
     return "no link in the song list (empty, `-` or `skip`)"
@@ -1395,6 +1552,20 @@ def render_report(state_data, active_ids=None) -> str:
                          f"`{_folder_of(j.get('output_path'))}` |")
     else:
         lines.append("_none_")
+
+    genre_done = [j for j in jobs if j["kind"] == "genre" and j["status"] == "done"]
+    if genre_done:
+        lines.append("")
+        lines.append(f"## Genres updated ({len(genre_done)})")
+        lines.append("")
+        lines.append(f"_Song files with the genre edits, in `{GENRES_OUT_DIR}/`: copy them into "
+                     "the library folders of the same name._")
+        lines.append("")
+        lines.append("| Song | File | Genre before | Genre now |")
+        lines.append("|---|---|---|---|")
+        for j in sorted(genre_done, key=lambda j: (j["label"].lower(), j.get("file", ""))):
+            lines.append(f"| {j['label']} | `{j.get('file')}` | {j.get('genre_before') or '-'} | "
+                         f"{j.get('genres_written') or '-'} |")
 
     lines.append("")
     lines.append(f"## Failed jobs ({len(failed)})")
@@ -2897,8 +3068,13 @@ def cmd_run(state, selection=None, control=None):
             os.path.join(LOGS_DIR, slugify(job["id"]) + ".log"), "/data")
         state.save()
 
-        runner = JobRunner(job, control)
-        result = runner.run()
+        if job["kind"] == "genre":
+            result = run_genre_job(job)
+            if result["status"] == "done":
+                job["genre_before"] = result["genre_before"]
+                job["genres_written"] = result["genres_written"]
+        else:
+            result = JobRunner(job, control).run()
         result["output_path"] = file_repaired_output(job, result)
         job["status"] = result["status"]
         job["error"] = result["error"]
@@ -2924,7 +3100,7 @@ def cmd_run(state, selection=None, control=None):
         if result["output_path"]:
             out(f"    output: {result['output_path']}")
 
-        if result["status"] == "done" and result["output_path"]:
+        if result["status"] == "done" and result["output_path"] and job["kind"] != "genre":
             finish_done_job(job, result)
             state.save()
 

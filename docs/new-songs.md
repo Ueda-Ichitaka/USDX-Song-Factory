@@ -143,7 +143,7 @@ file of the same name gets ` (1)`, a file copied before is reused) and
 writes `videos/<file name>` into the row. Shares mounted on this machine
 (`smb://192.168.0.176/media/...` -> `/dhuaddan/media/...`) are read through
 their mount point. Details and the untested path types:
-[utilities/README.md](../../utilities/README.md#local-song-files).
+[utilities/README.md](../utilities/README.md#local-song-files).
 
 A row the tool was not run for fails at once with the hint to run it; a file
 that is no audio or video, a missing file or a folder fail with their reason.

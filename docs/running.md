@@ -1,7 +1,25 @@
 # Running the stack
 
-Everything here is run from inside `stack/` (that is where
-`docker-compose.yml` lives). The examples use the CPU service `ultrasinger`;
+The everyday way is `./factory.sh` in the repository root: it runs the
+commands below for you (in the GPU service `ultrasinger-rocm` unless
+`FACTORY_SERVICE` says otherwise), pulls songs from the library into the input
+(`pull-repairs`, `pull-genres`) and refuses to start a container while a batch
+or the library check runs or when less than 5 GB RAM are free. Its manual:
+[stack-manual.md](stack-manual.md).
+
+| `./factory.sh ...` | does (from `stack/`) |
+|---|---|
+| `up` | `docker compose --profile rocm up -d ultrasinger-rocm` |
+| `run [--detach] [SELECTION]` | `docker compose --profile rocm run --rm ultrasinger-rocm python /app/orchestrator/orchestrator.py run ...` (`--detach`: `run -d --name factory-run`) |
+| `genres` | the same with `run --only genres` ([genre-edits.md](genre-edits.md)) |
+| `list`, `report`, `reset ...`, `run-one`, `repair-one` | the same with that command |
+| `progress [-w]` | `docker compose --profile rocm exec ultrasinger-rocm progress` while a batch runs, else a one-off container |
+| `logs` | `docker compose --profile rocm logs -f ultrasinger-rocm` |
+| `pull-repairs [--apply]` | `utilities/copy_reported_songs.py` with `stack/input/broken.csv` (host) |
+| `pull-genres [--apply]` | `utilities/copy_genre_songs.py` with `stack/input/genre-edits.tsv` (host) |
+
+The plain `docker compose` commands follow. They are run from inside `stack/`
+(that is where `docker-compose.yml` lives). The examples use the CPU service `ultrasinger`;
 for the AMD GPU service use `ultrasinger-rocm` instead (see
 [configuration.md](configuration.md#amd-gpu-rocm)). Only one of the two
 should run at a time - they share the same state.
@@ -51,7 +69,7 @@ docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py res
 docker compose run --rm ultrasinger bash
 ```
 
-Selecting which jobs run (`--only generated|usdb|repairs`, `--match TEXT`):
+Selecting which jobs run (`--only generated|usdb|repairs|genres`, `--match TEXT`):
 [new-songs.md](new-songs.md#choosing-which-jobs-run). Every command and
 option: [orchestrator-manual.md](orchestrator-manual.md).
 
@@ -119,12 +137,14 @@ stack/output/
 ├── repaired/<repair>/<song folder>/
 │                             repaired songs (full copy + fixed txt), by the repair done:
 │                             gap/, sync/, recreated/, lyrics/, media/, cover/
+├── genres/<song folder>/     song files with the edited #GENRE (genre-edits.md)
 ├── failed/<new|repair>/      partial output of failed jobs
 └── report.md                 finishing report
 ```
 
 Copy the song folders from `output/new/` and `output/repaired/<repair>/` into your
-UltraStar Deluxe song folder.
+UltraStar Deluxe song folder, and the song files from `output/genres/<folder>/`
+into the library folders of the same name.
 
 ### Finishing report
 
@@ -139,6 +159,8 @@ in the song list" for a stale record that `reset --prune` removes).
 
 More sections appear when needed:
 
+* **Genres updated** - the genre edits written (song, file, genre before and
+  now), see [genre-edits.md](genre-edits.md).
 * **Lyrics to review** - new songs whose online lyrics differ from what is
   actually sung (see [new-songs.md](new-songs.md#lyrics-review)). Each row
   says how much of the lyrics was heard, which lines were and were not heard,
@@ -184,6 +206,8 @@ stack/
 │   ├── broken.csv          optional: broken-song reports (band,song name,category,description)
 │   ├── songtexts/          optional: lyrics files that a lyrics_url column points at
 │   ├── videos/             optional: local song files (audio/video) the song list names
+│   ├── genre-edits.tsv     optional: genre edits (dashboard export, genre-edits.md)
+│   ├── genres/<folder>/    the song files for the genre edits (./factory.sh pull-genres)
 │   └── repairs/            broken songs to repair (one folder per song)
 │       └── <song folder>/
 │           └── lyrics.txt  optional: trusted lyrics -> repair "lyrics" mode

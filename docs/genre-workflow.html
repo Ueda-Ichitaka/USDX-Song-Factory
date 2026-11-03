@@ -3,7 +3,7 @@
   About me: a picture of the genre utilities (genre_lookup.py, apply_genres.sh,
   genre_clusters.py, normalize_genres.sh) - what each reads and writes, which
   steps you review and which change the song library - for opening in a
-  browser. The text details live in README.md ("Genres"). The numbers are
+  browser. The text details live in utilities/README.md ("Genres"). The numbers are
   from the scan of the library on 2026-11-02.
 -->
 <html lang="en">
@@ -354,6 +354,8 @@ body { margin: 0; }
           <dd>no <code>#GENRE</code>, an empty one, or Unknown, No idea, Other, None, Misc (<code>--keep-placeholders</code> keeps those)</dd>
           <dt>Time</dt>
           <dd>about an hour for 823 songs; MusicBrainz allows about one request a second</dd>
+          <dt>Check</dt>
+          <dd><code>--songs FILE</code> looks up exactly the listed songs, also those with a genre, into <code>genre-check.tsv</code> with the current genre beside the prediction</dd>
         </dl>
       </article>
 
@@ -365,6 +367,8 @@ body { margin: 0; }
           <dd><code>genre-predictions.tsv</code>; an empty <em>predicted genre</em> cell skips that song</dd>
           <dt>Writes</dt>
           <dd><code>#GENRE</code> into songs that still have no genre or a placeholder; a song that got a genre since the lookup is left alone</dd>
+          <dt>Replace</dt>
+          <dd><code>--replace</code> (for <code>genre-check.tsv</code>): an existing genre gets the prediction</dd>
           <dt>Backup</dt>
           <dd><code>library analysis/genre-backup-&lt;time&gt;/</code>, or <code>--backup DIR</code></dd>
           <dt>Keeps</dt>

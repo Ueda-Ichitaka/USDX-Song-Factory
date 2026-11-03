@@ -204,7 +204,8 @@ check(f"run: the overview lists every song (got {_overview})",
       _overview[0] == "band\ttitle\tgenre\tpath" and len(_overview) == 4
       and _overview[3].startswith("Toto\tAfrica\tRock\t"))
 check(f"run: predictions for the songs without a genre, nothing found -> empty (got {_pred})",
-      _pred[0] == ["band", "title", "path", "predicted genre", "found", "new bases"]
+      _pred[0] == ["band", "title", "path", "predicted genre", "found", "new bases", "current genre"]
+      and _pred[1][6] == "Unknown"
       and _pred[1][:2] == ["Blind Guardian", "Valhalla"] and _pred[1][3] == "Power, Metal, Speed"
       and _pred[1][4].startswith("musicbrainz: power metal, speed metal")
       and _pred[2][:2] == ["Nobody", "Nothing"] and _pred[2][3] == ""
@@ -332,6 +333,50 @@ _wd_lookup = gl.Lookup(
     cache_path=None, sleep=lambda s: None, lastfm_key=None)
 check("Lookup.wikidata: genres sorted by name (the query result has no order)",
       _wd_lookup.wikidata("B") == ["disco", "soul"])
+
+# --------------------------------------------------------------------------
+# a genre check: only the songs of a list, also those with a genre, into
+# its own file
+# --------------------------------------------------------------------------
+
+_list = os.path.join(_out, "songs-with-genre.tsv")
+with open(_list, "w", encoding="utf-8") as f:
+    f.write("band\ttitle\tgenre\tpath\n")
+    f.write(f"Toto\tAfrica\tRock\t{os.path.join(_lib, 'Toto - Africa', 'Toto - Africa.txt')}\n")
+    f.write(f"Gone\tGone\tPop\t{os.path.join(_lib, 'Gone', 'Gone.txt')}\n")
+check(f"load_song_list: the paths of a song list, by its path column (got {gl.load_song_list(_list)})",
+      gl.load_song_list(_list) == {os.path.join(_lib, "Toto - Africa", "Toto - Africa.txt"),
+                                   os.path.join(_lib, "Gone", "Gone.txt")})
+
+
+class _StubLookup:
+    def __init__(self):
+        self.asked = []
+
+    def find(self, band, title):
+        self.asked.append(band)
+        return {"musicbrainz": ["soft rock", "pop"]}
+
+    def save(self):
+        pass
+
+
+_stub = _StubLookup()
+_out3 = tempfile.mkdtemp()
+_summary3 = gl.run(_lib, _out3, _stub, mb_genres=["soft rock", "pop", "rock"], only=gl.load_song_list(_list),
+                   predictions_file="genre-check.tsv")
+with open(os.path.join(_out3, "genre-check.tsv"), encoding="utf-8") as f:
+    _check_rows = [line.split("\t") for line in f.read().splitlines()]
+check(f"run only=: only the listed songs are looked up, also with a genre (got {_stub.asked})",
+      _stub.asked == ["Toto"])
+check(f"run only=: a dedicated file with the current genre (got {_check_rows})",
+      len(_check_rows) == 2 and _check_rows[1][:2] == ["Toto", "Africa"]
+      and _check_rows[1][3] == "Soft, Rock, Pop" and _check_rows[1][6] == "Rock")
+check("run only=: library-genres.tsv and genre-predictions.tsv are not written",
+      not os.path.exists(os.path.join(_out3, gl.OVERVIEW_FILE))
+      and not os.path.exists(os.path.join(_out3, gl.PREDICTIONS_FILE)))
+check(f"run only=: summary with the listed songs not in the library (got {_summary3})",
+      _summary3 == {"songs": 3, "listed": 2, "not found": 1, "predicted": 1})
 
 print()
 if failures:

@@ -3,7 +3,7 @@
   About me: a picture of how the USDX Song Factory stack is used - what goes
   into stack/input/, how new songs and repairs run, what comes out, what
   the report asks you to check - for opening in a browser. The technical
-  path through the code is in song-factory-map.html (repository root), the
+  path through the code is in song-factory-map.html (this folder), the
   details live in the Markdown files of this folder. The numbers are from
   the song list, input folder and job state of 2026-11-02.
 -->
@@ -167,14 +167,14 @@ td:first-child { white-space: nowrap; font-weight: 500; }
   <header>
     <span class="eyebrow">USDX-Song-Factory · stack/</span>
     <h1>Song factory workflow</h1>
-    <p>What you put into the stack, how a batch runs, what comes out and what you check before songs go into the library. The technical path of a song through the code is in the <a href="../../song-factory-map.html">Song Factory Map</a>; every command and setting is in the <a href="running.md">stack docs</a>.</p>
+    <p>What you put into the stack, how a batch runs, what comes out and what you check before songs go into the library. Everything runs through <code>./factory.sh</code> in the repository root. The technical path of a song through the code is in the <a href="song-factory-map.html">Song Factory Map</a>; every command and setting is in the <a href="stack-manual.md">stack manual</a>.</p>
   </header>
 
   <div class="stats" aria-label="The current song list, input folder and job state">
     <div class="stat"><b>63</b><span>rows in <code>song-requests.csv</code></span></div>
     <div class="stat"><b>287</b><span>song folders in <code>input/repairs/</code></span></div>
     <div class="stat"><b>285</b><span>repairs done (1 failed, 1 to review)</span></div>
-    <div class="stat"><b>11</b><span>possible sections in <code>report.md</code></span></div>
+    <div class="stat"><b>12</b><span>possible sections in <code>report.md</code></span></div>
   </div>
 
   <figure>
@@ -334,6 +334,16 @@ td:first-child { white-space: nowrap; font-weight: 500; }
         </dl>
       </article>
       <article class="sheet">
+        <div class="sheet-head"><h3>genre-edits.tsv + genres/</h3><span class="pill pill-read">genre edits</span></div>
+        <p>The dashboard's genre edit export; one row is one song file whose <code>#GENRE</code> is set.</p>
+        <dl>
+          <dt>Row</dt><dd><code>&lt;folder&gt;/&lt;song file&gt;</code>, TAB, the wanted genres; no header</dd>
+          <dt>Pull</dt><dd><code>./factory.sh pull-genres --apply</code> copies the song files (no media) from the library into <code>input/genres/</code></dd>
+          <dt>Run</dt><dd><code>./factory.sh genres</code>: genres written exactly as given into <code>output/genres/&lt;folder&gt;/</code>; seconds per song</dd>
+          <dt>Again</dt><dd>a done edit runs again when a new export wants other genres</dd>
+        </dl>
+      </article>
+      <article class="sheet">
         <div class="sheet-head"><h3>Files next to a song</h3><span class="pill pill-read">repairs</span></div>
         <p>Put into a folder in <code>input/repairs/</code> to steer its repair.</p>
         <dl>
@@ -364,6 +374,7 @@ td:first-child { white-space: nowrap; font-weight: 500; }
       <tbody>
         <tr><td>New songs created</td><td>copy from <code>output/new/</code>; songs marked as transcribed have whisper's lyrics, more likely misheard</td></tr>
         <tr><td>Songs with a local file</td><td>which media a song was made from (your file or USDB's video)</td></tr>
+        <tr><td>Genres updated</td><td>copy each song file from <code>output/genres/&lt;folder&gt;/</code> into the library folder of the same name</td></tr>
         <tr><td>Songs repaired</td><td>copy from <code>output/repaired/&lt;repair&gt;/</code>; check <code>recreated/</code> folders by hand</td></tr>
         <tr><td>Lyrics to review</td><td>the online lyrics don't fit the singing: trim <code>lyrics.txt</code>, add <code>song_end.txt</code> or <code>anchors.txt</code>, repair</td></tr>
         <tr><td>Lyrics filled or skipped over</td><td>listen to the named spots first</td></tr>
@@ -381,26 +392,24 @@ td:first-child { white-space: nowrap; font-weight: 500; }
     <h2 id="order-h">Running a batch</h2>
     <ol class="steps">
       <li><div><span class="who who-you">Export</span>
-        <p>Save the dashboard's <code>song-requests.csv</code> into <code>stack/input/</code>; rows already done are skipped, so a full export is fine. Keep the "Reported" export (<code>broken.csv</code>) in Downloads: the next step merges it, so the rows already in <code>stack/input/broken.csv</code> stay.</p></div></li>
+        <p>Save the dashboard's <code>song-requests.csv</code>, <code>broken.csv</code> ("Reported") and <code>genre-edits.tsv</code> into <code>stack/input/</code>. Rows already done are skipped, so full exports are fine.</p></div></li>
       <li><div><span class="who who-tool">Prepare</span>
-        <pre>python3 utilities/import_local_media.py --apply          # local song files into input/videos/
-python3 utilities/copy_reported_songs.py --library /dhuaddan/media/ultrastar/songs \
-  --csv ~/Downloads/broken.csv --apply                     # reported songs into input/repairs/</pre>
-        <p class="note">More ways to fill <code>input/repairs/</code>: <a href="../../utilities/utilities-workflow.html">the utilities overview</a>.</p></div></li>
+        <pre>./factory.sh pull-repairs --apply                  # reported songs from the library into input/repairs/
+./factory.sh pull-genres --apply                   # genre edit song files into input/genres/
+python3 utilities/import_local_media.py --apply    # local song files into input/videos/</pre>
+        <p class="note">The library is <code>LIBRARY_DIR</code> in <code>stack/.env</code>. More ways to fill <code>input/repairs/</code>: <a href="utilities-workflow.html">the utilities overview</a>.</p></div></li>
       <li><div><span class="who who-tool">Start</span>
-        <pre>cd stack
-docker compose --profile rocm up -d ultrasinger-rocm        # AMD GPU; ultrasinger for CPU only
-docker compose --profile rocm exec ultrasinger-rocm progress -w   # live progress</pre>
-        <p class="note">Only some jobs: <code>orchestrator.py run --only generated|usdb|repairs</code> or <code>--match TEXT</code>. Stop after the current song: <code>docker compose --profile rocm attach ultrasinger-rocm</code>, then <code>stop</code>.</p></div></li>
+        <pre>./factory.sh genres                 # the genre edits, seconds per song
+./factory.sh up                     # the batch, detached (AMD GPU; FACTORY_SERVICE=ultrasinger for CPU)
+./factory.sh progress -w            # live progress</pre>
+        <p class="note">Only some jobs: <code>./factory.sh run --detach --only generated|usdb|repairs</code> or <code>--match TEXT</code>. factory.sh refuses to start while a batch or the library check runs or with less than 5 GB RAM free. Stop after the current song: <code>docker compose --profile rocm attach ultrasinger-rocm</code> in <code>stack/</code>, then <code>stop</code>.</p></div></li>
       <li><div><span class="who who-you">You check</span>
-        <p>Read <code>output/report.md</code>, then sing the new and repaired songs in USDX. Write down the exact name of every song that drifts.</p></div></li>
+        <p>Read <code>stack/output/report.md</code>, then sing the new and repaired songs in USDX. Write down the exact name of every song that drifts.</p></div></li>
       <li><div><span class="who who-write">Copy in</span>
-        <p>Copy the folders of <code>output/new/</code> and <code>output/repaired/&lt;repair&gt;/</code> into the library.</p></div></li>
+        <p>Copy the folders of <code>output/new/</code> and <code>output/repaired/&lt;repair&gt;/</code> into the library, and the song files of <code>output/genres/&lt;folder&gt;/</code> into their library folders.</p></div></li>
       <li><div><span class="who who-tool">Fix and redo</span>
-        <pre>docker compose --profile rocm run --rm ultrasinger-rocm \
-  python /app/orchestrator/orchestrator.py reset                         # retry failed jobs
-docker compose --profile rocm run --rm ultrasinger-rocm \
-  python /app/orchestrator/orchestrator.py reset --done --match "Song"   # redo one song</pre></div></li>
+        <pre>./factory.sh reset                              # retry failed jobs
+./factory.sh reset --done --match "Song"        # redo one song</pre></div></li>
     </ol>
   </section>
 </main>

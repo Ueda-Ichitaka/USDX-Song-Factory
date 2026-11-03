@@ -10,13 +10,15 @@ New here? Start with the quickstart in the [main README](../README.md).
 
 | Topic | File |
 |---|---|
-| The whole workflow in one picture: what goes in, a batch, what comes out, what to check (open in a browser) | [docs/factory-workflow.html](docs/factory-workflow.html) |
-| Running the stack: commands, progress view, report, output, folder layout | [docs/running.md](docs/running.md) |
-| The song list: format, optional columns, choosing which jobs run | [docs/new-songs.md](docs/new-songs.md) |
-| Repairing existing songs, `broken.csv`, trusted lyrics | [docs/repairs.md](docs/repairs.md) |
-| USDB, online lyrics, romanization, end-card filter | [docs/song-sources.md](docs/song-sources.md) |
-| Settings (environment variables), resource budget, memory, AMD GPU | [docs/configuration.md](docs/configuration.md) |
-| YouTube cookies (bot check, age-restricted videos) | [docs/youtube-cookies.md](docs/youtube-cookies.md) |
-| `orchestrator.py` manual (man page) | [docs/orchestrator-manual.md](docs/orchestrator-manual.md) |
-| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
-| Development: code layout, tests, regression check | [docs/development.md](docs/development.md) |
+| The whole workflow in one picture: what goes in, a batch, what comes out, what to check (open in a browser) | [docs/factory-workflow.html](../docs/factory-workflow.html) |
+| Every command and setting (`factory.sh` and the stack), man-page style | [docs/stack-manual.md](../docs/stack-manual.md) |
+| Running the stack: commands, progress view, report, output, folder layout | [docs/running.md](../docs/running.md) |
+| Genre edits from the dashboard | [docs/genre-edits.md](../docs/genre-edits.md) |
+| The song list: format, optional columns, choosing which jobs run | [docs/new-songs.md](../docs/new-songs.md) |
+| Repairing existing songs, `broken.csv`, trusted lyrics | [docs/repairs.md](../docs/repairs.md) |
+| USDB, online lyrics, romanization, end-card filter | [docs/song-sources.md](../docs/song-sources.md) |
+| Settings (environment variables), resource budget, memory, AMD GPU | [docs/configuration.md](../docs/configuration.md) |
+| YouTube cookies (bot check, age-restricted videos) | [docs/youtube-cookies.md](../docs/youtube-cookies.md) |
+| `orchestrator.py` manual (man page) | [docs/orchestrator-manual.md](../docs/orchestrator-manual.md) |
+| Troubleshooting | [docs/troubleshooting.md](../docs/troubleshooting.md) |
+| Development: code layout, tests, regression check | [docs/development.md](../docs/development.md) |

@@ -5,7 +5,7 @@ About me: the global lyrics alignment can drift where the audio is unclear
 admin pin the start time of some lyric lines - typically the last three -
 and the end of the song. repair.py then aligns the song piece by piece
 between the anchors, so an error cannot run across an anchor, and nothing
-after the end time is used for the lyrics. See stack/docs/repairs.md,
+after the end time is used for the lyrics. See docs/repairs.md,
 "Anchors (anchors.txt)", for the file format.
 """
 

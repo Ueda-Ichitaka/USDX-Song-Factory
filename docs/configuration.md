@@ -8,6 +8,12 @@ USDB) and uses only the free lyrics source.
 variable in that file is handed to the containers as-is; a missing `.env` is
 fine. Changes take effect at the next `docker compose up`/`run`.
 
+`./factory.sh` (repository root) reads three settings of its own, from the
+environment or `stack/.env`: `LIBRARY_DIR` (the song library the pull
+commands copy from), `FACTORY_SERVICE` (`ultrasinger-rocm`, the default, or
+`ultrasinger`) and `FACTORY_MIN_FREE_GB` (`5`). See
+[stack-manual.md](stack-manual.md).
+
 ## Accounts and API keys
 
 | variable | meaning |
@@ -23,6 +29,9 @@ fine. Changes take effect at the next `docker compose up`/`run`.
 | `SONGS_FILE` | `/data/input/song-requests.csv` | the want-list inside the container |
 | `BROKEN_CSV` | `/data/input/broken.csv` | broken-song reports ([repairs.md](repairs.md)) |
 | `REPAIRS_DIR` | `/data/input/repairs` | the song folders to repair, one per song |
+| `GENRE_EDITS` | `/data/input/genre-edits.tsv` | genre edits from the dashboard ([genre-edits.md](genre-edits.md)) |
+| `GENRES_DIR` | `/data/input/genres` | the song files of the genre edits |
+| `GENRES_OUT_DIR` | `/data/output/genres` | where the song files with the edited `#GENRE` go |
 | `CREATOR_NAME` | empty | `#CREATOR` of the songs the stack generates (new songs not taken from USDB, re-created repairs), e.g. `ueda`; empty: `USDX-Song-Factory`. USDB songs and repaired songs keep their creator |
 | `CREATOR_FACTORY_SUFFIX` | `1` | `1` writes ` with USDX-Song-Factory` behind `CREATOR_NAME` (`ueda with USDX-Song-Factory`), `0` the name alone |
 | `NEW_SONGS_DIR` | `/data/output/new` | where new songs are written |

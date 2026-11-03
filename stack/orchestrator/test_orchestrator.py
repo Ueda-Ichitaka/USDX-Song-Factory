@@ -23,7 +23,8 @@ for _name, _rel in (("INPUT_DIR", "input"), ("REPAIRS_DIR", "input/repairs"),
                     ("NEW_SONGS_DIR", "output/new"), ("REPAIRED_DIR", "output/repaired"),
                     ("FAILED_DIR", "output/failed"), ("REPORT_FILE", "output/report.md"),
                     ("STATE_DIR", "state"), ("LOGS_DIR", "logs"), ("WORK_DIR", "work"),
-                    ("COOKIES_FILE", "cookies/cookies.txt")):
+                    ("COOKIES_FILE", "cookies/cookies.txt"), ("GENRES_DIR", "input/genres"),
+                    ("GENRE_EDITS", "input/genre-edits.tsv"), ("GENRES_OUT_DIR", "output/genres")):
     os.environ[_name] = os.path.join(TMP_DATA, _rel)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -34,7 +35,7 @@ import orchestrator as orch  # noqa: E402
 # container the compose file sets them to the real /data folders
 _DATA_PATHS = ("SONGS_FILE", "INPUT_DIR", "REPAIRS_DIR", "BROKEN_CSV", "OUTPUT_DIR", "NEW_SONGS_DIR",
                "REPAIRED_DIR", "FAILED_DIR", "REPORT_FILE", "STATE_DIR", "LOGS_DIR",
-               "WORK_DIR", "COOKIES_FILE")
+               "WORK_DIR", "COOKIES_FILE", "GENRES_DIR", "GENRE_EDITS", "GENRES_OUT_DIR")
 _outside = [n for n in _DATA_PATHS
             if not os.path.realpath(getattr(orch, n)).startswith(os.path.realpath(TMP_DATA))]
 if _outside:
@@ -2869,7 +2870,7 @@ try:
 finally:
     orch.subprocess.run, orch.COOKIES_FILE = _saved_run, _saved_cookie
 
-# built-in defaults match docker-compose.yml and stack/docs/configuration.md
+# built-in defaults match docker-compose.yml and docs/configuration.md
 import importlib as _importlib  # noqa: E402
 _saved_env = {k: os.environ.pop(k) for k in ("MAX_ATTEMPTS", "JOB_TIMEOUT_MIN") if k in os.environ}
 try:
@@ -3359,6 +3360,126 @@ try:
 except SystemExit as exc:
     _exit = exc.code
 check("cmd_run_one: a file outside the input is refused", _exit == 1)
+
+# --------------------------------------------------------------------------
+# genre jobs: input/genre-edits.tsv (dashboard export: folder/song file,
+# TAB, the wanted genres) + the song files pulled into input/genres/
+# --------------------------------------------------------------------------
+
+check("genre_value: order kept, duplicates (any case) dropped, ', ' joined",
+      orch.genre_value(" Rock,Hard , rock,, Metal") == "Rock, Hard, Metal" and orch.genre_value("") == "")
+_ge_file = os.path.join(TMP_DATA, "ge.tsv")
+with open(_ge_file, "w", encoding="utf-8") as f:
+    f.write("AC-DC - Hells Bells/HellsBells-638.txt\tRock, Hard\n"
+            "AC-DC - Hells Bells/language.txt\tRock, Hard\n\nno tab here\n")
+check(f"parse_genre_edits: folder, file, genres per row; blank and broken lines left out "
+      f"(got {orch.parse_genre_edits(_ge_file)})",
+      orch.parse_genre_edits(_ge_file) == [
+          {"folder": "AC-DC - Hells Bells", "file": "HellsBells-638.txt", "genres": "Rock, Hard"},
+          {"folder": "AC-DC - Hells Bells", "file": "language.txt", "genres": "Rock, Hard"}]
+      and orch.parse_genre_edits(os.path.join(TMP_DATA, "none.tsv")) == [])
+
+_gb = b"#TITLE:x\n#GENRE:Pop\n#BPM:1\n: 0 1 0 a\nE\n"
+check("set_genre_bytes: an existing #GENRE is replaced in place",
+      orch.set_genre_bytes(_gb, "Rock, Hard") == b"#TITLE:x\n#GENRE:Rock, Hard\n#BPM:1\n: 0 1 0 a\nE\n")
+check("set_genre_bytes: no #GENRE -> added after the last header line; BOM and CRLF kept",
+      orch.set_genre_bytes(b"\xef\xbb\xbf#TITLE:x\r\n#BPM:1\r\n: 0 1 0 a\r\nE\r\n", "Rock")
+      == b"\xef\xbb\xbf#TITLE:x\r\n#BPM:1\r\n#GENRE:Rock\r\n: 0 1 0 a\r\nE\r\n")
+check("set_genre_bytes: a cp1252 file stays cp1252",
+      orch.set_genre_bytes("#TITLE:Café\n#GENRE:Pop\n: 0 1 0 a\n".encode("cp1252"), "Ärger")
+      == "#TITLE:Café\n#GENRE:Ärger\n: 0 1 0 a\n".encode("cp1252"))
+check("set_genre_bytes: further #GENRE lines are dropped (any case)",
+      orch.set_genre_bytes(b"#TITLE:x\n#genre:Pop\n#GENRE:Metal\n: 0 1 0 a\n", "Rock")
+      == b"#TITLE:x\n#GENRE:Rock\n: 0 1 0 a\n")
+check("genre_of_bytes: the #GENRE value, '' without one",
+      orch.genre_of_bytes(_gb) == "Pop" and orch.genre_of_bytes(b"#TITLE:x\n: 0 1 0 a\n") == "")
+
+_g_dir = tempfile.mkdtemp()
+_g_saved = (orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV, orch.GENRES_DIR, orch.GENRE_EDITS,
+            orch.GENRES_OUT_DIR, orch.stdin_listener)
+
+
+def _g_song(folder, name, genre):
+    os.makedirs(os.path.join(orch.GENRES_DIR, folder), exist_ok=True)
+    with open(os.path.join(orch.GENRES_DIR, folder, name), "wb") as f:
+        f.write(f"#TITLE:{folder}\n#ARTIST:AC/DC\n#GENRE:{genre}\n#BPM:300\n: 0 4 0 la\nE\n".encode())
+
+
+def _g_edits(rows):
+    with open(orch.GENRE_EDITS, "w", encoding="utf-8") as f:
+        f.write("".join(f"{r}\n" for r in rows))
+
+
+try:
+    orch.SONGS_FILE = os.path.join(_g_dir, "no-songs.csv")
+    orch.REPAIRS_DIR = os.path.join(_g_dir, "repairs")
+    orch.BROKEN_CSV = os.path.join(_g_dir, "broken.csv")
+    orch.GENRES_DIR = os.path.join(_g_dir, "genres")
+    orch.GENRE_EDITS = os.path.join(_g_dir, "genre-edits.tsv")
+    orch.GENRES_OUT_DIR = os.path.join(_g_dir, "out-genres")
+    orch.stdin_listener = lambda *args: None
+    _g_song("AC-DC - Hells Bells", "HellsBells-638.txt", "Hard, Rock, Classic")
+    _g_edits(["AC-DC - Hells Bells/HellsBells-638.txt\tRock, Hard",
+              "AC-DC - Hells Bells/language.txt\tRock, Hard",
+              "AC-DC - T.N.T./TNT-507.txt\tRock, Hard"])
+    _g_state = orch.State()
+    _g_jobs = {j["id"]: j for j in orch.build_job_plan(_g_state)}
+    _hb = _g_jobs.get("genre|AC-DC - Hells Bells/HellsBells-638.txt", {})
+    check(f"build_job_plan: a genre job per edit row with its wanted genres (got {_hb})",
+          _hb.get("kind") == "genre" and _hb.get("status") == "pending" and _hb.get("genres") == "Rock, Hard"
+          and _hb.get("label") == "AC-DC - Hells Bells")
+    _lang = _g_jobs.get("genre|AC-DC - Hells Bells/language.txt", {})
+    _tnt = _g_jobs.get("genre|AC-DC - T.N.T./TNT-507.txt", {})
+    check(f"build_job_plan: language.txt is no song file, an unpulled song waits (got {_lang.get('status')}, "
+          f"{_tnt.get('status')}: {orch.skip_reason(_lang)} / {orch.skip_reason(_tnt)})",
+          _lang.get("status") == "skipped" and "not a song file" in orch.skip_reason(_lang)
+          and _tnt.get("status") == "skipped" and "pull-genres" in orch.skip_reason(_tnt))
+    check("current_job_ids: genre jobs belong to the plan",
+          {"genre|AC-DC - Hells Bells/HellsBells-638.txt", "genre|AC-DC - T.N.T./TNT-507.txt"}
+          <= orch.current_job_ids())
+    check("selection: --only genres, job_category and filter_jobs know genre jobs",
+          orch.parse_selection(["--only", "genres"]).categories == {"genres"}
+          and orch.job_category({"kind": "genre"}) == "genres"
+          and orch.new_song_mode({"genres"}) is None
+          and [j["kind"] for j in orch.filter_jobs(list(_g_jobs.values()), {"genres"}, None)] == ["genre"] * 3
+          and orch.filter_jobs(list(_g_jobs.values()), {"repairs"}, None) == [])
+
+    orch.cmd_run(_g_state, selection=orch.parse_selection(["--only", "genres"]), control=orch.Control())
+    _out_hb = os.path.join(orch.GENRES_OUT_DIR, "AC-DC - Hells Bells", "HellsBells-638.txt")
+    _hb = _g_state.data["jobs"]["genre|AC-DC - Hells Bells/HellsBells-638.txt"]
+    check(f"cmd_run: the song file goes to output/genres/<folder>/ with the wanted #GENRE (got {_hb})",
+          _hb["status"] == "done" and _hb["output_path"] == _out_hb and os.path.isfile(_out_hb)
+          and b"#GENRE:Rock, Hard\n" in open(_out_hb, "rb").read()
+          and _hb["genre_before"] == "Hard, Rock, Classic" and _hb["genres_written"] == "Rock, Hard")
+    check("cmd_run: the input copy stays as it is",
+          b"#GENRE:Hard, Rock, Classic" in open(os.path.join(orch.GENRES_DIR, "AC-DC - Hells Bells",
+                                                             "HellsBells-638.txt"), "rb").read())
+    _report = orch.render_report(_g_state.data, orch.current_job_ids())
+    check(f"render_report: 'Genres updated' with the genre before and now",
+          "## Genres updated (1)" in _report
+          and "| AC-DC - Hells Bells | `HellsBells-638.txt` | Hard, Rock, Classic | Rock, Hard |" in _report)
+    _prog = orch.render_progress(_g_state.data, cpu_percent=1, ram_usage={"used_gb": 1, "total_gb": 2, "percent": 50},
+                                 device="cpu", active_ids=orch.current_job_ids())
+    check(f"render_progress: a GENRES line", "GENRES" in _prog and "1 done" in _prog.split("GENRES")[1])
+
+    _g_song("AC-DC - T.N.T.", "TNT-507.txt", "Hard, Rock")
+    _g_edits(["AC-DC - Hells Bells/HellsBells-638.txt\tRock",
+              "AC-DC - T.N.T./TNT-507.txt\tRock, Hard"])
+    _g_jobs = {j["id"]: j for j in orch.build_job_plan(_g_state)}
+    check("build_job_plan: a pulled song is no longer skipped; other wanted genres plan a done job again",
+          _g_jobs["genre|AC-DC - T.N.T./TNT-507.txt"]["status"] == "pending"
+          and _g_jobs["genre|AC-DC - Hells Bells/HellsBells-638.txt"]["status"] == "pending")
+    orch.cmd_run(_g_state, selection=orch.parse_selection(["--only", "genres"]), control=orch.Control())
+    check("cmd_run: the changed edit is written",
+          b"#GENRE:Rock\n" in open(_out_hb, "rb").read()
+          and _g_state.data["jobs"]["genre|AC-DC - T.N.T./TNT-507.txt"]["status"] == "done")
+    _g_jobs = {j["id"]: j for j in orch.build_job_plan(_g_state)}
+    check("build_job_plan: done jobs with the same wanted genres stay done",
+          all(j["status"] == "done" for j in _g_jobs.values()))
+finally:
+    (orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV, orch.GENRES_DIR, orch.GENRE_EDITS,
+     orch.GENRES_OUT_DIR, orch.stdin_listener) = _g_saved
+    shutil.rmtree(_g_dir)
 
 print()
 if failures:

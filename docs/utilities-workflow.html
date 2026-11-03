@@ -5,7 +5,7 @@
   import_local_media.py) - what each reads and writes, how they fill the
   stack input and how repaired songs get back into the library - for opening
   in a browser. The genre tools have genre-workflow.html, the details live in
-  README.md. The numbers are from the library check report of 2026-10-16
+  utilities/README.md. The numbers are from the library check report of 2026-10-16
   and the stack input of 2026-11-02.
 -->
 <html lang="en">
@@ -375,15 +375,13 @@ docker logs -f library-check        # progress</pre></div></li>
       <li><div><span class="who who-tool">Import</span>
         <pre>python3 utilities/import_broken_songs.py --library /dhuaddan/media/ultrastar/songs           # dry run
 python3 utilities/import_broken_songs.py --library /dhuaddan/media/ultrastar/songs --apply</pre>
-        <p class="note">Dashboard reports instead or as well: <code>copy_reported_songs.py --library ... --csv ~/Downloads/broken.csv --apply</code>, then <code>fill_lyrics_links.py --apply</code>.</p></div></li>
+        <p class="note">Dashboard reports instead or as well: <code>copy_reported_songs.py --library ... --csv ~/Downloads/broken.csv --apply</code>, then <code>fill_lyrics_links.py --apply</code>; for the rows already in <code>stack/input/broken.csv</code>: <code>./factory.sh pull-repairs --apply</code>. Genre edits: <code>./factory.sh pull-genres --apply</code> (<code>copy_genre_songs.py</code>).</p></div></li>
       <li><div><span class="who who-tool">Local files</span>
         <pre>python3 utilities/import_local_media.py --apply      # after every song-requests.csv export</pre></div></li>
       <li><div><span class="who who-tool">Repair</span>
-        <pre>cd stack
-docker compose --profile rocm run -d --name repairs-run ultrasinger-rocm \
-  python /app/orchestrator/orchestrator.py run --only repairs
-docker exec -it repairs-run progress -w</pre>
-        <p class="note">The whole stack run is described in <a href="../stack/docs/factory-workflow.html">the factory overview</a>.</p></div></li>
+        <pre>./factory.sh run --detach --only repairs
+./factory.sh progress -w</pre>
+        <p class="note">The whole stack run is described in <a href="factory-workflow.html">the factory overview</a>.</p></div></li>
       <li><div><span class="who who-write">Copy back</span>
         <p>Read <code>stack/output/report.md</code>, then copy the folders of <code>stack/output/repaired/&lt;repair&gt;/</code> into the library (Dolphin: overwrite older files only).</p></div></li>
     </ol>

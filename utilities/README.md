@@ -14,7 +14,7 @@ lyrics files the csv rows point to, `stack/input/videos/` local song files
 (see [Local song files](#local-song-files)).
 
 All commands below run from the repository root (not from `stack/`).
-[utilities-workflow.html](utilities-workflow.html) shows these tools in one
+[docs/utilities-workflow.html](../docs/utilities-workflow.html) shows these tools in one
 picture - what each reads and writes, how they fill the stack input and how
 the repaired songs get back into the library (open it in a browser).
 
@@ -25,6 +25,7 @@ the repaired songs get back into the library (open it in a browser).
 | 3. Lyrics links | `fill_lyrics_links.py` | host | fills empty `lyrics_url` cells of `broken.csv` |
 | 4. Repair, copy back | the stack, a file manager | stack container, host | writes `stack/output/repaired/<repair>/`; you copy the songs into the library |
 | Dashboard export | `copy_reported_songs.py` | host | copies the reported song folders into the stack input, merges the rows into `broken.csv` |
+| Genre edits | `copy_genre_songs.py` | host | copies the song files of the dashboard's genre edits into `stack/input/genres/` |
 | Local song files | `import_local_media.py` | host | copies the files a song list names into `stack/input/videos/`, rewrites the list |
 | Genres | `genre_lookup.py` | host | nothing in the library; writes the genre list and the predictions |
 | Genres | `apply_genres.sh` | host | writes the predicted genres into the song files (backup kept) |
@@ -40,7 +41,7 @@ the genre tools share them (how a genre becomes bases; reading and writing
 Requirements:
 
 - the scan: the stack's ROCm image (`ultrasinger-rocm`, built as described
-  in `stack/docs/development.md`) and an AMD GPU - the check runs the vocal
+  in `docs/development.md`) and an AMD GPU - the check runs the vocal
   separation and the aligner on the GPU (the service maps `/dev/kfd` and
   `/dev/dri`); Docker with the Compose plugin
 - the host tools: Python 3 with `requests`, and `ffprobe` (ffmpeg) for the
@@ -192,7 +193,7 @@ overloaded (429/503) a request is tried again after 5, 10 and 20 s.
 ## 4. Repair and copy back into the library
 
 Start the stack on the imported songs (from `stack/`, see
-`stack/docs/running.md`); to run only the repairs:
+`docs/running.md`); to run only the repairs:
 
 ```sh
 cd stack
@@ -246,6 +247,28 @@ with or without the header line; `--csv` can be given more than once):
 Option: `--input DIR` (the stack input, default `stack/input`; the folders go
 to its `repairs/`).
 
+`./factory.sh pull-repairs [--apply]` (repository root) runs this tool with
+the library from `LIBRARY_DIR` in `stack/.env` and the stack's own
+`stack/input/broken.csv` as the list: the folders are copied, the file stays
+as it is (all its rows are there already).
+
+## Genre edits from the dashboard
+
+```sh
+python3 utilities/copy_genre_songs.py --library /path/to/library           # dry run
+python3 utilities/copy_genre_songs.py --library /path/to/library --apply
+```
+
+Reads the dashboard's genre edit export `stack/input/genre-edits.tsv`
+(`--edits FILE`; no header, per line `<folder>/<song file>`, a TAB, the wanted
+genres) and copies each named song file - only the song file, no media - from
+the library into `stack/input/genres/<folder>/` (`--input DIR`). A copy
+already there is replaced by the library's current file. A row naming no song
+file (`language.txt`, a `.txt` without `#TITLE`/`#ARTIST`) or a file not in
+the library is listed and left out. `./factory.sh pull-genres [--apply]` runs
+it with `LIBRARY_DIR`; `./factory.sh genres` then writes the genres
+([docs/genre-edits.md](../docs/genre-edits.md)).
+
 ## Local song files
 
 ```sh
@@ -292,7 +315,7 @@ error, since its mount point here cannot be known.
 
 ## Genres
 
-[genre-workflow.html](genre-workflow.html) shows the four genre tools in one
+[docs/genre-workflow.html](../docs/genre-workflow.html) shows the four genre tools in one
 picture - what each reads and writes, your review steps and the steps that
 change the library (open it in a browser).
 
@@ -350,7 +373,7 @@ Check the predictions before writing them: edit the `predicted genre`
 column (LibreOffice: open as tab-separated text, save in the same format);
 an empty cell leaves that song alone.
 
-`apply_genres.sh [--apply] [--backup DIR] [predictions file]` writes
+`apply_genres.sh [--apply] [--replace] [--backup DIR] [predictions file]` writes
 `#GENRE` into each listed song file that still has no genre (a song that got
 one in the meantime is left alone): the placeholder line is replaced in
 place, else the line is added after the last header line. Byte order mark,
@@ -361,6 +384,36 @@ attribute (File Station, Windows file properties) and run again. Without
 `--apply` it only lists what it would set. With `--apply`
 every changed file is copied first into `library analysis/genre-backup-<time>/`
 under its full path.
+
+### Checking songs that have a genre
+
+To compare the genres songs already have with what the online sources say,
+give the lookup a song list (the `library-genres.tsv` format; it reads the
+`path` column):
+
+```sh
+python3 utilities/genre_lookup.py --library /path/to/library \
+  --songs "library analysis/songs-with-genre-before-tagging.tsv"     # writes genre-check.tsv
+utilities/apply_genres.sh --replace "library analysis/genre-check.tsv"           # dry run
+utilities/apply_genres.sh --replace --apply "library analysis/genre-check.tsv"
+```
+
+With `--songs` exactly the listed songs are looked up, also those that have
+a genre, and only `library analysis/genre-check.tsv` is written
+(`--predictions NAME` for another name; `library-genres.tsv` and
+`genre-predictions.tsv` stay as they are). It has the columns of the
+predictions file, with `current genre` (the song's `#GENRE` now) next to the
+`predicted genre`. Edit the predicted genres you want and empty the rest
+(an empty cell leaves that song alone). `apply_genres.sh --replace` then
+writes the predicted genre over the existing one (listed as `replace  Band
+- Title: old -> new`; a song whose genre already is the predicted one is
+counted as unchanged); without `--replace` songs with a genre are left
+alone, as in a normal run. The predictions file of a normal run also has
+the `current genre` column.
+
+`songs-with-genre-before-tagging.tsv` holds the 979 songs that had a genre
+on 2026-11-02 before the missing genres were filled in (taken from the
+`library-genres.tsv` the lookup wrote at the start of that run).
 
 ### Genre bases
 

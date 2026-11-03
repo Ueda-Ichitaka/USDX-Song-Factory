@@ -110,6 +110,35 @@ again = subprocess.run(["bash", SCRIPT, "--apply", "--backup", backup + "2", tsv
 check("apply twice: nothing is set again (the songs have a genre now)",
       again.returncode == 0 and "0 set" in again.stdout and read(plain).count(b"#GENRE") == 1)
 
+# --replace: songs that already have a genre get the prediction (a genre check file)
+rp_dir = os.path.join(root, "replace")
+os.makedirs(rp_dir)
+rp_has = song("K - Replace", b"#ARTIST:K\n#TITLE:Replace\n#GENRE:Pop\n#BPM:300\n: 0 4 0 la\nE\n")
+rp_same = song("L - Same", b"#ARTIST:L\n#TITLE:Same\n#GENRE:Rock\n#BPM:300\n: 0 4 0 la\nE\n")
+rp_none = song("M - None yet", b"#ARTIST:M\n#TITLE:None yet\n#BPM:300\n: 0 4 0 la\nE\n")
+check_tsv = os.path.join(rp_dir, "genre-check.tsv")
+with open(check_tsv, "w", encoding="utf-8") as f:
+    f.write("band\ttitle\tpath\tpredicted genre\tfound\tnew bases\tcurrent genre\n")
+    f.write(f"K\tReplace\t{rp_has}\tMetal, Folk\tmusicbrainz: folk metal\t\tPop\n")
+    f.write(f"L\tSame\t{rp_same}\tRock\tmusicbrainz: rock\t\tRock\n")
+    f.write(f"M\tNone yet\t{rp_none}\tPunk\tmusicbrainz: punk\t\t\n")
+plain_run = subprocess.run(["bash", SCRIPT, check_tsv], capture_output=True, text=True)
+check(f"replace: without --replace a genre is left alone (got {plain_run.stdout!r})",
+      "has genre K - Replace: Pop (left alone)" in plain_run.stdout)
+rp_dry = subprocess.run(["bash", SCRIPT, "--replace", check_tsv], capture_output=True, text=True)
+check(f"replace: the dry run names old and new (got {rp_dry.stdout!r})",
+      "replace   K - Replace: Pop -> Metal, Folk" in rp_dry.stdout and read(rp_has).count(b"#GENRE:Pop") == 1)
+rp_run = subprocess.run(["bash", SCRIPT, "--replace", "--apply", "--backup", os.path.join(rp_dir, "bak"), check_tsv],
+                        capture_output=True, text=True)
+check(f"replace: an existing genre is replaced in place (got {read(rp_has)!r})",
+      rp_run.returncode == 0 and read(rp_has) == b"#ARTIST:K\n#TITLE:Replace\n#GENRE:Metal, Folk\n#BPM:300\n: 0 4 0 la\nE\n")
+check("replace: the same genre stays untouched, a song without one is set",
+      read(rp_same) == b"#ARTIST:L\n#TITLE:Same\n#GENRE:Rock\n#BPM:300\n: 0 4 0 la\nE\n"
+      and b"#GENRE:Punk" in read(rp_none)
+      and not os.path.exists(os.path.join(rp_dir, "bak", rp_same.lstrip("/"))))
+check(f"replace: summary line (got {rp_run.stdout.splitlines()[-2:]})",
+      "1 set, 1 replaced, 1 unchanged" in rp_run.stdout)
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")

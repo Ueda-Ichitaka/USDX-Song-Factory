@@ -107,6 +107,21 @@ summary = crs.copy_songs([export1, export2], lib, stack_input, apply=True)
 check(f"running again copies and adds nothing (got {summary})",
       summary["copied"] == [] and summary["rows_added"] == 0)
 
+# the stack's own broken.csv as the source (factory.sh pull-repairs): the
+# folders are copied, the file is neither rewritten nor backed up
+own_input = os.path.join(root, "own-input")
+os.makedirs(own_input)
+own_csv = os.path.join(own_input, "broken.csv")
+with open(own_csv, "w", encoding="utf-8") as f:
+    f.write("band,song name,category,description\nABBA,Chiquitita,gap,\n")
+before_own = open(own_csv, "rb").read()
+own = crs.copy_songs([own_csv], lib, own_input, apply=True)
+check(f"own broken.csv as source: folders copied, the file left alone (got {own})",
+      own["rows_added"] == 0 and open(own_csv, "rb").read() == before_own
+      and not any(n.startswith("broken.csv.bak-") for n in os.listdir(own_input))
+      and own["copied"] == ["ABBA - Chiquitita"]
+      and os.path.isdir(os.path.join(own_input, "repairs", "ABBA - Chiquitita")))
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")

@@ -3,12 +3,12 @@
 #   docker compose up                          # build (CPU) + run all pending jobs
 #   docker compose --profile rocm up ultrasinger-rocm   # AMD-GPU (ROCm) variant
 #
-# Documentation: README.md (quickstart) and stack/docs/.
+# Documentation: README.md (quickstart) and docs/.
 name: ultrastar-stack
 
 # Every variable set in .env reaches the containers as-is (not only the ones
 # listed under x-common-env below), so all settings documented in
-# stack/docs/configuration.md can be set there. A missing .env is fine.
+# docs/configuration.md can be set there. A missing .env is fine.
 x-common-env-file: &common-env-file
   - path: .env
     required: false
@@ -41,13 +41,13 @@ x-common-env: &common-env
   GENIUS_API_KEY: ${GENIUS_API_KEY:-}
   # USDB (usdb.animux.de) account - when both are set, a new song first
   # checks for an existing matching upload there before generating from
-  # scratch. See stack/docs/song-sources.md "USDB".
+  # scratch. See docs/song-sources.md "USDB".
   USDB_USERNAME: ${USDB_USERNAME:-}
   USDB_PASSWORD: ${USDB_PASSWORD:-}
   USDB_MIN_MATCH_SCORE: ${USDB_MIN_MATCH_SCORE:-}
   USDB_CATALOG_TTL_HOURS: ${USDB_CATALOG_TTL_HOURS:-}
   # minimum #ARTIST/#TITLE-vs-broken.csv-row match score for a repair job -
-  # see stack/docs/repairs.md "broken.csv".
+  # see docs/repairs.md "broken.csv".
   BROKEN_MATCH_MIN_SCORE: ${BROKEN_MATCH_MIN_SCORE:-}
   # usdb.eu - a separate, newer USDB site (different account) tried as a
   # second source when usdb.animux.de above has no match.

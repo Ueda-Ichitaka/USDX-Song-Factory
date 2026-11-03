@@ -73,7 +73,7 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
 <main>
 <header style="display:grid;gap:8px">
   <h1>Song Factory Map</h1>
-  <p class="lede">Every component of the USDX Song Factory stack and the path a song takes through it, as of 2 November 2026. Section 8 shows what is built and what is planned for 0.9, 1.0 and the later profiles. File and function names are the real ones in <code>stack/</code> and <code>src/</code>. How to use the stack and the library tools: <a href="stack/docs/factory-workflow.html">Song factory workflow</a>, <a href="utilities/utilities-workflow.html">Library utilities workflow</a>, <a href="utilities/genre-workflow.html">Genre utilities workflow</a>.</p>
+  <p class="lede">Every component of the USDX Song Factory stack and the path a song takes through it, as of 2 November 2026. Section 8 shows what is built and what is planned for 0.9, 1.0 and the later profiles. File and function names are the real ones in <code>stack/</code> and <code>src/</code>. How to use the stack and the library tools: <a href="factory-workflow.html">Song factory workflow</a>, <a href="utilities-workflow.html">Library utilities workflow</a>, <a href="genre-workflow.html">Genre utilities workflow</a>.</p>
   <div class="key"><span class="k-new">new-song path</span><span class="k-repair">repair path</span><span class="k-store">folders and admin files</span><span class="k-net">network access</span><span class="k-plan">planned, not built yet</span></div>
 </header>
 
@@ -571,7 +571,7 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
       <tr><td><code>*.usdb</code></td><td>orchestrator (media repair)</td><td>USDB Syncer</td><td>original video/audio source for a download</td></tr>
     </tbody>
   </table></div>
-  <p>Exact formats: <code>stack/docs/repairs.md</code> (sections "Trusted lyrics", "Song end", "Anchors").</p>
+  <p>Exact formats: <code>docs/repairs.md</code> (sections "Trusted lyrics", "Song end", "Anchors").</p>
 </section>
 
 <!-- ============================ MODULE INDEX ============================ -->
@@ -580,7 +580,8 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
   <div class="tablewrap"><table>
     <thead><tr><th>File</th><th>Runs as</th><th>Job</th></tr></thead>
     <tbody>
-      <tr><td><code>orchestrator/orchestrator.py</code></td><td>container command</td><td>plans and runs jobs, state, progress, report, lyrics review, local song files, <code>#CREATOR</code>/<code>#GENRE</code> tags</td></tr>
+      <tr><td><code>orchestrator/orchestrator.py</code></td><td>container command</td><td>plans and runs jobs (new songs, repairs, genre edits from <code>input/genre-edits.tsv</code> into <code>output/genres/</code>), state, progress, report, lyrics review, local song files, <code>#CREATOR</code>/<code>#GENRE</code> tags</td></tr>
+      <tr><td><code>factory.sh</code> (repository root)</td><td>by hand, on the host</td><td>pulls songs from the library into the input (<code>pull-repairs</code>, <code>pull-genres</code>) and runs every orchestrator command in the container, with safety checks</td></tr>
       <tr><td><code>src/UltraSinger.py</code> + <code>src/modules/</code></td><td>subprocess per new song</td><td>generation (download, demucs, whisperX, hyphenation, SwiftF0, octave folding, txt writer; no key snapping)</td></tr>
       <tr><td><code>orchestrator/repair.py</code></td><td>subprocess</td><td>gap, sync and lyrics modes</td></tr>
       <tr><td><code>orchestrator/lyrics_fetch.py</code></td><td>subprocess</td><td>online lyrics, section tags resolved</td></tr>
@@ -695,7 +696,7 @@ pre { margin: 0; overflow-x: auto; background: var(--panel); border: 1px solid v
 <pre>docker compose build ultrasinger                        # CPU image  ultrasinger-stack:cpu
 docker compose --profile rocm build ultrasinger-rocm    # ROCm image ultrasinger-stack:rocm
 docker compose --profile rocm build --pull --no-cache ultrasinger-rocm   # from scratch</pre>
-  <p>Details, restart and the check whether an image matches your code: <code>stack/docs/development.md</code>, section "Building the images".</p>
+  <p>Details, restart and the check whether an image matches your code: <code>docs/development.md</code>, section "Building the images".</p>
 </section>
 </main>
 

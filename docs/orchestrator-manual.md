@@ -3,15 +3,16 @@
 Man-page style reference of the batch orchestrator. Inside the container the
 program is `python /app/orchestrator/orchestrator.py`; from the host (inside
 `stack/`) prefix it with `docker compose run --rm ultrasinger` (GPU service:
-`ultrasinger-rocm`). A task-oriented introduction is in
-[running.md](running.md).
+`ultrasinger-rocm`), or use `./factory.sh` in the repository root, which
+does that and more ([stack-manual.md](stack-manual.md)). A task-oriented
+introduction is in [running.md](running.md).
 
 ```text
 ORCHESTRATOR.PY(1)              UltraStar Song Factory              ORCHESTRATOR.PY(1)
 
 NAME
-    orchestrator.py - create new UltraStar songs and repair existing ones in
-    batch, with resumable per-song state
+    orchestrator.py - create new UltraStar songs, repair existing ones and
+    write genre edits in batch, with resumable per-song state
 
 SYNOPSIS
     orchestrator.py [run] [SELECTION] [--no-usdb]
@@ -25,8 +26,9 @@ SYNOPSIS
     SELECTION = [--only CATEGORY[,CATEGORY...]] [--match TEXT]
 
 DESCRIPTION
-    Reads the want-list (input/song-requests.csv) and the song folders in
-    input/repairs/, plans one job per song, runs the pending ones one after another
+    Reads the want-list (input/song-requests.csv), the song folders in
+    input/repairs/ and the genre edits (input/genre-edits.tsv with the song
+    files in input/genres/), plans one job per song, runs the pending ones one after another
     and records every result in state/state.json. Finished jobs are skipped
     on the next run, so a run can be stopped and resumed at any time.
 
@@ -36,6 +38,10 @@ DESCRIPTION
     separation, transcription, and online lyrics force-aligned to the audio
     when a lyrics source is found). A repair job fixes a song folder from
     input/repairs/ (#GAP only, resync, or trusted lyrics - see repairs.md).
+    A genre job writes an edit's genres into #GENRE of its song file from
+    input/genres/ and puts it into output/genres/<folder>/ (genre-edits.md);
+    a row whose song file is not there yet is skipped until it is, a done
+    edit runs again when the export wants other genres.
 
 COMMANDS
     run                 Process all pending jobs. This is the default when no
@@ -48,8 +54,8 @@ COMMANDS
                         pending so the next run retries them.
     reset --done        Additionally put FINISHED jobs back to pending.
     reset --all         Same as --done.
-    reset --prune       Remove stored jobs that are no longer in the song list
-                        or the input folder ("orphans"). The state file is
+    reset --prune       Remove stored jobs that are no longer in the song list,
+                        the input folder or the genre edits ("orphans"). The state file is
                         backed up to state/backups/ first, output folders are
                         never touched, running jobs are kept. SELECTION
                         narrows it; cannot be combined with --done/--all.
@@ -65,6 +71,7 @@ SELECTION OPTIONS  (run, list, report, reset)
                                      from scratch
                           usdb       new songs USDB has; pulled from USDB
                           repairs    songs repaired from input/repairs/
+                          genres     genre edits (input/genre-edits.tsv)
                         Whether a new song is "generated" or "usdb" is only
                         known from a USDB lookup, so before a run with
                         `generated` or `usdb` every pending new song is
@@ -95,11 +102,12 @@ INTERACTIVE COMMANDS  (attached to a running `docker compose up`)
     See running.md, "Interactive commands".
 
 ENVIRONMENT
-    SONGS_FILE, BROKEN_CSV, INPUT_DIR, REPAIRS_DIR, OUTPUT_DIR, NEW_SONGS_DIR, STATE_DIR,
+    SONGS_FILE, BROKEN_CSV, GENRE_EDITS, INPUT_DIR, REPAIRS_DIR, GENRES_DIR,
+    OUTPUT_DIR, NEW_SONGS_DIR, REPAIRED_DIR, GENRES_OUT_DIR, STATE_DIR,
     LOGS_DIR, WORK_DIR, MAX_ATTEMPTS, JOB_TIMEOUT_MIN, LYRICS_ENABLED,
     GENIUS_API_KEY, USDB_USERNAME, USDB_PASSWORD, USDB_EU_EMAIL,
     USDB_EU_PASSWORD, ROMANIZE, WHISPER_MODEL, DEMUCS_MODEL.
-    Meaning and defaults: see configuration.md.
+    Meaning and defaults: see configuration.md; all of them: stack-manual.md.
 
 FILES
     input/song-requests.csv   want-list of new songs
@@ -107,9 +115,12 @@ FILES
     input/songtexts/          lyrics files the csv rows point to
     input/videos/             local song files (audio/video) the csv rows name
     input/repairs/<song folder>/  songs to repair
+    input/genre-edits.tsv     genre edits: <folder>/<song file> TAB <genres>
+    input/genres/<folder>/    the song files of the genre edits
     output/new/               created songs
     output/repaired/<repair>/ repaired songs, one folder per repair done:
                               gap, sync, recreated, lyrics, media, cover
+    output/genres/<folder>/   song files with the edited #GENRE
     output/failed/<kind>/     partial output of failed jobs
     output/report.md          finishing report
     state/state.json          per-job status (can be hand-edited)
@@ -150,10 +161,13 @@ EXAMPLES
         orchestrator.py reset --done --only-new
         orchestrator.py reset --done --only-repairs
 
+    Write the genre edits (after ./factory.sh pull-genres --apply):
+        orchestrator.py run --only genres
+
     Drop jobs whose song was removed from the list or input folder:
         orchestrator.py reset --prune
 
 SEE ALSO
-    running.md, new-songs.md ("Choosing which jobs run"), repairs.md,
-    song-sources.md, configuration.md
+    stack-manual.md, running.md, new-songs.md ("Choosing which jobs run"),
+    repairs.md, genre-edits.md, song-sources.md, configuration.md
 ```

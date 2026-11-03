@@ -7,7 +7,14 @@ all subfolders) and writes two tab-separated files into the output folder:
   library-genres.tsv     every song: band, title, genre, path
   genre-predictions.tsv  the songs without a genre (no #GENRE, an empty one
                          or a placeholder: Unknown, No idea, Other, None,
-                         Misc): band, title, path, predicted genre, found
+                         Misc): band, title, path, predicted genre, found,
+                         new bases, current genre
+
+A genre check (--songs FILE, a song list in the library-genres.tsv format)
+looks up exactly the listed songs, also those that have a genre, and
+writes only genre-check.tsv (--predictions NAME; same columns) - to compare
+the current genres with what the sources say. apply_genres.sh --replace
+writes such a file's predictions over the existing genres.
 
 For each song without a genre these sources are asked:
 
@@ -42,7 +49,8 @@ Archives does so at times) is left out for the rest of the run. The library
 is only read.
 
   python3 genre_lookup.py --library DIR [--out DIR] [--keep-placeholders]
-                          [--no-lastfm]
+                          [--no-lastfm] [--fixes FILE]
+                          [--songs FILE [--predictions NAME]]
 """
 
 import argparse
@@ -62,6 +70,7 @@ import songfile  # noqa: E402
 
 OVERVIEW_FILE = "library-genres.tsv"
 PREDICTIONS_FILE = "genre-predictions.tsv"
+CHECK_FILE = "genre-check.tsv"
 CACHE_FILE = "genre-cache.json"
 MB_GENRES_FILE = "musicbrainz-genres.txt"
 # genre_clusters.py's proposals, reviewed by the user
@@ -501,14 +510,32 @@ def load_fixes(path: str) -> dict:
             for r in _rows(path) if len(r) >= 3 and r[2].strip()}
 
 
+def load_song_list(path: str) -> set:
+    """The song file paths of a song list (library-genres.tsv format: a
+    header line with a "path" column; without one the fourth column)."""
+    with open(path, encoding="utf-8", newline="") as f:
+        rows = list(csv.reader(f, delimiter="\t"))
+    if not rows:
+        return set()
+    header = [c.strip().lower() for c in rows[0]]
+    col = header.index("path") if "path" in header else 3
+    return {r[col].strip() for r in rows[1:] if len(r) > col and r[col].strip()}
+
+
 def run(library: str, out_dir: str, lookup: Lookup, keep_placeholders: bool = False,
-        progress=None, mb_genres=(), clusters=None, fixes=None) -> dict:
+        progress=None, mb_genres=(), clusters=None, fixes=None, only=None,
+        predictions_file: str = PREDICTIONS_FILE) -> dict:
     """Scan, look up the songs without a genre, write both files; returns
     {"songs", "without genre", "predicted"}. The found genres become bases
     like the library's (combine(): the reviewed clusters file, else the
     rules against mb_genres and the library's own genres); a song in fixes
     gets its fix instead of a lookup. The "new bases" column names the
-    predicted bases the library does not have yet."""
+    predicted bases the library does not have yet, "current genre" the
+    song's #GENRE now.
+    only (a set of song file paths, load_song_list()) makes it a genre
+    check: exactly those songs are looked up, also the ones with a genre,
+    library-genres.tsv is not written; returns {"songs", "listed", "not
+    found", "predicted"}."""
     clusters, fixes = clusters or {}, fixes or {}
     songs = scan(library)
     counts = {}
@@ -519,9 +546,12 @@ def run(library: str, out_dir: str, lookup: Lookup, keep_placeholders: bool = Fa
     known = {b.lower() for spelling in counts for b in found_bases(spelling, splitter, clusters)}
     known |= {b.strip().lower() for value in fixes.values() for b in value.split(",") if b.strip()}
     os.makedirs(out_dir, exist_ok=True)
-    write_tsv(os.path.join(out_dir, OVERVIEW_FILE), ["band", "title", "genre", "path"],
-              [[s["band"], s["title"], s["genre"], s["path"]] for s in songs])
-    missing = [s for s in songs if needs_genre(s["genre"], keep_placeholders)]
+    if only is None:
+        write_tsv(os.path.join(out_dir, OVERVIEW_FILE), ["band", "title", "genre", "path"],
+                  [[s["band"], s["title"], s["genre"], s["path"]] for s in songs])
+        missing = [s for s in songs if needs_genre(s["genre"], keep_placeholders)]
+    else:
+        missing = [s for s in songs if s["path"] in only]
     rows, predicted = [], 0
     for i, song in enumerate(missing, 1):
         fix = fixes.get((song["band"].strip().lower(), song["title"].strip().lower()))
@@ -532,15 +562,18 @@ def run(library: str, out_dir: str, lookup: Lookup, keep_placeholders: bool = Fa
             genres, found_text = combine(found, splitter, clusters), describe_found(found)
         predicted += bool(genres)
         rows.append([song["band"], song["title"], song["path"], ", ".join(genres), found_text,
-                     ", ".join(g for g in genres if g.lower() not in known)])
+                     ", ".join(g for g in genres if g.lower() not in known), song["genre"]])
         if progress:
             progress(f"[{i}/{len(missing)}] {song['band']} - {song['title']}: "
                      f"{', '.join(genres) or '(nothing found)'}")
         if i % 20 == 0:
             lookup.save()
     lookup.save()
-    write_tsv(os.path.join(out_dir, PREDICTIONS_FILE),
-              ["band", "title", "path", "predicted genre", "found", "new bases"], rows)
+    write_tsv(os.path.join(out_dir, predictions_file),
+              ["band", "title", "path", "predicted genre", "found", "new bases", "current genre"], rows)
+    if only is not None:
+        return {"songs": len(songs), "listed": len(only), "not found": len(only) - len(missing),
+                "predicted": predicted}
     return {"songs": len(songs), "without genre": len(missing), "predicted": predicted}
 
 
@@ -553,7 +586,13 @@ def main():
                         help="the placeholders (Unknown, No idea, Other, None, Misc) count as a genre")
     parser.add_argument("--no-lastfm", action="store_true", help="do not ask Last.fm")
     parser.add_argument("--fixes", default=FIXES_FILE, help="the song fixes file")
+    parser.add_argument("--songs", help="genre check: look up exactly the songs of this song list "
+                                        "(library-genres.tsv format), also those with a genre")
+    parser.add_argument("--predictions", help="the predictions file name in --out (default: "
+                                              f"{PREDICTIONS_FILE}, with --songs {CHECK_FILE})")
     args = parser.parse_args()
+    only = load_song_list(args.songs) if args.songs else None
+    predictions = args.predictions or (CHECK_FILE if args.songs else PREDICTIONS_FILE)
     key = None if args.no_lastfm else lastfm_key()
     if not key and not args.no_lastfm:
         print("Last.fm: no LASTFM_API_KEY set, asking MusicBrainz, Metal Archives and Wikidata")
@@ -562,11 +601,16 @@ def main():
     summary = run(args.library, args.out, lookup, args.keep_placeholders, progress=print,
                   mb_genres=load_mb_genres(args.out),
                   clusters=load_clusters(os.path.join(args.out, CLUSTERS_FILE)),
-                  fixes=load_fixes(args.fixes))
+                  fixes=load_fixes(args.fixes), only=only, predictions_file=predictions)
+    if only is not None:
+        print(f"\n{summary['listed']} songs listed, {summary['not found']} of them not in the library, "
+              f"{summary['predicted']} with a predicted genre")
+        print(f"written: {os.path.join(args.out, predictions)}")
+        return
     print(f"\n{summary['songs']} songs, {summary['without genre']} without a genre, "
           f"{summary['predicted']} with a predicted genre")
     print(f"written: {os.path.join(args.out, OVERVIEW_FILE)}")
-    print(f"         {os.path.join(args.out, PREDICTIONS_FILE)}")
+    print(f"         {os.path.join(args.out, predictions)}")
 
 
 if __name__ == "__main__":

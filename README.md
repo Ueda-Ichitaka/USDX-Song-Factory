@@ -58,7 +58,9 @@ cd USDX-Song-Factory/stack         # every command below runs from here
 #    folders created by Docker would belong to root)
 mkdir -p input output state logs models work cookies
 
-# 3. Optional: accounts and keys (USDB, Genius) - works without them
+# 3. Settings: accounts and keys (USDB, Genius - works without them), the
+#    service (FACTORY_SERVICE=ultrasinger without an AMD GPU), the library
+#    the pull commands read (LIBRARY_DIR)
 cp .env.example .env               # then edit .env
 
 # 4. Write your song list (or save the export of the karaoke-dashboard, see below)
@@ -69,24 +71,24 @@ Hannes Wader,Bella ciao,https://www.youtube.com/watch?v=x6WW4mhGcOw
 EOF
 
 # 5. Build and start (first start builds the image and downloads the models)
-docker compose up -d                                   # CPU
-# docker compose --profile rocm up -d ultrasinger-rocm # or: AMD GPU (ROCm)
+cd ..                              # factory.sh runs from the repository root
+./factory.sh up                    # the batch, detached (AMD GPU; CPU: FACTORY_SERVICE=ultrasinger)
 
 # 6. Watch it work
-docker compose exec ultrasinger progress -w            # live progress table (Ctrl-C to leave)
-docker compose logs -f                                 # full output
+./factory.sh progress -w           # live progress table (Ctrl-C to leave)
+./factory.sh logs                  # full output
 
 # 7. Collect your songs
-ls output/new                      # finished songs, one folder each
-cat output/report.md               # what was created, from which source, what failed
+ls stack/output/new                # finished songs, one folder each
+cat stack/output/report.md         # what was created, from which source, what failed
 
-# 8. Redo songs (the next `docker compose up -d` processes them again)
-docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset                                  # retry the failed songs
-docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --done --match "Zaubererbruder"  # redo one finished song
-docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --done --only generated          # redo all songs generated from scratch
-docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --all                            # redo everything
-docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --prune                          # forget songs removed from the list
-docker compose up -d
+# 8. Redo songs (the next ./factory.sh up processes them again)
+./factory.sh reset                                   # retry the failed songs
+./factory.sh reset --done --match "Zaubererbruder"   # redo one finished song
+./factory.sh reset --done --only generated           # redo all songs generated from scratch
+./factory.sh reset --all                             # redo everything
+./factory.sh reset --prune                           # forget songs removed from the list
+./factory.sh up
 ```
 
 Copy the folders from `output/new/` into your UltraStar Deluxe song folder.
@@ -94,8 +96,13 @@ Copy the folders from `output/new/` into your UltraStar Deluxe song folder.
 redone song replaces its old folder in `output/new/` (same name, the old
 files are deleted first); copy the old version away first if you want to
 keep it.
-For the GPU service, use `ultrasinger-rocm` instead of `ultrasinger` in the
-commands above and below.
+`factory.sh` runs everything in the AMD GPU service `ultrasinger-rocm`; set
+`FACTORY_SERVICE=ultrasinger` in `stack/.env` for the CPU service. Before it
+starts a container it checks that no batch and no library check runs and that
+at least 5 GB RAM are free. Every command and setting:
+[docs/stack-manual.md](docs/stack-manual.md); the plain
+`docker compose` commands behind it are in
+[docs/running.md](docs/running.md).
 
 If your user id is not 1000 (`id -u`), run
 `sudo chown -R 1000:1000 input output state logs models work cookies` after
@@ -114,32 +121,41 @@ from the paths in the export:
 
 | Dashboard export | Save as | Used for |
 |---|---|---|
-| `GET /admin/requests.csv` | `stack/input/song-requests.csv` | new songs ([stack/docs/new-songs.md](stack/docs/new-songs.md)) |
-| `GET /admin/reports.csv` | `stack/input/broken.csv` | repairs ([stack/docs/repairs.md](stack/docs/repairs.md)) |
+| `GET /admin/requests.csv` | `stack/input/song-requests.csv` | new songs ([docs/new-songs.md](docs/new-songs.md)) |
+| `GET /admin/reports.csv` | `stack/input/broken.csv` | repairs ([docs/repairs.md](docs/repairs.md)) |
+| the genre edit export | `stack/input/genre-edits.tsv` | genre edits ([docs/genre-edits.md](docs/genre-edits.md)) |
 
 Overwriting the files with a fresh export is fine - finished songs are
-remembered and skipped. Both files can also be written by hand; only the first
-three columns are required.
+remembered and skipped. The song lists can also be written by hand; only the
+first three columns are required. `./factory.sh pull-repairs --apply` copies
+the song folders `broken.csv` names from the library into
+`stack/input/repairs/`, `./factory.sh pull-genres --apply` the song files of
+`genre-edits.tsv` into `stack/input/genres/` (library: `LIBRARY_DIR` in
+`stack/.env`).
 
 ## Everyday commands
 
-All from inside `stack/`:
+All from the repository root:
 
 | What | Command |
 |---|---|
-| Start / resume the batch | `docker compose up -d` |
-| Live progress | `docker compose exec ultrasinger progress -w` |
-| Full output | `docker compose logs -f` |
-| Stop after the current song | `docker compose attach ultrasinger`, type `stop` (leave with `Ctrl-P Ctrl-Q`) |
-| Stop immediately | `docker compose stop` |
-| Show the report | `docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py report` |
-| Retry failed songs | `docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset`, then `docker compose up -d` |
-| Redo one song | `docker compose run --rm ultrasinger python /app/orchestrator/orchestrator.py reset --done --match "Zaubererbruder"`, then `docker compose up -d` |
-| Update the code | `git pull && git submodule update --init --recursive && docker compose build` (GPU: `docker compose --profile rocm build ultrasinger-rocm`) |
+| Start / resume the batch | `./factory.sh up` |
+| Only some jobs | `./factory.sh run --detach --only repairs` (or `generated`, `usdb`, `genres`; `--match TEXT`) |
+| Live progress | `./factory.sh progress -w` |
+| Full output | `./factory.sh logs` |
+| Stop after the current song | `cd stack && docker compose --profile rocm attach ultrasinger-rocm`, type `stop` (leave with `Ctrl-P Ctrl-Q`) |
+| Stop immediately | `cd stack && docker compose --profile rocm stop` |
+| Show the report | `./factory.sh report` |
+| Retry failed songs | `./factory.sh reset`, then `./factory.sh up` |
+| Redo one song | `./factory.sh reset --done --match "Zaubererbruder"`, then `./factory.sh up` |
+| Songs to repair from the library | `./factory.sh pull-repairs --apply` |
+| Genre edits | `./factory.sh pull-genres --apply`, then `./factory.sh genres` |
+| Update the code | `git pull && git submodule update --init --recursive && cd stack && docker compose --profile rocm build ultrasinger-rocm` (CPU: `docker compose build`) |
 
-Adding songs later: append rows to `input/song-requests.csv` and start again -
-finished songs are skipped. Every command and option:
-[stack/docs/orchestrator-manual.md](stack/docs/orchestrator-manual.md).
+Adding songs later: append rows to `stack/input/song-requests.csv` and start
+again - finished songs are skipped. Every command and setting:
+[docs/stack-manual.md](docs/stack-manual.md); the orchestrator
+inside the container: [docs/orchestrator-manual.md](docs/orchestrator-manual.md).
 
 ## Library utilities
 
@@ -193,15 +209,15 @@ Options, settings, verdicts and the tests:
 | Topic | File |
 |---|---|
 | Library utilities: scan a library, import broken songs, lyrics links | [utilities/README.md](utilities/README.md) |
-| Running the stack: commands, progress view, report, output | [stack/docs/running.md](stack/docs/running.md) |
-| The song list: format, optional columns, choosing which jobs run | [stack/docs/new-songs.md](stack/docs/new-songs.md) |
-| Repairing existing songs, `broken.csv`, trusted lyrics | [stack/docs/repairs.md](stack/docs/repairs.md) |
-| USDB, online lyrics, romanization | [stack/docs/song-sources.md](stack/docs/song-sources.md) |
-| Settings, resource budget, AMD GPU | [stack/docs/configuration.md](stack/docs/configuration.md) |
-| YouTube cookies (bot check, age-restricted videos) | [stack/docs/youtube-cookies.md](stack/docs/youtube-cookies.md) |
-| `orchestrator.py` manual (man page) | [stack/docs/orchestrator-manual.md](stack/docs/orchestrator-manual.md) |
-| Troubleshooting | [stack/docs/troubleshooting.md](stack/docs/troubleshooting.md) |
-| Development: tests, regression check | [stack/docs/development.md](stack/docs/development.md) |
+| Running the stack: commands, progress view, report, output | [docs/running.md](docs/running.md) |
+| The song list: format, optional columns, choosing which jobs run | [docs/new-songs.md](docs/new-songs.md) |
+| Repairing existing songs, `broken.csv`, trusted lyrics | [docs/repairs.md](docs/repairs.md) |
+| USDB, online lyrics, romanization | [docs/song-sources.md](docs/song-sources.md) |
+| Settings, resource budget, AMD GPU | [docs/configuration.md](docs/configuration.md) |
+| YouTube cookies (bot check, age-restricted videos) | [docs/youtube-cookies.md](docs/youtube-cookies.md) |
+| `orchestrator.py` manual (man page) | [docs/orchestrator-manual.md](docs/orchestrator-manual.md) |
+| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Development: tests, regression check | [docs/development.md](docs/development.md) |
 
 ## The underlying UltraSinger tool
 
