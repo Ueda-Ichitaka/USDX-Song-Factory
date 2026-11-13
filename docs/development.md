@@ -98,6 +98,7 @@ python3 test_lyrics_fill.py
 python3 test_timing_fit.py
 python3 test_song_header.py
 python3 test_duet.py
+python3 test_duet_assign.py
 
 # container (from stack/): tests that need the heavy dependencies
 docker compose run --rm ultrasinger python /app/orchestrator/test_lyrics_mode.py
