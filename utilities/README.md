@@ -26,8 +26,8 @@ the repaired songs get back into the library (open it in a browser).
 | 4. Repair, copy back | the stack, a file manager | stack container, host | writes `stack/output/repaired/<repair>/`; you copy the songs into the library |
 | Dashboard export | `copy_reported_songs.py` | host | copies the reported song folders into the stack input, merges the rows into `broken.csv` |
 | Genre edits | `copy_genre_songs.py` | host | copies the song files of the dashboard's genre edits into `stack/input/genres/` |
-| Freestyle lines | `freestyle_marker.py` | host (desktop) | nothing in the library; writes the marks file of a song into `stack/input/freestyle/` |
-| Freestyle lines | `apply_freestyle.py` | host | nothing in the library; writes copies of the marked songs into `stack/output/freestyle/` |
+| Note types | `note_type_editor.py` | host (desktop) | nothing in the library; writes the marks file of a song into `stack/input/note-types/` |
+| Note types | `apply_note_types.py` | host | nothing in the library; writes copies of the marked songs into `stack/output/note-types/` |
 | Local song files | `import_local_media.py` | host | copies the files a song list names into `stack/input/videos/`, rewrites the list |
 | Genres | `genre_lookup.py` | host | nothing in the library; writes the genre list and the predictions |
 | Genres | `apply_genres.sh` | host | writes the predicted genres into the song files (backup kept) |
@@ -39,8 +39,8 @@ file headers (the same rules as USDX) and to turn `#LANGUAGE`/`#GENRE` into
 dashboard codes. `genre_bases.py` and `genre_tags.sh` are no tools either:
 the genre tools share them (how a genre becomes bases; reading and writing
 `#GENRE`).
-`freestyle.py` is shared by the two freestyle tools (the lyrics lines of a
-song file, the marks files, turning lines into freestyle notes).
+`note_types.py` is shared by the two note type tools (the lyrics lines and
+notes of a song file, the marks files, writing the note types).
 
 Requirements:
 
@@ -51,7 +51,7 @@ Requirements:
 - the host tools: Python 3 with `requests`, and `ffprobe` (ffmpeg) for the
   audio length checks; `apply_genres.sh` and `normalize_genres.sh`: bash,
   GNU awk and iconv (both use `genre_tags.sh`)
-- `freestyle_marker.py`: Tk (`tkinter`, part of most Python installs) and a
+- `note_type_editor.py`: Tk (`tkinter`, part of most Python installs) and a
   desktop; `ffplay` (ffmpeg) to hear the lines - without it everything but
   the sound works
 
@@ -276,67 +276,30 @@ the library is listed and left out. `./factory.sh pull-genres [--apply]` runs
 it with `LIBRARY_DIR`; `./factory.sh genres` then writes the genres
 ([docs/genre-edits.md](../docs/genre-edits.md)).
 
-## Freestyle lines
-
-Lines that are not sung - a spoken sample, a news clip, a quote - can be
-marked freestyle: all notes of the line get the note type `F` instead of
-`:` (normal) or `*` (golden), and USDX does not score them. The stack cannot
-tell such lines from sung ones, so this is done by hand afterwards:
+## Note types
 
 ```sh
-python3 utilities/freestyle_marker.py                     # a file picker opens
-python3 utilities/freestyle_marker.py "/path/to/library/Band - Title/Band - Title.txt"
-python3 utilities/apply_freestyle.py                      # dry run
-python3 utilities/apply_freestyle.py --apply
+python3 utilities/note_type_editor.py                     # a file picker opens
+python3 utilities/note_type_editor.py "/path/to/library/Band - Title/Band - Title.txt"
+python3 utilities/apply_note_types.py                     # dry run
+python3 utilities/apply_note_types.py --apply
 ```
 
-`freestyle_marker.py` is a desktop app (Tk). It lists the lyrics lines of a
-song file with their start time; you step through them with the keyboard,
-mark and unmark them and listen to each line. The song file is only read.
+Sets the note types of whole lines or single notes by hand: normal, golden
+(`*`), freestyle (`F`, not scored - spoken samples, news clips, quotes),
+rap (`R`) and rap golden (`G`); the stack only writes normal notes.
+`note_type_editor.py` is a desktop app (Tk): you step through the lyrics
+lines with the keyboard, pick a single note with Left/Right, set its type
+with a letter key and listen to the line or note (ffplay). Saving writes
+the song's marks file `stack/input/note-types/<Band> - <Title>.tsv`
+(`--marks DIR`); the song file is only read. `apply_note_types.py` finds
+each marked song in the library (`--library DIR`, default `LIBRARY_DIR`) and
+writes a copy with the wanted note types into
+`stack/output/note-types/<library folder>/<song file>` (`--out DIR`); you
+copy it into the library. Without `--apply` nothing is written.
 
-| Key | Does |
-|---|---|
-| Up/Down, k/j | previous/next line (PgUp/PgDn: 10 lines, Home/End) |
-| Space | mark/unmark the line |
-| Enter | mark/unmark the line and go to the next |
-| p | play the line (0.3 s before to 0.3 s after it) |
-| Esc | stop playing |
-| a | autoplay on/off: play each line you move to |
-| v | play the song's `#VOCALS` file instead of `#AUDIO`/`#MP3` (on/off) |
-| Ctrl+S | save the marks file |
-| Ctrl+O | open another song file (asks to save first) |
-| q | quit (asks to save first) |
-
-Saving writes the song's marks file `stack/input/freestyle/<Band> - <Title>.tsv`
-(`--marks DIR`; a `/` in the name becomes `-`). It names the song and holds
-the whole wanted state - the lines that should be freestyle, each with its
-line number and its text, so a song whose lines changed since is noticed:
-
-```
-band<TAB>Pol1z1stens0hn
-title<TAB>Recht Kommt (K.O. in KA)
-1<TAB>„am Landgericht”
-42<TAB>Ich glaube es ist eine traurige Wahrheit dass wir unserem Affenzustand
-```
-
-Opening a song shows the marks of its marks file; without one (or when it
-does not fit the song any more, which the status line says) the lines that
-are already freestyle in the song file are marked. A line only partly
-freestyle shows `(F)`. Lines are numbered from 1 in file order; a line
-ends at a line break, a duet singer switch (P1/P2) or the end of the song.
-
-`apply_freestyle.py` reads every marks file in `stack/input/freestyle/`
-(`--marks DIR`), finds the song in the library by `#ARTIST` and `#TITLE`
-(`--library DIR`, default `LIBRARY_DIR` from the environment or
-`stack/.env`; the folder `<Band> - <Title>` first, then the whole library)
-and writes a copy with every note of the marked lines `F` and every other
-`F` note back to `:` into `stack/output/freestyle/<library folder>/<song
-file>` (`--out DIR`). Only the note type character changes - encoding, BOM
-and line endings stay. A golden or rap note that was made `F` comes back
-as normal. Only changed songs are written; copy them into the library.
-Left out and listed: a marks file whose line number and text do not fit
-the song, a song not in the library, a band and title found in several
-song files. Without `--apply` nothing is written.
+Keys, the marks file layout and what applying does:
+[docs/note-types.md](../docs/note-types.md).
 
 ## Local song files
 
