@@ -212,6 +212,7 @@ Options, settings, verdicts and the tests:
 | Running the stack: commands, progress view, report, output | [docs/running.md](docs/running.md) |
 | The song list: format, optional columns, choosing which jobs run | [docs/new-songs.md](docs/new-songs.md) |
 | Repairing existing songs, `broken.csv`, trusted lyrics | [docs/repairs.md](docs/repairs.md) |
+| Note types by hand (golden, freestyle, rap) | [docs/note-types.md](docs/note-types.md) |
 | USDB, online lyrics, romanization | [docs/song-sources.md](docs/song-sources.md) |
 | Settings, resource budget, AMD GPU | [docs/configuration.md](docs/configuration.md) |
 | YouTube cookies (bot check, age-restricted videos) | [docs/youtube-cookies.md](docs/youtube-cookies.md) |

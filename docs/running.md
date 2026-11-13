@@ -138,13 +138,16 @@ stack/output/
 │                             repaired songs (full copy + fixed txt), by the repair done:
 │                             gap/, sync/, recreated/, lyrics/, media/, cover/
 ├── genres/<song folder>/     song files with the edited #GENRE (genre-edits.md)
+├── note-types/<song folder>/ song files with hand-set note types (apply_note_types.py on the host, note-types.md)
 ├── failed/<new|repair>/      partial output of failed jobs
 └── report.md                 finishing report
 ```
 
 Copy the song folders from `output/new/` and `output/repaired/<repair>/` into your
 UltraStar Deluxe song folder, and the song files from `output/genres/<folder>/`
-into the library folders of the same name.
+into the library folders of the same name. `output/note-types/` is not
+written by the stack but by `utilities/apply_note_types.py` on the host; copy
+its song files the same way ([note-types.md](note-types.md)).
 
 ### Finishing report
 
@@ -208,6 +211,7 @@ stack/
 │   ├── videos/             optional: local song files (audio/video) the song list names
 │   ├── genre-edits.tsv     optional: genre edits (dashboard export, genre-edits.md)
 │   ├── genres/<folder>/    the song files for the genre edits (./factory.sh pull-genres)
+│   ├── note-types/         marks files of the note type editor (host tool, note-types.md)
 │   └── repairs/            broken songs to repair (one folder per song)
 │       └── <song folder>/
 │           └── lyrics.txt  optional: trusted lyrics -> repair "lyrics" mode
@@ -219,7 +223,6 @@ stack/
 ├── work/                   working cache (safe to delete)
 ├── cookies/                optional cookies.txt for YouTube
 ├── reference/              approved songs for the regression check (not in git)
-├── docs/                   this documentation
 ├── usdb_syncer/            git submodule (USDB access)
 └── docker-compose.yml
 ```

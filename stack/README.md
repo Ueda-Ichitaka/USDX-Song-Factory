@@ -14,6 +14,7 @@ New here? Start with the quickstart in the [main README](../README.md).
 | Every command and setting (`factory.sh` and the stack), man-page style | [docs/stack-manual.md](../docs/stack-manual.md) |
 | Running the stack: commands, progress view, report, output, folder layout | [docs/running.md](../docs/running.md) |
 | Genre edits from the dashboard | [docs/genre-edits.md](../docs/genre-edits.md) |
+| Note types by hand (golden, freestyle, rap): the editor and applying | [docs/note-types.md](../docs/note-types.md) |
 | The song list: format, optional columns, choosing which jobs run | [docs/new-songs.md](../docs/new-songs.md) |
 | Repairing existing songs, `broken.csv`, trusted lyrics | [docs/repairs.md](../docs/repairs.md) |
 | USDB, online lyrics, romanization, end-card filter | [docs/song-sources.md](../docs/song-sources.md) |

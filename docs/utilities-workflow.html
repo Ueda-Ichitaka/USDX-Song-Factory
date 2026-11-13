@@ -2,9 +2,9 @@
 <!--
   About me: a picture of the library utilities (run_library_check.sh,
   import_broken_songs.py, fill_lyrics_links.py, copy_reported_songs.py,
-  import_local_media.py) - what each reads and writes, how they fill the
-  stack input and how repaired songs get back into the library - for opening
-  in a browser. The genre tools have genre-workflow.html, the details live in
+  import_local_media.py, note_type_editor.py, apply_note_types.py) - what
+  each reads and writes, how they fill the stack input and how repaired and
+  re-typed songs get back into the library - for opening in a browser. The genre tools have genre-workflow.html, the details live in
   utilities/README.md. The numbers are from the library check report of 2026-10-16
   and the stack input of 2026-11-02.
 -->
@@ -168,7 +168,7 @@ td:first-child { white-space: nowrap; font-weight: 500; }
   <header>
     <span class="eyebrow">USDX-Song-Factory · utilities/</span>
     <h1>Library utilities workflow</h1>
-    <p>Host tools that find broken songs in the UltraStar library, hand them to the stack for repair, bring dashboard reports and local song files into the stack input, and get the repaired songs back into the library. The genre tools have <a href="genre-workflow.html">their own overview</a>.</p>
+    <p>Host tools that find broken songs in the UltraStar library, hand them to the stack for repair, bring dashboard reports and local song files into the stack input, set note types (golden, freestyle, rap) by hand, and get the changed songs back into the library. The genre tools have <a href="genre-workflow.html">their own overview</a>.</p>
   </header>
 
   <div class="stats" aria-label="Library check report of 2026-10-16 and the current stack input">
@@ -180,7 +180,7 @@ td:first-child { white-space: nowrap; font-weight: 500; }
 
   <figure>
     <div class="scroll">
-      <svg viewBox="0 0 1290 600" style="min-width:1080px" role="img" aria-label="Three ways into the stack input. Library check: run_library_check.sh scans the song library and writes results.jsonl and library-check.txt; import_broken_songs.py copies the broken songs into input/repairs and adds broken.csv rows, fill_lyrics_links.py finds lyrics links. Dashboard reports: copy_reported_songs.py copies the reported songs from the library and merges broken.csv. Local song files: import_local_media.py copies the files the song list names into input/videos and rewrites the list. The stack repairs the songs into output/repaired; you copy them back into the library.">
+      <svg viewBox="0 0 1290 790" style="min-width:1080px" role="img" aria-label="Four lanes. Library check: run_library_check.sh scans the song library and writes results.jsonl and library-check.txt; import_broken_songs.py copies the broken songs into input/repairs and adds broken.csv rows, fill_lyrics_links.py finds lyrics links. Dashboard reports: copy_reported_songs.py copies the reported songs from the library and merges broken.csv. Local song files: import_local_media.py copies the files the song list names into input/videos and rewrites the list. The stack repairs the songs into output/repaired; you copy them back into the library. Note types by hand: note_type_editor.py reads a song file from the library, you set the types of lines or single notes and save a marks file into input/note-types; apply_note_types.py writes copies with those types into output/note-types, which you copy into the library.">
         <defs>
           <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
           <marker id="arr-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="ah-w" d="M0 0 L10 5 L0 10 z"/></marker>
@@ -193,6 +193,8 @@ td:first-child { white-space: nowrap; font-weight: 500; }
         <text class="t-lane" x="196" y="34">Library check: find broken songs</text>
         <text class="t-lane" x="196" y="310">Songs reported in the dashboard</text>
         <text class="t-lane" x="196" y="454">Local song files</text>
+        <rect class="lane" x="180" y="598" width="630" height="172" rx="6"/>
+        <text class="t-lane" x="196" y="618">Note types by hand</text>
 
         <!-- library (read) -->
         <path class="lib" d="M20 90 V380 A65 11 0 0 0 150 380 V90"/>
@@ -262,14 +264,39 @@ td:first-child { white-space: nowrap; font-weight: 500; }
         <path class="flow" d="M580 514 H828" marker-end="url(#arr)"/>
         <text class="t-label" x="600" y="507">files + rewritten list</text>
 
+        <!-- lane D -->
+        <path class="flow" d="M85 391 V668 H188" marker-end="url(#arr)"/>
+        <text class="t-label" x="94" y="660">a song file</text>
+        <rect class="tool" x="190" y="640" width="170" height="56" rx="4"/>
+        <text class="t-tool" x="275" y="662" text-anchor="middle">note_type_editor.py</text>
+        <text class="t-small" x="275" y="680" text-anchor="middle">desktop app (Tk), ffplay</text>
+        <rect class="human" x="190" y="712" width="170" height="44" rx="5"/>
+        <text class="t-human" x="275" y="730" text-anchor="middle">you set the types</text>
+        <text class="t-small" x="275" y="747" text-anchor="middle">lines or single notes</text>
+        <path class="flow" d="M275 712 V698" marker-end="url(#arr)"/>
+        <path class="flow" d="M360 668 H828" marker-end="url(#arr)"/>
+        <text class="t-label" x="380" y="661">marks file (Ctrl+S): the wanted types</text>
+        <path class="flow" d="M980 668 H1013" marker-end="url(#arr)"/>
+        <rect class="tool" x="1015" y="640" width="140" height="56" rx="4"/>
+        <text class="t-tool" x="1085" y="662" text-anchor="middle" style="font-size:11.5px">apply_note_types.py</text>
+        <text class="t-small" x="1085" y="680" text-anchor="middle">host, not the stack</text>
+        <rect class="file" x="1015" y="722" width="140" height="44" rx="3"/>
+        <text class="t-file" x="1085" y="740" text-anchor="middle">output/note-types/</text>
+        <text class="t-small" x="1085" y="757" text-anchor="middle">&lt;folder&gt;/&lt;song file&gt;</text>
+        <path class="flow" d="M1085 696 V720" marker-end="url(#arr)"/>
+        <path class="flow-w" d="M1155 744 H1230 V574" marker-end="url(#arr-w)"/>
+        <text class="t-write" x="1163" y="762">you copy back</text>
+
         <!-- stack input -->
-        <rect class="file-key" x="830" y="60" width="150" height="500" rx="4"/>
+        <rect class="file-key" x="830" y="60" width="150" height="650" rx="4"/>
         <text class="t-file" x="905" y="86" text-anchor="middle">stack/input/</text>
         <text class="t-small" x="844" y="120">repairs/&lt;folder&gt;/</text>
         <text class="t-small" x="844" y="140">broken.csv</text>
         <text class="t-small" x="844" y="160">songtexts/</text>
         <text class="t-small" x="844" y="514">videos/&lt;file&gt;</text>
         <text class="t-small" x="844" y="534">song-requests.csv</text>
+        <text class="t-small" x="844" y="662">note-types/</text>
+        <text class="t-small" x="844" y="680">&lt;Band - Title&gt;.tsv</text>
 
         <!-- stack and back -->
         <path class="flow" d="M980 290 H1013" marker-end="url(#arr)"/>
@@ -299,7 +326,7 @@ td:first-child { white-space: nowrap; font-weight: 500; }
       <span><i class="sw sw-human"></i>your step</span>
       <span><i class="sw sw-write"></i>changes the library</span>
     </div>
-    <figcaption>No utility writes to the song library: the check reads it through a read-only mount, the import tools copy song folders out of it. The library changes only when you copy the repaired songs back. All commands run from the repository root.</figcaption>
+    <figcaption>No utility writes to the song library: the check reads it through a read-only mount, the import tools copy song folders out of it. The library changes only when you copy the repaired or re-typed songs back. <code>apply_note_types.py</code> uses the stack's input and output folders but runs on the host, without the stack. All commands run from the repository root.</figcaption>
   </figure>
 
   <section aria-labelledby="tools-h">
@@ -354,8 +381,27 @@ td:first-child { white-space: nowrap; font-weight: 500; }
         </dl>
       </article>
       <article class="sheet">
+        <div class="sheet-head"><h3>note_type_editor.py</h3><span class="pill pill-read">reads a song file</span></div>
+        <p>A desktop app (Tk) to set note types by hand: <code>:</code> normal, <code>*</code> golden, <code>F</code> freestyle (not scored: spoken samples, quotes), <code>R</code> rap, <code>G</code> rap golden.</p>
+        <dl>
+          <dt>Opens</dt><dd>a song file (file picker in <code>LIBRARY_DIR</code>, or the path); the types of its marks file, else the song file's own</dd>
+          <dt>Keys</dt><dd>Up/Down line, Left/Right note; <code>n g f r</code> Shift+R set the type, Space freestyle on/off; <code>p</code> play the line or note (ffplay), <code>v</code> vocals; Ctrl+S save</dd>
+          <dt>Writes</dt><dd>the marks file <code>stack/input/note-types/&lt;Band - Title&gt;.tsv</code>: a row per line not all normal, <code>mixed</code> lines with a row per note</dd>
+        </dl>
+      </article>
+      <article class="sheet">
+        <div class="sheet-head"><h3>apply_note_types.py</h3><span class="pill pill-read">reads library</span></div>
+        <p>Writes the marked note types into copies of the song files.</p>
+        <dl>
+          <dt>Reads</dt><dd>every marks file in <code>stack/input/note-types/</code>; the song by <code>#ARTIST</code> and <code>#TITLE</code> in <code>LIBRARY_DIR</code></dd>
+          <dt>Writes</dt><dd><code>stack/output/note-types/&lt;folder&gt;/&lt;song file&gt;</code>, only songs that change; only the note type characters change (encoding, BOM, line endings stay)</dd>
+          <dt>Lists</dt><dd>marks that no longer fit the song, songs not in the library or found twice</dd>
+          <dt>Safe</dt><dd>dry run unless <code>--apply</code></dd>
+        </dl>
+      </article>
+      <article class="sheet">
         <div class="sheet-head"><h3>Copy back</h3><span class="pill pill-write">writes library</span></div>
-        <p>Not a tool: you copy the repaired song folders from <code>stack/output/repaired/&lt;repair&gt;/</code> into the library.</p>
+        <p>Not a tool: you copy the repaired song folders from <code>stack/output/repaired/&lt;repair&gt;/</code> and the song files from <code>stack/output/note-types/</code> into the library.</p>
         <dl>
           <dt>Dolphin</dt><dd>drop the folders onto the library, "Write Into", "Apply to All", "Overwrite older files": only the fixed song file is newer, the media is skipped</dd>
           <dt>Check</dt><dd>in <code>recreated/</code> a folder can hold a second song file (USDX would list the song twice); <code>language.txt</code> is extra, USDX ignores it</dd>
@@ -382,8 +428,12 @@ python3 utilities/import_broken_songs.py --library /dhuaddan/media/ultrastar/son
         <pre>./factory.sh run --detach --only repairs
 ./factory.sh progress -w</pre>
         <p class="note">The whole stack run is described in <a href="factory-workflow.html">the factory overview</a>.</p></div></li>
+      <li><div><span class="who who-you">Note types</span>
+        <pre>python3 utilities/note_type_editor.py                # mark lines and notes, Ctrl+S
+python3 utilities/apply_note_types.py --apply        # copies into stack/output/note-types/</pre>
+        <p class="note">Any time, independent of the steps above; details in <a href="note-types.md">note-types.md</a>.</p></div></li>
       <li><div><span class="who who-write">Copy back</span>
-        <p>Read <code>stack/output/report.md</code>, then copy the folders of <code>stack/output/repaired/&lt;repair&gt;/</code> into the library (Dolphin: overwrite older files only).</p></div></li>
+        <p>Read <code>stack/output/report.md</code>, then copy the folders of <code>stack/output/repaired/&lt;repair&gt;/</code> into the library (Dolphin: overwrite older files only), and the song files of <code>stack/output/note-types/&lt;folder&gt;/</code> into the library folders of the same name.</p></div></li>
     </ol>
   </section>
 </main>
