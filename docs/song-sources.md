@@ -90,7 +90,12 @@ before trusting the transcription:
      API key. A web lookup that asks Musixmatch, LRCLIB, NetEase, Megalobiz
      and Genius one after another until one has the song.
    - **[Genius](https://genius.com/api-clients)** - only with a
-     `GENIUS_API_KEY` in `stack/.env`; skipped without a key.
+     `GENIUS_API_KEY` in `stack/.env`; skipped without a key. Genius only
+     finds a song under its main artist, so when the artist as given ("Eminem
+     feat. Rihanna", "Mariah Carey & Whitney Houston", "The Black Eyed Peas")
+     finds nothing, the search is repeated with the main artist (the part
+     before `feat.`, `ft.`, `featuring`, `with`, `and`, `x`, `&`, `,`, `+`) and
+     then without a leading "The".
 
 These lookups depend on websites. When a site answers with an error,
 syncedlyrics reports "not found" without an error message (the log only shows

@@ -7,7 +7,9 @@ not compared against other sources, since the CSV author already vetted
 it (see fetch_from_url()). Otherwise (no lyrics_url, or it failed to
 yield anything) queries EVERY configured search source - syncedlyrics
 (aggregates LRCLIB/NetEase/Musixmatch/..., free, no API key) and Genius
-(via lyricsgenius, needs GENIUS_API_KEY) - and keeps the best-scoring
+(via lyricsgenius, needs GENIUS_API_KEY; searched with the artist as given,
+then its main artist - "Eminem" for "Eminem feat. Rihanna" - then that
+without a leading "The", see genius_artist_queries()) - and keeps the best-scoring
 match, rather than stopping at the first source that returns something (a
 resolv.conf-style early-stop was considered, but per-song processing
 already takes minutes for demucs/whisper, so the extra latency of
@@ -224,6 +226,28 @@ def _similarity(a: str, b: str) -> float:
         None, (a or "").lower().strip(), (b or "").lower().strip()).ratio()
 
 
+# where a list of artists is cut to its main artist: "X feat. Y", "X ft. Y",
+# "X featuring Y", "X with Y", "X and Y", "X x Y", "X & Y", "X, Y", "X + Y"
+ARTIST_SPLIT_RE = re.compile(r"\s+(?:feat\.?|ft\.?|featuring|with|and|x)\s+|\s*[&,+]\s*",
+                             re.IGNORECASE)
+
+
+def main_artist(artist: str) -> str:
+    """The first artist of a list of artists ("Eminem feat. Rihanna" ->
+    "Eminem"); a single artist as it is."""
+    return ARTIST_SPLIT_RE.split(artist or "")[0].strip() or (artist or "").strip()
+
+
+def genius_artist_queries(artist: str) -> list:
+    """The artists fetch_genius() searches with, in order and without
+    repeats: the artist as given, its main artist, the main artist without a
+    leading "The". Genius matches the given artist against its own primary
+    artist, so "X feat. Y", "X & Y" and "The X" (Genius: "X") find nothing
+    under the full name."""
+    main = main_artist(artist)
+    return list(dict.fromkeys(a for a in (artist.strip(), main, re.sub(r"(?i)^the\s+", "", main)) if a))
+
+
 def _strip_genius_page_artifacts(lines: list) -> list:
     """Genius' scraped lyrics page text carries two predictable artifacts:
     a leading '<Title> Lyrics' line and a trailing '...Embed'/digit blob
@@ -276,6 +300,9 @@ def fetch_genius(artist: str, title: str, api_key: str):
     Genius returns its OWN matched artist/title, so confidence is scored
     as the average string-similarity between what was asked for and what
     it actually matched - a real signal, unlike syncedlyrics' fixed one.
+    The search runs with each of genius_artist_queries() until one finds
+    the song; the artist similarity is taken against the query that found
+    it (Genius' "Eminem" for the request "Eminem feat. Rihanna").
     """
     if not api_key:
         return None
@@ -291,14 +318,18 @@ def fetch_genius(artist: str, title: str, api_key: str):
         genius.skip_non_songs = True
         genius.retries = 2
 
-        song = genius.search_song(title, artist)
+        song, query = None, artist
+        for query in genius_artist_queries(artist):
+            song = genius.search_song(title, query)
+            if song is not None and song.lyrics:
+                break
         if song is None or not song.lyrics:
             return None
 
         lines = _strip_genius_page_artifacts(parse_plain(song.lyrics))
         if not lines:
             return None
-        confidence = (_similarity(artist, getattr(song, "artist", ""))
+        confidence = (_similarity(query, getattr(song, "artist", ""))
                      + _similarity(title, getattr(song, "title", ""))) / 2
         return {"source": "genius", "lines": lines, "confidence": confidence}
     except Exception as exc:  # noqa: BLE001

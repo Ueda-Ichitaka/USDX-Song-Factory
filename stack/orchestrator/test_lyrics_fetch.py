@@ -308,6 +308,65 @@ fake_lyricsgenius.Genius = FakeGeniusClientNoResult
 check("fetch_genius returns None when the song isn't found",
       lf.fetch_genius("Artist", "Title", "fake-api-key") is None)
 
+# Genius matches the artist it is given against its own primary artist, so
+# "X feat. Y", "X & Y" and "The X" find nothing (15 of 48 duet corpus songs
+# found that way, 38 with the retries - knowledge/07-DUETS.md, phase 0)
+check("main_artist: the part before feat./ft./featuring/with/and/x/&/,/+",
+      [lf.main_artist(a) for a in ("Eminem feat. Rihanna", "Mariah Carey & Whitney Houston",
+                                  "Michael Jackson with Akon", "Taylor Swift and Ed Sheeran",
+                                  "B.o.B ft. Taylor Swift", "ROSÉ & Bruno Mars", "AC/DC", "Lil Nas X")]
+      == ["Eminem", "Mariah Carey", "Michael Jackson", "Taylor Swift", "B.o.B", "ROSÉ", "AC/DC", "Lil Nas X"])
+check("genius_artist_queries: the artist, the main artist, without a leading 'The' (no repeats)",
+      lf.genius_artist_queries("The Black Eyed Peas feat. Shakira")
+      == ["The Black Eyed Peas feat. Shakira", "The Black Eyed Peas", "Black Eyed Peas"]
+      and lf.genius_artist_queries("Eminem feat. Rihanna") == ["Eminem feat. Rihanna", "Eminem"]
+      and lf.genius_artist_queries("Faun") == ["Faun"])
+
+genius_queries = []
+
+
+class FakeGeniusClientMainArtist(FakeGeniusClient):
+    """Finds the song only under its main artist, as Genius does."""
+
+    def search_song(self, title, artist):
+        genius_queries.append(artist)
+        if artist in ("Eminem", "Black Eyed Peas"):
+            song = FakeSong()
+            song.artist = artist
+            return song
+        return None
+
+
+fake_lyricsgenius.Genius = FakeGeniusClientMainArtist
+genius_queries.clear()
+retried = lf.fetch_genius("Eminem feat. Rihanna", "Title", "fake-api-key")
+check(f"fetch_genius: nothing under the full artist -> found under the main artist "
+      f"(queries {genius_queries})",
+      retried is not None and genius_queries == ["Eminem feat. Rihanna", "Eminem"])
+check(f"fetch_genius: the confidence compares Genius' artist with the query that found it "
+      f"(got {retried and retried['confidence']})",
+      retried is not None and retried["confidence"] > 0.95)
+genius_queries.clear()
+the_band = lf.fetch_genius("The Black Eyed Peas", "Title", "fake-api-key")
+check(f"fetch_genius: a leading 'The' dropped as the last try (queries {genius_queries})",
+      the_band is not None and genius_queries == ["The Black Eyed Peas", "Black Eyed Peas"])
+genius_queries.clear()
+check("fetch_genius: no song under any query -> None after every query once",
+      lf.fetch_genius("The Nobody feat. Someone", "Title", "fake-api-key") is None
+      and genius_queries == ["The Nobody feat. Someone", "The Nobody", "Nobody"])
+
+
+class FakeGeniusClientFullArtist(FakeGeniusClientMainArtist):
+    def search_song(self, title, artist):
+        genius_queries.append(artist)
+        return FakeSong()
+
+
+fake_lyricsgenius.Genius = FakeGeniusClientFullArtist
+genius_queries.clear()
+lf.fetch_genius("Artist & Friend", "Title", "fake-api-key")
+check("fetch_genius: found under the full artist -> no retry", genius_queries == ["Artist & Friend"])
+
 del sys.modules["lyricsgenius"]
 
 # --------------------------------------------------------------------------
