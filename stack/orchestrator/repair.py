@@ -110,6 +110,7 @@ from modules.console_colors import (  # noqa: E402
     red_highlighted,
 )
 from song_header import FORMAT_VERSION, is_duet, shift_play_range, versioned_header  # noqa: E402
+from duet import split_singer_mark  # noqa: E402
 
 NOTE_LINE_TYPES = (":", "F", "R", "G", "*")
 # type beat dur pitch [1 separator space] raw-word-field (verbatim)
@@ -1967,14 +1968,23 @@ def parse_lyrics_lines(lines_data: list) -> list:
     dropping empty lines / lines with no words. A token without any letter
     or digit (a standalone "-", "\u2013", quote mark, "~") is punctuation,
     not a sung word - it is dropped, and "text" is rebuilt from the kept
-    words."""
+    words. For duets: an admin's mark at the start of a line ("P1:", "P2:",
+    "P1+P2:", duet.split_singer_mark()) is removed from the text and kept as
+    "singer" (P1, P2 or both); the singer names a Genius section header
+    gives (lyrics_fetch.py) are kept as "singers". A line with neither has
+    no such key."""
     units = []
     for entry in lines_data:
-        words = [w for w in (entry.get("text") or "").split()
-                 if any(ch.isalnum() for ch in w)]
+        singer, text = split_singer_mark(entry.get("text") or "")
+        words = [w for w in text.split() if any(ch.isalnum() for ch in w)]
         if not words:
             continue
-        units.append({"text": " ".join(words), "words": words, "start": entry.get("start")})
+        unit = {"text": " ".join(words), "words": words, "start": entry.get("start")}
+        if singer:
+            unit["singer"] = singer
+        if entry.get("singers"):
+            unit["singers"] = list(entry["singers"])
+        units.append(unit)
     return units
 
 

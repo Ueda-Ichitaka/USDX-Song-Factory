@@ -155,6 +155,15 @@ check("decode: UTF-8 (a BOM stays in the text for parse_duet)",
       duet.decode("\ufeff#A:ü".encode("utf-8")) == ("\ufeff#A:ü", "utf-8"))
 check("decode: cp1252 when it is not UTF-8", duet.decode("#A:ü".encode("cp1252")) == ("#A:ü", "cp1252"))
 
+# --- 2.1 admin marks in lyrics lines
+check("split_singer_mark: P1:, P2:, P1+P2: (any case, spaces, P2+P1 too) -> singer and the sung text",
+      [duet.split_singer_mark(t) for t in ("P1: Hello there", "p2:Hi", "P1+P2: Together", " P2 + P1 : Both of us",
+                                           "P1 :x")]
+      == [("P1", "Hello there"), ("P2", "Hi"), ("both", "Together"), ("both", "Both of us"), ("P1", "x")])
+check("split_singer_mark: no mark -> None and the text unchanged",
+      [duet.split_singer_mark(t) for t in ("Hello", "P1 is my name", "P3: no", "Eminem: yo", "")]
+      == [(None, "Hello"), (None, "P1 is my name"), (None, "P3: no"), (None, "Eminem: yo"), (None, "")])
+
 # --- 1.5 names
 check("split_artist: two names from 'feat.', '&', 'and', 'with', 'x', ','",
       [duet.split_artist(a) for a in ("Eminem feat. Rihanna", "Meat Loaf & Cher", "Taylor Swift and Ed Sheeran",

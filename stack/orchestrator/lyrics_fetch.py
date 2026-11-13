@@ -248,6 +248,91 @@ def genius_artist_queries(artist: str) -> list:
     return list(dict.fromkeys(a for a in (artist.strip(), main, re.sub(r"(?i)^the\s+", "", main)) if a))
 
 
+# Genius section headers: "[Verse 1: Eminem]", "[Chorus: Rihanna & Eminem]",
+# "[Chorus: A, B, Both]", "[Intro]", or a bare name "[Eminem]"
+SECTION_WORDS = {"verse", "chorus", "pre-chorus", "prechorus", "post-chorus", "postchorus",
+                 "bridge", "intro", "outro", "hook", "refrain", "interlude", "skit",
+                 "breakdown", "instrumental", "part", "strophe", "spoken", "drop", "segue",
+                 "coda", "break", "vamp", "rap", "solo", "chant", "ad-libs", "produced",
+                 "zwischenspiel"}
+NAME_SPLIT_RE = re.compile(r"\s*(?:,|&|\+|/|\band\b|\bwith\b|\bfeat\.?|\bft\.?)\s*", re.IGNORECASE)
+HEADER_RE = re.compile(r"\[([^\[\]]*)\]")
+# what lyricsgenius' remove_section_headers removes
+GENIUS_HEADER_RE = re.compile(r"(\[.*?\])*")
+
+
+def header_singers(inner: str) -> list:
+    """The singer names of a section header's text ("Verse 1: Eminem" ->
+    ["Eminem"]); [] for a section without names ("Chorus", "Verse 2"). A
+    "Both" stays in the list (several singers)."""
+    if ":" in inner:
+        part = inner.split(":", 1)[1]
+    else:
+        first = (inner.split() or [""])[0].lower().rstrip("0123456789:")
+        if first in SECTION_WORDS:
+            return []
+        part = inner
+    part = part.replace("(", ",").replace(")", ",")
+    return [n.strip(" .") for n in NAME_SPLIT_RE.split(part) if n.strip(" .")]
+
+
+def join_broken_headers(text: str) -> str:
+    """A section header broken over lines - Genius links singer names, and
+    the scraped text puts each link on a line of its own ("[Chorus:
+    Rihanna," / "Eminem" / "]") - joined back into one line, so it is
+    removed as a whole instead of its pieces becoming sung lines."""
+    out, buf, joined = [], None, 0
+    for line in text.split("\n"):
+        if buf is not None:
+            buf += " " + line.strip()
+            joined += 1
+            if "]" in line or joined >= 6:
+                out.append(re.sub(r"\s+", " ", buf).replace(" ]", "]").replace("[ ", "["))
+                buf = None
+            continue
+        stripped = line.strip()
+        if stripped.startswith("[") and "]" not in stripped:
+            buf, joined = stripped, 0
+            continue
+        out.append(line)
+    if buf is not None:
+        out.append(buf)
+    return "\n".join(out)
+
+
+def genius_clean_text(raw: str) -> str:
+    """Genius lyrics with the section headers removed exactly as
+    lyricsgenius' remove_section_headers does (each "[...]" removed, double
+    newlines folded), after join_broken_headers()."""
+    text = GENIUS_HEADER_RE.sub("", join_broken_headers(raw))
+    return re.sub("\n{2}", "\n", text).strip("\n")
+
+
+def attach_singers(lines: list, raw: str, window: int = 6) -> list:
+    """Adds "singers": [name] to each line (from parse_plain()) that stands
+    under a Genius section header naming exactly one singer; other lines
+    stay as they are. The lines are found in the raw text in order (a line
+    not found within the next `window` text lines - e.g. a repeated section
+    filled in from its first occurrence - gets no singers)."""
+    content, names = [], []
+    for line in join_broken_headers(raw).split("\n"):
+        headers = [h for h in HEADER_RE.findall(line) if not re.match(r"^\d+:\d+", h)]
+        text = LEADING_TIMESTAMPS_RE.sub("", GENIUS_HEADER_RE.sub("", line).strip()).strip()
+        if text:
+            content.append((text, names))
+        if headers:
+            names = header_singers(headers[-1])
+    pos = 0
+    for entry in lines:
+        for k in range(pos, min(len(content), pos + window)):
+            if content[k][0] == entry["text"]:
+                if len(content[k][1]) == 1 and content[k][1][0].lower() != "both":
+                    entry["singers"] = list(content[k][1])
+                pos = k + 1
+                break
+    return lines
+
+
 def _strip_genius_page_artifacts(lines: list) -> list:
     """Genius' scraped lyrics page text carries two predictable artifacts:
     a leading '<Title> Lyrics' line and a trailing '...Embed'/digit blob
@@ -314,7 +399,7 @@ def fetch_genius(artist: str, title: str, api_key: str):
     try:
         genius = lyricsgenius.Genius(api_key)
         genius.verbose = False
-        genius.remove_section_headers = True
+        genius.remove_section_headers = False  # removed here, see genius_clean_text()
         genius.skip_non_songs = True
         genius.retries = 2
 
@@ -326,7 +411,8 @@ def fetch_genius(artist: str, title: str, api_key: str):
         if song is None or not song.lyrics:
             return None
 
-        lines = _strip_genius_page_artifacts(parse_plain(song.lyrics))
+        lines = attach_singers(_strip_genius_page_artifacts(parse_plain(genius_clean_text(song.lyrics))),
+                               song.lyrics)
         if not lines:
             return None
         confidence = (_similarity(query, getattr(song, "artist", ""))
@@ -352,7 +438,7 @@ def _fetch_genius_url(url: str, api_key: str):
         text = genius.lyrics(song_url=url)
         if not text:
             return None
-        lines = _strip_genius_page_artifacts(parse_plain(text))
+        lines = attach_singers(_strip_genius_page_artifacts(parse_plain(join_broken_headers(text))), text)
         if not lines:
             return None
         return {"source": "lyrics_url (genius)", "lines": lines, "confidence": 1.0}

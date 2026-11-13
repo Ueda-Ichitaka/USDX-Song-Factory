@@ -109,6 +109,32 @@ check("parse_lyrics_lines drops a line that is punctuation only",
 check("parse_lyrics_lines keeps words that contain a letter or digit",
       _punct[1]["words"] == ["Rock'n'Roll", "1-2-3"])
 check("parse_lyrics_lines keeps None start", units[1]["start"] is None)
+check("parse_lyrics_lines: a line without singer information has exactly today's keys",
+      units[0] == {"text": "Hello world", "words": ["Hello", "world"], "start": 1.5})
+# duets (knowledge/07-DUETS.md phase 2): an admin's mark P1:/P2:/P1+P2: at
+# the start of a line, and the singer a Genius header names (lyrics_fetch.py)
+_marked = repair.parse_lyrics_lines([
+    {"text": "P1: Just gonna stand there", "start": None},
+    {"text": "p2:And watch me burn", "start": None},
+    {"text": "P1+P2: Together now", "start": 3.0},
+    {"text": "P2:   ", "start": None},
+    {"text": "I can't tell you", "start": None, "singers": ["Eminem"]},
+    {"text": "P2: marked wins", "start": None, "singers": ["Eminem"]},
+])
+check(f"parse_lyrics_lines: the mark gives the singer and leaves the sung text (got {_marked})",
+      [(u.get("singer"), u["text"]) for u in _marked]
+      == [("P1", "Just gonna stand there"), ("P2", "And watch me burn"), ("both", "Together now"),
+          (None, "I can't tell you"), ("P2", "marked wins")])
+check("parse_lyrics_lines: a mark with no words is dropped like an empty line", len(_marked) == 5)
+check("parse_lyrics_lines: the Genius singers are kept", _marked[3]["singers"] == ["Eminem"]
+      and "singer" not in _marked[3])
+_marked_plain = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8")
+_marked_plain.write("P1: First\nP2: Second\n")
+_marked_plain.close()
+check("load_lyrics_file + parse_lyrics_lines: marks in a plain lyrics.txt",
+      [u.get("singer") for u in repair.parse_lyrics_lines(repair.load_lyrics_file(_marked_plain.name)[1])]
+      == ["P1", "P2"])
+os.unlink(_marked_plain.name)
 
 # --------------------------------------------------------------------------
 # seed_lyric_windows: three priority tiers

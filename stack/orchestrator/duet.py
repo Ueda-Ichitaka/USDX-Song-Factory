@@ -29,7 +29,9 @@ module
   (also a break after the last line of a part and a marker repeated inside
   a part), so an unchanged file is written back byte for byte (BOM and line
   endings included);
-- splits an artist into singer names (split_artist(), duet_names()).
+- splits an artist into singer names (split_artist(), duet_names());
+- reads an admin's singer mark at the start of a lyrics line ("P1:", "P2:",
+  "P1+P2:", split_singer_mark()).
 
 decode() gives a song file's text and encoding (UTF-8, cp1252 for old
 files), so it can be written back in the same encoding.
@@ -49,6 +51,8 @@ OVERLAP_SHARE = 0.25
 NOTE_RE = re.compile(r"^\s*([:FRG*])[ \t]+(-?[0-9.,]+)[ \t]+(-?[0-9.,]+)[ \t]+(-?[0-9.,]+)[ \t]?(.*)$")
 MARKER_RE = re.compile(r"^\s*P\s*([12])\s*$")
 NAME_TAGS = {"P": ("P1", "P2"), "DUETSINGERP": ("DUETSINGERP1", "DUETSINGERP2")}
+# an admin's singer mark at the start of a lyrics line: "P1:", "P2:", "P1+P2:"
+SINGER_MARK_RE = re.compile(r"^\s*(P\s*1\s*\+\s*P\s*2|P\s*2\s*\+\s*P\s*1|P\s*1|P\s*2)\s*:\s*", re.IGNORECASE)
 
 
 class DuetError(ValueError):
@@ -326,6 +330,17 @@ def write_duet(d: DuetFile, names: dict = None) -> str:
     rows += d.tail
     text = d.newline.join(rows) + (d.newline if d.final_newline else "")
     return ("﻿" if d.bom else "") + text
+
+
+def split_singer_mark(text: str) -> tuple:
+    """(singer, sung text) of a lyrics line with an admin's mark: "P1:" ->
+    "P1", "P2:" -> "P2", "P1+P2:" (or "P2+P1:") -> "both"; (None, text)
+    without a mark."""
+    m = SINGER_MARK_RE.match(text or "")
+    if not m:
+        return None, text
+    mark = re.sub(r"\s", "", m.group(1)).upper()
+    return ("both" if "+" in mark else mark), text[m.end():]
 
 
 def split_artist(artist: str) -> list:

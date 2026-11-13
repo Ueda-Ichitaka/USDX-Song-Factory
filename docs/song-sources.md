@@ -108,7 +108,10 @@ GitHub page (`User-Agent`), as lrclib.net requires.
 
 Section markers from Genius (`[Chorus]`, `[Verse 1]`, also with a repeat count
 such as `[Chorus] [x2]`) are removed; a bare repeated tag is replaced by that
-section's text. A line entirely in round brackets, such as `(With a big heart
+section's text. A marker Genius breaks over several lines (it does so when it
+links singer names, `[Chorus: Rihanna,` / `Eminem` / `]`) is removed as a
+whole, so its pieces never become sung lines. When a marker names exactly one
+singer (`[Verse 1: Eminem]`), its lines remember that singer for duets. A line entirely in round brackets, such as `(With a big heart
 for the living room)`, is a backing voice sung at the same time as the lead
 (a canon, the second voice of a duet, a choir call) and is left out; brackets
 inside a line, as in `Oh (oh) my love`, stay. A `lyrics.txt` you put in the

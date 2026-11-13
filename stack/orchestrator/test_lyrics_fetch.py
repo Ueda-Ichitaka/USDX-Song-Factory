@@ -367,6 +367,85 @@ genius_queries.clear()
 lf.fetch_genius("Artist & Friend", "Title", "fake-api-key")
 check("fetch_genius: found under the full artist -> no retry", genius_queries == ["Artist & Friend"])
 
+# --------------------------------------------------------------------------
+# Genius section headers: the singer of a line (duets, knowledge/07-DUETS.md
+# phase 2) - only a header naming exactly one singer counts
+# --------------------------------------------------------------------------
+
+check("header_singers: the names after the colon",
+      lf.header_singers("Verse 1: Eminem") == ["Eminem"]
+      and lf.header_singers("Chorus: Rihanna & Eminem") == ["Rihanna", "Eminem"]
+      and lf.header_singers("Chorus: Per Gessle, Marie Fredriksson, Both") == ["Per Gessle", "Marie Fredriksson", "Both"]
+      and lf.header_singers("Bridge: Marie Fredriksson and Per Gessle") == ["Marie Fredriksson", "Per Gessle"]
+      and lf.header_singers("Chorus: Rihanna (Eminem)") == ["Rihanna", "Eminem"])
+check("header_singers: a section without names -> none; a bare name -> that name",
+      lf.header_singers("Chorus") == [] and lf.header_singers("Verse 2") == []
+      and lf.header_singers("Pre-Chorus") == [] and lf.header_singers("Eminem") == ["Eminem"])
+
+GENIUS_RAW = ("[Chorus: Rihanna]\n"
+              "Just gonna stand there\n"
+              "And watch me burn\n"
+              "\n"
+              "[Verse 1: Eminem]\n"
+              "I can't tell you what it really is\n"
+              "\n"
+              "[Bridge: Eminem & Rihanna]\n"
+              "Together now\n"
+              "\n"
+              "[Chorus: Rihanna,\n"
+              "Eminem\n"
+              "]\n"
+              "Just gonna stand there\n"
+              "\n"
+              "[Outro]\n"
+              "So long\n"
+              "12Embed")
+check("genius_clean_text: the headers removed exactly like lyricsgenius' remove_section_headers",
+      lf.genius_clean_text("A Lyrics[Chorus: X]\nline one\n\n[Verse]\nline two\n\n\n[Outro: Y]\nlast")
+      == "A Lyrics\nline one\n\nline two\n\nlast")
+cleaned = lf.genius_clean_text(GENIUS_RAW)
+check(f"genius_clean_text: a header broken over lines (linked singer names) is removed as a whole, "
+      f"its pieces do not become sung lines (got {cleaned!r})",
+      "[" not in cleaned and "]" not in cleaned and "\nEminem\n" not in cleaned)
+lines = lf.attach_singers(lf._strip_genius_page_artifacts(lf.parse_plain(cleaned)), GENIUS_RAW)
+check(f"attach_singers: the text lines as before (got {[l['text'] for l in lines]})",
+      [l["text"] for l in lines] == ["Just gonna stand there", "And watch me burn",
+                                     "I can't tell you what it really is", "Together now",
+                                     "Just gonna stand there", "So long"])
+check(f"attach_singers: 'singers' only under a header naming one singer (got {[l.get('singers') for l in lines]})",
+      [l.get("singers") for l in lines] == [["Rihanna"], ["Rihanna"], ["Eminem"], None, None, None])
+check("attach_singers: lines without a one-singer header keep exactly today's keys",
+      lines[3] == {"text": "Together now", "start": None})
+
+
+class FakeHeaderSong(FakeSong):
+    lyrics = GENIUS_RAW
+    artist = "Eminem"
+    title = "Love The Way You Lie"
+
+
+class FakeGeniusClientHeaders(FakeGeniusClient):
+    settings = []
+
+    def search_song(self, title, artist):
+        FakeGeniusClientHeaders.settings.append(self.remove_section_headers)
+        return FakeHeaderSong()
+
+    def lyrics(self, song_url=None):
+        return GENIUS_RAW
+
+
+fake_lyricsgenius.Genius = FakeGeniusClientHeaders
+searched = lf.fetch_genius("Eminem", "Love The Way You Lie", "fake-api-key")
+check("fetch_genius: asks Genius with the headers kept (they are removed here)",
+      FakeGeniusClientHeaders.settings == [False])
+check(f"fetch_genius: lines with the singers of one-singer headers (got {searched and searched['lines']})",
+      searched is not None and [l.get("singers") for l in searched["lines"]]
+      == [["Rihanna"], ["Rihanna"], ["Eminem"], None, None, None])
+by_url = lf.fetch_from_url("https://genius.com/Eminem-love-the-way-you-lie-lyrics", "fake-api-key")
+check(f"genius url: the same lines and singers (got {by_url and by_url['lines']})",
+      by_url is not None and by_url["lines"] == searched["lines"])
+
 del sys.modules["lyricsgenius"]
 
 # --------------------------------------------------------------------------
