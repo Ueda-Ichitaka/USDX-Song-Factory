@@ -20,7 +20,12 @@ Singer names (song_names()): the song list / broken report columns
 singer_p1/singer_p2, else the two names the Genius headers use most, else
 the artist split into exactly two (duet.duet_names()), else "P1"/"P2". P1 is
 the first to sing (the parts are swapped if needed) - unless singer_p1
-names P1 or the admin marked lines (then P1 is what the admin said).
+names P1 or the admin marked lines (then P1 is what the admin said). Names
+are only written when something ties a name to a voice: the columns, or a
+line whose Genius header names its singer; otherwise (the voice or marks
+alone - marks say which lines are P1, not who P1 is) the parts are named
+"P1"/"P2" (user decision 2026-11-14: an artist name on the wrong voice is
+worse than none).
 
 The summary says how many lines each source assigned, how far apart the two
 voice groups are (separation) and whether the song is unsure: most lines
@@ -231,6 +236,11 @@ def assign(units: list, vectors: list, singer_p1: str = "", singer_p2: str = "",
             swap = {"P1": "P2", "P2": "P1", "both": "both"}
             out = [{"singer": swap[r["singer"]], "source": r["source"]} for r in out]
             first, second = second, first
+
+    # a name belongs to a voice only through the song list's names or a Genius
+    # header naming the singer of a line; else the parts are just P1 / P2
+    if not (singer_p1 or singer_p2) and not any(genius):
+        first, second, names_source = "P1", "P2", "default"
 
     sources = Counter(r["source"] for r in out)
     voice_share = sources["voice"] / len(out) if out else 0.0

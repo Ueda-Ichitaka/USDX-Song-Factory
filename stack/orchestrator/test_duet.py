@@ -175,6 +175,16 @@ check("duet_names: exactly two names from the artist, else none",
       duet.duet_names("Eminem feat. Rihanna") == ("Eminem", "Rihanna")
       and duet.duet_names("AC/DC") is None and duet.duet_names("Simon & Garfunkel feat. X") is None)
 
+# --- the name tag form of a header, the mark of a lyrics line (duet lyrics mode)
+check("name_form: #P1/#P2, the older #DUETSINGERP form, or none",
+      duet.name_form(["#TITLE:x", "#P2:B"]) == "P"
+      and duet.name_form(["#DUETSINGERP1:A", "#DUETSINGERP2:B"]) == "DUETSINGERP"
+      and duet.name_form(["#TITLE:x", "#ARTIST:P1"]) is None)
+check("singer_mark: the lyrics mark of a singer, read back by split_singer_mark()",
+      [duet.singer_mark(s) for s in ("P1", "P2", "both")] == ["P1: ", "P2: ", "P1+P2: "]
+      and all(duet.split_singer_mark(duet.singer_mark(s) + "Hello you") == (s, "Hello you")
+              for s in ("P1", "P2", "both")))
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")

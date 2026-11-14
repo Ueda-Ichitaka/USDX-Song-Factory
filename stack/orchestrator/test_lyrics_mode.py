@@ -1477,6 +1477,237 @@ for _flag in (True, False):
         check(f"main: without --fill-from-input nothing is filled (got {_main_calls.get('fill_transcript')})",
               _main_calls.get("fill_transcript") is None)
 
+# --------------------------------------------------------------------------
+# duet lyrics mode (knowledge/07-DUETS.md phase 4)
+# --------------------------------------------------------------------------
+
+import contextlib  # noqa: E402
+import io  # noqa: E402
+
+import duet  # noqa: E402
+
+
+class _DuetTxt:
+    path = "song.txt"
+    real_bpm = 60.0
+    lines = [{"raw": "#TITLE:Song"}, {"raw": "#ARTIST:A & B"}, {"raw": "#BPM:15"}, {"raw": "#GAP:0"}]
+
+
+_DUET_MELODY = [5, 7, 9, 7, 5, 4, 5, 7, 9, 11, 12, 11, 9, 14, 9, 7, 5, 4, 2, 0, 0, 0]
+# a plain line, a line too long on screen (split in three), a held syllable
+# that changes pitch (a ~ note), a line after the end of the audio (dropped)
+_DUET_UNITS = [
+    [("Hel", 1.0, 1.4), ("lo ", 1.5, 2.0), ("world ", 2.1, 2.9)],
+    [(f"longword{i} ", 4.0 + i * 0.5, 4.4 + i * 0.5) for i in range(14)],
+    [("held ", 12.0, 14.0)],
+    [("late ", 19.0, 19.5), ("tail ", 19.6, 21.0)],
+]
+_LONG_1 = "".join(f": {3 + i} 1 {p} longword{i} \n" for i, p in enumerate([5, 5, 4, 4, 5, 5]))
+_LONG_2 = "".join(f": {9 + i} 1 {p} longword{6 + i} \n" for i, p in enumerate([7, 7, 9, 9, 11, 11]))
+_LONG_3 = ": 15 1 12 longword12 \n: 16 1 12 longword13 \n"
+_HELLO = ": 0 1 7 Hel\n: 1 1 7 lo \n: 2 1 9 world \n"
+_HELD = ": 17 1 9 held\n: 18 1 14 ~\n"
+_HEAD = "#VERSION:1.2.0\n#TITLE:Song\n#ARTIST:A & B\n#BPM:15\n#GAP:1000\n"
+# write_lyrics_result()'s output for this input as it was before the duet
+# writer shared its note building (the solo song must stay byte for byte)
+_SOLO_GOLDEN = (_HEAD + _HELLO + "- 3\n" + _LONG_1 + "- 9\n" + _LONG_2 + "- 15\n" + _LONG_3
+                + "- 17\n" + _HELD + "E\n")
+_SOLO_GOLDEN_LYRICS = ("Hello world\nlongword0 longword1 longword2 longword3 longword4 longword5\n"
+                       "longword6 longword7 longword8 longword9 longword10 longword11\n"
+                       "longword12 longword13\nheld\nlate tail\n")
+
+
+def _write_with(fn, *args, **kw):
+    saved = repair.get_pitch_with_file
+    try:
+        repair.get_pitch_with_file = lambda path: _FakePitched(_DUET_MELODY, set())
+        out_dir = tempfile.mkdtemp()
+        path = fn(_DuetTxt(), tempfile.mkdtemp(), out_dir, *args, **kw)
+    finally:
+        repair.get_pitch_with_file = saved
+    return path, out_dir
+
+
+_solo_path, _ = _write_with(repair.write_lyrics_result, _DUET_UNITS, "/p.wav", audio_dur=20.0)
+check("write_lyrics_result: the solo song is written byte for byte as before",
+      open(_solo_path, encoding="utf-8").read() == _SOLO_GOLDEN)
+check("write_lyrics_result: the solo lyrics.txt is written as before",
+      open(os.path.join(os.path.dirname(_solo_path), "lyrics.txt"), encoding="utf-8").read()
+      == _SOLO_GOLDEN_LYRICS)
+
+_duet_path, _duet_out = _write_with(
+    repair.write_duet_lyrics_result, _DUET_UNITS, ["P1", "P2", "both", "P2"],
+    ("Rihanna", "Eminem"), "/p.wav", audio_dur=20.0)
+_duet_text = open(_duet_path, encoding="utf-8").read() if _duet_path else ""
+_DUET_EXPECTED = (_HEAD + "#P1:Rihanna\n#P2:Eminem\n"
+                  + "P1\n" + _HELLO + "- 3\n" + _HELD
+                  + "P2\n" + _LONG_1 + "- 9\n" + _LONG_2 + "- 15\n" + _LONG_3 + "- 17\n" + _HELD
+                  + "E\n")
+check(f"write_duet_lyrics_result: the solo notes, each line in its singer's part, a shared "
+      f"line in both, names in #P1/#P2 (got {_duet_text!r})", _duet_text == _DUET_EXPECTED)
+_duet_read = duet.parse_duet(_duet_text) if _duet_text else None
+check("write_duet_lyrics_result: the duet core reads the shared line as one line of both",
+      _duet_read is not None and [sorted(l.singers) for l in _duet_read.lines]
+      == [["P1"], ["P2"], ["P2"], ["P2"], ["P1", "P2"]])
+check("write_duet_lyrics_result: lyrics.txt carries the singer marks (a later repair keeps them)",
+      _duet_path is not None and open(os.path.join(os.path.dirname(_duet_path), "lyrics.txt"),
+                                      encoding="utf-8").read()
+      == ("P1: Hello world\nP2: longword0 longword1 longword2 longword3 longword4 longword5\n"
+          "P2: longword6 longword7 longword8 longword9 longword10 longword11\n"
+          "P2: longword12 longword13\nP1+P2: held\nP2: late tail\n"))
+
+_one_out = io.StringIO()
+with contextlib.redirect_stdout(_one_out):
+    _one_path, _one_dir = _write_with(
+        repair.write_duet_lyrics_result, _DUET_UNITS, ["P1", "P1", "P1", "P2"],
+        ("Rihanna", "Eminem"), "/p.wav", audio_dur=20.0)
+check(f"write_duet_lyrics_result: every sung line with one singer -> fails with a reason, "
+      f"nothing written (got {_one_path}, {os.listdir(_one_dir)})",
+      _one_path is None and os.listdir(_one_dir) == []
+      and "every line went to one singer" in _one_out.getvalue())
+
+# repair_txt_with_lyrics(duet=True): the alignment as for a solo song, then the
+# singer assignment on the line times, then the duet writer
+_dw = {}
+_saved_duet = {n: getattr(repair, n) for n in (
+    "locate_audio", "prepare_processing_audio", "get_silence_sections", "load_audio_16k",
+    "resolve_language", "load_aligner", "align_units_globally", "refine_global_alignment",
+    "build_syllables_from_lyric_units", "write_lyrics_result", "write_duet_lyrics_result")}
+_saved_embed, _saved_assign = repair.duet_assign.embed_lines, repair.duet_assign.assign
+
+
+def _duet_flow(lines, **kw):
+    _dw.clear()
+
+    def fake_embed(audio16k, spans, device="cpu"):
+        _dw["embed"] = (len(audio16k), spans, device)
+        return [[1.0, 0.0]] * len(spans)
+
+    def fake_assign(units, vectors, singer_p1="", singer_p2="", artist=""):
+        _dw["assign"] = ([(u.get("singer"), u["start"], u["end"]) for u in units], vectors,
+                         singer_p1, singer_p2, artist)
+        return ([{"singer": "P1", "source": "voice"}, {"singer": "P2", "source": "marks"}],
+                {"names": ("Rihanna", "Eminem"), "names_source": "genius",
+                 "sources": {"marks": 1, "genius": 0, "voice": 1}, "separation": 2.5, "unsure": False})
+
+    def fake_duet_write(txt, song_dir, out_dir, per_unit, singers, names, processing_audio,
+                        audio_dur=None, traits=()):
+        _dw["write"] = (per_unit, singers, names, processing_audio, audio_dur, list(traits))
+        return "/out/duet.txt"
+
+    try:
+        repair.locate_audio = lambda song_dir, txt, work_dir: ("/a.wav", None)
+        repair.prepare_processing_audio = lambda audio, work, device: ("/v.wav", "/p.wav")
+        repair.get_silence_sections = lambda path, min_silence_len=0: []
+        repair.load_audio_16k = lambda path: [0.0] * (16000 * 30)
+        repair.resolve_language = lambda *a, **k: "en"
+        repair.load_aligner = lambda lang, device: ("MODEL", "META", "en")
+        repair.align_units_globally = _fake_align
+        repair.refine_global_alignment = lambda *a, **k: None
+        repair.build_syllables_from_lyric_units = lambda units, aligned, lang, **k: [
+            [("a ", 2.0, 3.0), ("b ", 3.5, 4.5)], [("c ", 10.0, 12.0)]]
+        repair.write_lyrics_result = lambda *a, **k: _dw.setdefault("solo_written", True) and "/out/solo.txt"
+        repair.write_duet_lyrics_result = fake_duet_write
+        repair.duet_assign.embed_lines = fake_embed
+        repair.duet_assign.assign = fake_assign
+        return repair.repair_txt_with_lyrics(
+            _WiringTxt(), repair.parse_lyrics_lines(lines), "/s", "/o", "cuda",
+            tempfile.mkdtemp(), traits=["harsh_vocals"], **kw)
+    finally:
+        for _n, _f in _saved_duet.items():
+            setattr(repair, _n, _f)
+        repair.duet_assign.embed_lines, repair.duet_assign.assign = _saved_embed, _saved_assign
+
+
+_duet_result = _duet_flow([{"text": "a b"}, {"text": "P2: c"}], duet=True, singer_p1="Rihanna",
+                          singer_p2="", artist="Eminem feat. Rihanna")
+check(f"duet flow: fingerprints of the vocal stem over each line's sung span, on the CPU "
+      f"(got {_dw.get('embed')})",
+      _dw.get("embed") == (16000 * 30, [(2.0, 4.5), (10.0, 12.0)], "cpu"))
+check(f"duet flow: the assignment gets the marks, the line times, the fingerprints and the "
+      f"names given (got {_dw.get('assign')})",
+      _dw.get("assign") == ([(None, 2.0, 4.5), ("P2", 10.0, 12.0)], [[1.0, 0.0]] * 2,
+                            "Rihanna", "", "Eminem feat. Rihanna"))
+check(f"duet flow: the duet writer gets the singers and the names (got {_dw.get('write')})",
+      _dw.get("write") == ([[("a ", 2.0, 3.0), ("b ", 3.5, 4.5)], [("c ", 10.0, 12.0)]],
+                           ["P1", "P2"], ("Rihanna", "Eminem"), "/p.wav", 30.0, ["harsh_vocals"])
+      and "solo_written" not in _dw)
+check(f"duet flow: the result carries the assignment summary (got {_duet_result})",
+      (_duet_result or {}).get("output") == "/out/duet.txt"
+      and (_duet_result or {}).get("duet", {}).get("sources") == {"marks": 1, "genius": 0, "voice": 1}
+      and _duet_result["duet"]["names"] == ("Rihanna", "Eminem")
+      and _duet_result["duet"]["unsure"] is False)
+_duet_flow([{"text": "P1: a b"}, {"text": "P1+P2: c"}], duet=True)
+check("duet flow: every line marked -> no fingerprint model is loaded",
+      "embed" not in _dw and _dw.get("assign", [None, None])[1] == [None, None])
+_solo_result = _duet_flow([{"text": "a b"}, {"text": "c"}])
+check("duet flow: without duet=True the solo writer runs, no assignment",
+      _dw.get("solo_written") is True and "assign" not in _dw and "embed" not in _dw
+      and "duet" not in (_solo_result or {}))
+
+# main(): --duet with the names; the REPAIR_DONE line carries the assignment
+
+
+def _main_duet(argv, pitch="shared"):
+    calls, out = {}, io.StringIO()
+    saved = {n: getattr(repair, n) for n in ("find_ultrastar_txts", "load_lyrics_file",
+                                             "repair_txt_with_lyrics", "DUET_PITCH")}
+    saved_argv, code = sys.argv, None
+    try:
+        repair.DUET_PITCH = pitch
+        repair.find_ultrastar_txts = lambda song_dir: [_SoloTxt()]
+        repair.load_lyrics_file = lambda path: ("genius", [{"text": "a b", "start": None}])
+        repair.repair_txt_with_lyrics = lambda *a, **k: calls.update(k) or {
+            "output": "/o/A - B/A - B.txt", "aligned_words": 2, "total_words": 2,
+            **({"duet": {"names": ("Meat Loaf", "Cher"), "names_source": "artist",
+                         "sources": {"marks": 0, "genius": 3, "voice": 7},
+                         "separation": 1.2, "unsure": True}} if k.get("duet") else {})}
+        sys.argv = ["repair.py", "--song-dir", "/s", "--out", "/o", "--mode", "lyrics",
+                    "--lyrics-file", "/l.json"] + argv
+        with contextlib.redirect_stdout(out):
+            try:
+                repair.main()
+            except SystemExit as exc:
+                code = exc.code
+    finally:
+        sys.argv = saved_argv
+        for n, f in saved.items():
+            setattr(repair, n, f)
+    return calls, out.getvalue(), code
+
+
+_mc, _mout, _mcode = _main_duet(["--duet", "--singer-p1", "Meat Loaf", "--singer-p2", "Cher",
+                                 "--artist", "Meat Loaf & Cher"])
+check(f"main: --duet passes duet, the singer names and the artist (got {_mc})",
+      _mc.get("duet") is True and _mc.get("singer_p1") == "Meat Loaf"
+      and _mc.get("singer_p2") == "Cher" and _mc.get("artist") == "Meat Loaf & Cher")
+_done = next((l for l in _mout.splitlines() if l.startswith("REPAIR_DONE")), "")
+check(f"main: REPAIR_DONE carries duet, assignment, unsure and the names (got {_done!r})",
+      _done.endswith(" duet=1 assign=marks:0,genius:3,voice:7 unsure=1 p1=Meat Loaf p2=Cher")
+      and _mcode == 0)
+_mc, _mout, _mcode = _main_duet([])
+check("main: without --duet nothing changes (duet False, no duet keys)",
+      _mc.get("duet") is False and " duet=" not in _mout and _mcode == 0)
+_mc, _mout, _mcode = _main_duet(["--duet"], pitch="separate")
+check(f"main: DUET_PITCH=separate is refused until it is built (got code {_mcode})",
+      _mcode == 1 and not _mc and "DUET_PITCH=separate" in _mout)
+_mc, _mout, _mcode = _main_duet(["--duet"], pitch="sideways")
+check("main: an unknown DUET_PITCH is refused", _mcode == 1 and not _mc and "DUET_PITCH" in _mout)
+_saved_argv = sys.argv
+_mout = io.StringIO()
+try:
+    sys.argv = ["repair.py", "--song-dir", "/s", "--out", "/o", "--mode", "sync", "--duet"]
+    with contextlib.redirect_stdout(_mout):
+        try:
+            repair.main()
+            _mcode = None
+        except SystemExit as exc:
+            _mcode = exc.code
+finally:
+    sys.argv = _saved_argv
+check("main: --duet outside lyrics mode is refused", _mcode == 1 and "--duet" in _mout.getvalue())
+
+
 print()
 if failures:
     print(f"{len(failures)} check(s) FAILED: {failures}")

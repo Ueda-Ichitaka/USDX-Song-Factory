@@ -80,6 +80,9 @@ res, summary = da.assign(units, two_voices, artist="Eminem feat. Rihanna")
 check(f"assign: fingerprint only - the voices alternate, the short last line takes its neighbour (got {res})",
       [r["singer"] for r in res] == ["P1", "P2", "P1", "P2", "P2"] and {r["source"] for r in res} == {"voice"})
 check("assign: P1 is the first to sing", res[0]["singer"] == "P1")
+check(f"assign: the voice alone ties no name to a voice -> names P1 / P2, not the artist's "
+      f"(got {summary['names']}, {summary['names_source']})",
+      summary["names"] == ("P1", "P2") and summary["names_source"] == "default")
 res, summary = da.assign([unit(0), unit(3), unit(6), unit(9)], [voice(VOICE_B), voice(VOICE_A), voice(VOICE_B), voice(VOICE_A)],
                          artist="Eminem feat. Rihanna")
 check("assign: the first to sing is P1 whatever the group numbering",
@@ -92,6 +95,14 @@ check(f"assign: marks as given (P2 first stays P2 - the admin decided), the rest
       and [r["source"] for r in res] == ["marks", "marks", "voice", "marks", "voice"])
 check("assign: summary counts the sources",
       summary["sources"] == {"marks": 3, "genius": 0, "voice": 2})
+res, summary = da.assign(marked, [voice(VOICE_B), voice(VOICE_A), voice(VOICE_B), voice(VOICE_A), voice(VOICE_A)],
+                         artist="Eminem feat. Rihanna")
+check(f"assign: marks say which lines are P1, not who P1 is -> names P1 / P2 (got {summary['names']})",
+      summary["names"] == ("P1", "P2") and summary["names_source"] == "default")
+res, summary = da.assign(marked, [voice(VOICE_B), voice(VOICE_A), voice(VOICE_B), voice(VOICE_A), voice(VOICE_A)],
+                         artist="Eminem feat. Rihanna", singer_p1="Rihanna")
+check(f"assign: marks with the song list's singer_p1 -> its name, the other from the artist "
+      f"(got {summary['names']})", summary["names"] == ("Rihanna", "Eminem"))
 
 genius = [unit(0, singers=["Rihanna"]), unit(3, singers=["Eminem"]), unit(6), unit(9, singers=["Rihanna"])]
 res, summary = da.assign(genius, [voice(VOICE_A), voice(VOICE_B), voice(VOICE_B), voice(VOICE_A)],

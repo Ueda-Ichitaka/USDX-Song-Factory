@@ -22,6 +22,14 @@ steps: loud_high_instruments lets word ends follow held notes further down
 (word_end_drop_db()), harsh_vocals folds note octaves tighter and pulls
 unsure notes towards the melody (src/modules/Pitcher/pitch_normalise.py,
 normalise_for_traits()).
+With `--duet` (lyrics mode only) the song is written as a duet: after the
+alignment each line gets its singer (assign_duet_singers(),
+duet_assign.py: the lyrics' marks "P1:"/"P2:"/"P1+P2:", Genius' singers,
+else the voice fingerprint), names from --singer-p1/--singer-p2, Genius or
+--artist; the notes are the solo notes (DUET_PITCH=shared), each line in
+its singer's part (write_duet_lyrics_result(), duet.py). A duet whose lines
+all went to one singer is not written. REPAIR_DONE then also says duet=1,
+the lines per source, unsure and the names.
 
 "gap" and "sync" keep the ORIGINAL lyrics/syllables of the song. Nothing is
 re-transcribed; instead the known lyrics are force-aligned to the vocals
@@ -110,6 +118,8 @@ from modules.console_colors import (  # noqa: E402
     red_highlighted,
 )
 from song_header import FORMAT_VERSION, is_duet, shift_play_range, versioned_header  # noqa: E402
+import duet  # noqa: E402
+import duet_assign  # noqa: E402
 from duet import split_singer_mark  # noqa: E402
 
 NOTE_LINE_TYPES = (":", "F", "R", "G", "*")
@@ -228,6 +238,11 @@ LYRICS_LINE_BREAK_PAUSE_S = float(os.environ.get("LYRICS_LINE_BREAK_PAUSE_S", "2
 # resource-budget auto-selection (or an explicit override) picks this in
 # orchestrator.py and passes it through - see resource_profile.py
 DEMUCS_MODEL = DemucsModel(os.environ.get("DEMUCS_MODEL", "htdemucs") or "htdemucs")
+# duet pitch (knowledge/07-DUETS.md): "shared" - every line pitched once from
+# the vocal stem, a shared line has the same notes in both parts; "separate"
+# (each singer's own voice) is not built yet and refused
+DUET_PITCH = os.environ.get("DUET_PITCH", "shared").strip().lower() or "shared"
+DUET_PITCH_BUILT = ("shared",)
 
 
 # --------------------------------------------------------------------------
@@ -2406,50 +2421,43 @@ def clamp_beat_to_max(beat: int, dur: int, prev_end_beat, max_beat: int = None):
     return beat, dur, beat + dur
 
 
-def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
-                        per_unit_syllables: list, processing_audio: str,
-                        audio_dur: float = None, traits=()):
-    """Build a FRESH UltraStar txt from per-unit syllable lists (start/end
-    in seconds), re-pitching every syllable with SwiftF0. Unlike
-    write_repaired() (which maps new timing onto an EXISTING note
-    sequence), this builds an entirely new note sequence - the
-    syllable/line count is whatever the lyrics source produced, not the
-    original file's, EXCEPT a unit too long on screen or spanning a long
-    internal pause gets split further (see split_long_lyric_units()). A held
-    syllable whose pitch changes level becomes the syllable plus `~` notes
-    (held_notes.py). Pitches are read PITCH_READ_DELAY_S after the note, a
-    short note's from at least PITCH_MIN_WINDOW_S around it, and the
-    detected pitches are normalised for the whole song (octave errors
-    folded back by whole octaves, strength from the song's profile - see
-    src/modules/Pitcher/pitch_normalise.py; with the trait harsh_vocals
-    unsure notes are also pulled towards the melody). BPM
-    is kept from the scaffold (audio-only, lyrics don't change it);
-    header tags are kept verbatim except #GAP."""
-    per_unit_syllables = split_long_lyric_units(per_unit_syllables)
-    song_name = os.path.basename(song_dir.rstrip("/"))
-    out_song_dir = os.path.join(out_dir, song_name)
+def copy_song_files(song_dir: str, out_song_dir: str) -> None:
+    """Everything of the song folder except the song files (audio, video,
+    cover, ...) into the output folder, plus the admin's song_end.txt /
+    anchors.txt, so later re-runs keep them."""
     os.makedirs(out_song_dir, exist_ok=True)
-
     for name in os.listdir(song_dir):
         src = os.path.join(song_dir, name)
         if os.path.isfile(src) and not name.lower().endswith(".txt"):
             dst = os.path.join(out_song_dir, name)
             if not os.path.isfile(dst):
                 shutil.copy2(src, dst)
-    # the admin's song_end.txt / anchors.txt stay with the song, so later
-    # re-runs keep them
     for admin_file in (outro.SONG_END_FILE, anchors_file.ANCHORS_FILE):
         src = os.path.join(song_dir, admin_file)
         dst = os.path.join(out_song_dir, admin_file)
         if os.path.isfile(src) and os.path.abspath(src) != os.path.abspath(dst):
             shutil.copy2(src, dst)
 
-    all_syllables = [s for unit in per_unit_syllables for s in unit]
-    if not all_syllables:
-        print(f"{ULTRASINGER_HEAD} {red_highlighted('Error:')} "
-              "no syllables produced from the supplied lyrics")
-        return None
 
+def build_lyric_notes(txt: Txt, lines: list, processing_audio: str,
+                      audio_dur: float = None, traits=()) -> tuple:
+    """(header rows, notes per line) for syllable lines (start/end in
+    seconds, already split by split_long_lyric_units()): every syllable
+    re-pitched with SwiftF0, a held syllable whose pitch changes level
+    becomes the syllable plus `~` notes (held_notes.py). Pitches are read
+    PITCH_READ_DELAY_S after the note, a short note's from at least
+    PITCH_MIN_WINDOW_S around it, and the detected pitches are normalised
+    for the whole song (octave errors folded back by whole octaves,
+    strength from the song's profile - see
+    src/modules/Pitcher/pitch_normalise.py; with the trait harsh_vocals
+    unsure notes are also pulled towards the melody). The notes of a line
+    are (beat, length, pitch, word field), in order over the whole song
+    (clamp_beat_to_max()); a note after the end of the audio is left out,
+    so a line can end up without notes. BPM is kept from the scaffold
+    (audio-only, lyrics don't change it); header tags are kept verbatim
+    except #GAP, which the first syllable sets, and the song is versioned
+    (versioned_header())."""
+    all_syllables = [s for line in lines for s in line]
     gap_s = max(0.0, all_syllables[0][1])
     real_bpm = txt.real_bpm
 
@@ -2460,10 +2468,7 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
     pitched = get_pitch_with_file(processing_audio)
     import librosa
 
-    # only header (#TAG:) lines are kept - notes are rebuilt below; #GAP is
-    # set (added when the file has none, the notes are placed relative to it)
-    # and the song is versioned (versioned_header())
-    out_lines = _versioned(set_header_tags(
+    header = _versioned(set_header_tags(
         [line["raw"] for line in txt.lines
          if "note" not in line and line["raw"].strip().startswith("#")],
         {"GAP": round(gap_s * 1000)}))
@@ -2474,8 +2479,8 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
     # first every note's detected pitch, then the whole song's pitches are
     # normalised together (pitch_normalise.py)
     notes, pitches, sure = [], [], []
-    for ui, unit_syllables in enumerate(per_unit_syllables):
-        for word_field, start, end in unit_syllables:
+    for li, line_syllables in enumerate(lines):
+        for word_field, start, end in line_syllables:
             start = max(start, gap_s)
             end = max(end, start + 0.05)
             parts = held_notes.split_held_note(
@@ -2496,32 +2501,62 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
                     pitches.append(0)
                 sure.append(sure_pitch_fraction(part_start + PITCH_READ_DELAY_S,
                                                 part_end + PITCH_READ_DELAY_S, pitched))
-                notes.append((ui, tilde_word_field(word_field, is_tilde,
+                notes.append((li, tilde_word_field(word_field, is_tilde,
                                                    part_end == end),
                               part_start, part_end))
     pitches = pitch_normalise.normalise_for_traits(pitches, sure, traits)
 
+    per_line = [[] for _ in lines]
     prev_end_beat = None
-    current_unit = None
     dropped = 0
-    for (ui, word_field, start, end), pitch in zip(notes, pitches):
+    for (li, word_field, start, end), pitch in zip(notes, pitches):
         beat = max(0, round(sec_to_beat(start - gap_s)))
         dur = max(1, round(sec_to_beat(end - start)))
         placed = clamp_beat_to_max(beat, dur, prev_end_beat, max_beat)
         if placed is None:
             dropped += 1
             continue
-        if current_unit is not None and ui != current_unit:
-            out_lines.append(f"- {_fmt_num(prev_end_beat)}")
-        current_unit = ui
         beat, dur, prev_end_beat = placed
-        out_lines.append(f": {_fmt_num(beat)} {_fmt_num(dur)} "
-                         f"{_fmt_num(pitch)} {word_field}")
+        per_line[li].append((beat, dur, pitch, word_field))
     if dropped:
         print(f"{ULTRASINGER_HEAD} {red_highlighted('warning:')} {dropped} "
               "syllable(s) did not fit before the end of the audio and were "
               "left out (the lyrics are longer than what is sung)")
+    return header, per_line
 
+
+def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
+                        per_unit_syllables: list, processing_audio: str,
+                        audio_dur: float = None, traits=()):
+    """Build a FRESH UltraStar txt from per-unit syllable lists (start/end
+    in seconds), re-pitching every syllable (build_lyric_notes()). Unlike
+    write_repaired() (which maps new timing onto an EXISTING note
+    sequence), this builds an entirely new note sequence - the
+    syllable/line count is whatever the lyrics source produced, not the
+    original file's, EXCEPT a unit too long on screen or spanning a long
+    internal pause gets split further (see split_long_lyric_units())."""
+    per_unit_syllables = split_long_lyric_units(per_unit_syllables)
+    song_name = os.path.basename(song_dir.rstrip("/"))
+    out_song_dir = os.path.join(out_dir, song_name)
+    copy_song_files(song_dir, out_song_dir)
+
+    if not any(per_unit_syllables):
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('Error:')} "
+              "no syllables produced from the supplied lyrics")
+        return None
+
+    out_lines, per_line = build_lyric_notes(
+        txt, per_unit_syllables, processing_audio, audio_dur, traits)
+    prev_end_beat = None
+    for line_notes in per_line:
+        if not line_notes:
+            continue
+        if prev_end_beat is not None:
+            out_lines.append(f"- {_fmt_num(prev_end_beat)}")
+        for beat, dur, pitch, word_field in line_notes:
+            out_lines.append(f": {_fmt_num(beat)} {_fmt_num(dur)} "
+                             f"{_fmt_num(pitch)} {word_field}")
+        prev_end_beat = line_notes[-1][0] + line_notes[-1][1]
     out_lines.append("E")
 
     out_path = os.path.join(out_song_dir, os.path.basename(txt.path))
@@ -2540,6 +2575,87 @@ def write_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
 
     print(f"{ULTRASINGER_HEAD} {green_highlighted('wrote')} {out_path}")
     return out_path
+
+
+def write_duet_lyrics_result(txt: Txt, song_dir: str, out_dir: str,
+                             per_unit_syllables: list, singers: list, names: tuple,
+                             processing_audio: str, audio_dur: float = None, traits=()):
+    """The duet form of write_lyrics_result(): the same notes
+    (build_lyric_notes(), DUET_PITCH=shared), each line in the part of its
+    unit's singer (P1, P2; "both" - a shared line, the same notes in both
+    parts), written by the duet core (duet.write_duet()) with the names
+    (P1, P2) in #P1/#P2. A unit split for the screen keeps its singer.
+    lyrics.txt gets each line with its singer mark ("P1: ...",
+    duet.singer_mark()), so a later repair keeps the assignment. When every
+    sung line went to one singer nothing is written (None, the reason is
+    printed)."""
+    lines, line_singers = [], []
+    for unit, singer in zip(per_unit_syllables, singers):
+        for piece in split_long_lyric_units([unit]):
+            lines.append(piece)
+            line_singers.append(singer)
+    if not any(lines):
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('Error:')} "
+              "no syllables produced from the supplied lyrics")
+        return None
+
+    header, per_line = build_lyric_notes(txt, lines, processing_audio, audio_dur, traits)
+    parts = {part: [] for part in duet.PARTS}
+    for line_notes, singer in zip(per_line, line_singers):
+        if not line_notes:
+            continue
+        for part in (duet.PARTS if singer == "both" else (singer,)):
+            parts[part].append(duet.Line(part=part, notes=[
+                duet.Note(":", beat, dur, pitch, word_field)
+                for beat, dur, pitch, word_field in line_notes]))
+    empty = [part for part in duet.PARTS if not parts[part]]
+    if empty:
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('Error:')} duet: every line went to "
+              f"one singer ({' and '.join(empty)} without a line) - mark the lines in the "
+              "lyrics (P1:, P2:, P1+P2:) and repair again")
+        return None
+
+    song = duet.DuetFile(header=header, names={}, name_form=duet.name_form(header), parts=parts)
+    text = duet.write_duet(song, names={"P1": names[0], "P2": names[1]})
+
+    out_song_dir = os.path.join(out_dir, os.path.basename(song_dir.rstrip("/")))
+    copy_song_files(song_dir, out_song_dir)
+    out_path = os.path.join(out_song_dir, os.path.basename(txt.path))
+    with open(out_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    with open(os.path.join(out_song_dir, "lyrics.txt"), "w", encoding="utf-8", newline="\n") as f:
+        for line, singer in zip(lines, line_singers):
+            if line:
+                f.write(duet.singer_mark(singer) + "".join(w for w, _, _ in line).strip() + "\n")
+
+    print(f"{ULTRASINGER_HEAD} {green_highlighted('wrote')} {out_path} "
+          f"(duet: P1 {names[0]}, P2 {names[1]})")
+    return out_path
+
+
+def assign_duet_singers(units: list, per_unit_syllables: list, audio16k,
+                        singer_p1: str = "", singer_p2: str = "", artist: str = "") -> tuple:
+    """(singer per unit, summary) - duet_assign.assign() on the sung span of
+    each unit (its first syllable's start to its last syllable's end). The
+    voice fingerprints of the vocal stem are taken on the CPU, unless every
+    unit is marked (then no model is loaded)."""
+    spans = [(syl[0][1], syl[-1][2]) if syl else (0.0, 0.0) for syl in per_unit_syllables]
+    if all(u.get("singer") in ("P1", "P2", "both") for u in units):
+        vectors = [None] * len(units)
+    else:
+        print(f"{ULTRASINGER_HEAD} duet: voice fingerprints of {len(units)} lines")
+        vectors = duet_assign.embed_lines(audio16k, spans, device="cpu")
+    timed = [dict(u, start=a, end=b) for u, (a, b) in zip(units, spans)]
+    results, summary = duet_assign.assign(timed, vectors, singer_p1, singer_p2, artist)
+    src = summary["sources"]
+    print(f"{ULTRASINGER_HEAD} duet: P1 {summary['names'][0]}, P2 {summary['names'][1]} "
+          f"(names from {summary['names_source']}); lines by marks {src['marks']}, "
+          f"Genius {src['genius']}, voice {src['voice']}; "
+          f"voice groups apart {summary['separation']:.2f}")
+    if summary["unsure"]:
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('please check:')} duet singers unsure - "
+              "most lines were assigned by the voice and the two voices are alike")
+    return [r["singer"] for r in results], summary
 
 
 def _anchored_timings(units, emission, meta, anchors, fillers_out=None):
@@ -3000,7 +3116,8 @@ def drop_unused_fill(units: list, aligned_units: list, origin: list):
 def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir: str,
                            device: str, work_dir: str, language: str = None,
                            align_model: str = None, recording_seconds: float = None,
-                           traits=None, fill_transcript: list = None):
+                           traits=None, fill_transcript: list = None, duet: bool = False,
+                           singer_p1: str = "", singer_p2: str = "", artist: str = ""):
     print(f"{ULTRASINGER_HEAD} {gold_highlighted('Lyrics rebuild')} "
           f"{blue_highlighted(txt.path)} ({len(lyrics_units)} supplied lines)")
 
@@ -3120,18 +3237,41 @@ def repair_txt_with_lyrics(txt: Txt, lyrics_units: list, song_dir: str, out_dir:
     per_unit_syllables = build_syllables_from_lyric_units(
         lyrics_units, aligned_units, lang, silence_sections=silence_sections,
         audio_dur=audio_dur)
-    out_path = write_lyrics_result(
-        txt, song_dir, out_dir, per_unit_syllables, processing_audio,
-        audio_dur=audio_dur, traits=traits or ())
+    duet_summary = None
+    if duet:
+        singers, duet_summary = assign_duet_singers(
+            lyrics_units, per_unit_syllables, audio16k, singer_p1, singer_p2, artist)
+        out_path = write_duet_lyrics_result(
+            txt, song_dir, out_dir, per_unit_syllables, singers, duet_summary["names"],
+            processing_audio, audio_dur=audio_dur, traits=traits or ())
+    else:
+        out_path = write_lyrics_result(
+            txt, song_dir, out_dir, per_unit_syllables, processing_audio,
+            audio_dur=audio_dur, traits=traits or ())
     if out_path is None:
         return None
 
-    return {"output": out_path, "aligned_words": n_aligned, "total_words": n_total}
+    result = {"output": out_path, "aligned_words": n_aligned, "total_words": n_total}
+    if duet_summary is not None:
+        result["duet"] = duet_summary
+    return result
 
 
 # --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
+
+def duet_done_fields(summary) -> str:
+    """The duet part of the REPAIR_DONE line (empty for a solo song):
+    duet=1, lines per source, unsure, the names last (they may hold
+    spaces)."""
+    if not summary:
+        return ""
+    src = summary["sources"]
+    return (f" duet=1 assign=marks:{src['marks']},genius:{src['genius']},voice:{src['voice']}"
+            f" unsure={1 if summary['unsure'] else 0}"
+            f" p1={summary['names'][0]} p2={summary['names'][1]}")
+
 
 def parse_traits_arg(value) -> list:
     """The song's traits from `--traits a,b` (codes of
@@ -3174,6 +3314,17 @@ def main():
                              "loud_high_instruments, choir); "
                              "loud_high_instruments lets word ends follow held "
                              "notes further down (word_end_drop_db())")
+    parser.add_argument("--duet", action="store_true",
+                        help="lyrics mode: write a duet (P1/P2) - each line's singer from "
+                             "the lyrics' marks, Genius' singers, else the voice "
+                             "(duet_assign.py); DUET_PITCH from the environment")
+    parser.add_argument("--singer-p1", default="",
+                        help="--duet: the name of P1 (the song list's singer_p1)")
+    parser.add_argument("--singer-p2", default="",
+                        help="--duet: the name of P2 (the song list's singer_p2)")
+    parser.add_argument("--artist", default="",
+                        help="--duet: the song's artist, split into the two names when "
+                             "nothing else names them")
     args = parser.parse_args()
     args.language = args.language or os.environ.get("REPAIR_LANGUAGE")
     traits = parse_traits_arg(args.traits)
@@ -3188,6 +3339,16 @@ def main():
     if args.mode == "lyrics" and not args.lyrics_file:
         print(f"{ULTRASINGER_HEAD} {red_highlighted('Error:')} "
               "--mode lyrics requires --lyrics-file")
+        sys.exit(1)
+    if args.duet and args.mode != "lyrics":
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('Error:')} "
+              "--duet works in --mode lyrics only")
+        sys.exit(1)
+    if args.duet and DUET_PITCH not in DUET_PITCH_BUILT:
+        why = ("is not built yet" if DUET_PITCH == "separate"
+               else "is unknown (shared or separate)")
+        print(f"{ULTRASINGER_HEAD} {red_highlighted('Error:')} "
+              f"DUET_PITCH={DUET_PITCH} {why} - use DUET_PITCH=shared")
         sys.exit(1)
 
     txts = repair_targets(song_dir)
@@ -3207,7 +3368,9 @@ def main():
                     txt, lyrics_units, song_dir, args.out, args.device,
                     work_dir, args.language, args.align_model,
                     recording_seconds=args.recording_seconds, traits=traits,
-                    fill_transcript=transcript_of(txt) if args.fill_from_input else None)
+                    fill_transcript=transcript_of(txt) if args.fill_from_input else None,
+                    duet=args.duet, singer_p1=args.singer_p1, singer_p2=args.singer_p2,
+                    artist=args.artist)
                 if result is not None:
                     result["lyrics_source"] = lyrics_source
             else:
@@ -3235,7 +3398,8 @@ def main():
                   f"{result['aligned_words']}/{result['total_words']}")
             print(f"REPAIR_DONE output={result['output']} mode=lyrics "
                   f"aligned={result['aligned_words']}/{result['total_words']} "
-                  f"lyrics_source={result['lyrics_source']}")
+                  f"lyrics_source={result['lyrics_source']}"
+                  + duet_done_fields(result.get("duet")))
             continue
         if result["gap_new_ms"] is None:
             gap_info = (f"GAP n/a (re-created), original was {result['gap_old_ms']} ms")

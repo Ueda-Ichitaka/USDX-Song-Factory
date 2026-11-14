@@ -545,6 +545,15 @@ check("parse_repair_done_line handles the shorter 'recreated' summary form",
 check("parse_repair_done_line returns {} for an unrelated log line",
       orch.parse_repair_done_line("some other log line") == {})
 
+duet_line = ("REPAIR_DONE output=/data/output/new/Meat Loaf & Cher - Dead Ringer/Meat Loaf & "
+             "Cher - Dead Ringer.txt mode=lyrics aligned=200/210 lyrics_source=online:genius "
+             "duet=1 assign=marks:0,genius:30,voice:12 unsure=0 p1=Meat Loaf p2=Cher")
+kv3 = orch.parse_repair_done_line(duet_line)
+check(f"parse_repair_done_line reads the duet keys, names with spaces (got {kv3})",
+      kv3.get("duet") == "1" and kv3.get("assign") == "marks:0,genius:30,voice:12"
+      and kv3.get("unsure") == "0" and kv3.get("p1") == "Meat Loaf" and kv3.get("p2") == "Cher"
+      and kv3.get("output", "").endswith("Dead Ringer.txt"))
+
 # --------------------------------------------------------------------------
 # run_romanize_step(): a best-effort post-processing hook, skippable via
 # ROMANIZE=0, must never raise even if the subprocess itself misbehaves
@@ -2585,6 +2594,20 @@ try:
     check("finish_done_job: a language whisper cannot transcribe -> 'not checkable'",
           (_rv_job3.get("lyrics_review") or {}).get("kind") == "not_checkable" and
           "Gaulish" in _rv_job3["lyrics_review"]["note"])
+
+    # a duet's lyrics.txt carries singer marks ("P1: ..."): the review compares the sung words
+    _rv_seen = {}
+    _saved_compare = orch.lyrics_divergence.compare_lyrics
+    orch.lyrics_divergence.compare_lyrics = lambda lines, transcript: _rv_seen.setdefault("lines", lines) and []
+    try:
+        _rv_dir = tempfile.mkdtemp()
+        with open(os.path.join(_rv_dir, "lyrics.txt"), "w", encoding="utf-8") as fh:
+            fh.write("P1: hear our prayer\nP1+P2: odin our lord\nplain line\n")
+        orch.lyrics_review({"language_raw": "en"}, [(0.0, 1.0, "hear")], _rv_dir)
+    finally:
+        orch.lyrics_divergence.compare_lyrics = _saved_compare
+    check(f"lyrics_review: a duet's singer marks are not compared as words (got {_rv_seen.get('lines')})",
+          _rv_seen.get("lines") == ["hear our prayer", "odin our lord", "plain line"])
 
     with open(_rv_txt, "w", encoding="utf-8") as f:
         f.write(_TRANSCRIBED)

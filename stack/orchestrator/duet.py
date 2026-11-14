@@ -31,7 +31,9 @@ module
   endings included);
 - splits an artist into singer names (split_artist(), duet_names());
 - reads an admin's singer mark at the start of a lyrics line ("P1:", "P2:",
-  "P1+P2:", split_singer_mark()).
+  "P1+P2:", split_singer_mark()) and gives the mark of a singer
+  (singer_mark());
+- tells the tag form a header names the singers in (name_form()).
 
 decode() gives a song file's text and encoding (UTF-8, cp1252 for old
 files), so it can be written back in the same encoding.
@@ -182,6 +184,17 @@ def decode(raw: bytes) -> tuple:
     return raw.decode("latin-1"), "latin-1"
 
 
+def name_form(header: list):
+    """The tag form a header names the singers in: "P" (#P1/#P2),
+    "DUETSINGERP" (#DUETSINGERP1/2) or None."""
+    tags = {header_tag(raw)[0] for raw in header}
+    if tags & {"P1", "P2"}:
+        return "P"
+    if tags & {"DUETSINGERP1", "DUETSINGERP2"}:
+        return "DUETSINGERP"
+    return None
+
+
 def parse_duet(text: str) -> DuetFile:
     bom = text.startswith("﻿")
     body_text = text[1:] if bom else text
@@ -249,8 +262,7 @@ def parse_duet(text: str) -> DuetFile:
         if not parts[p]:
             raise DuetError(f"no {p} part - not a duet")
 
-    form = "P" if "P1" in tags or "P2" in tags else \
-        "DUETSINGERP" if "DUETSINGERP1" in tags or "DUETSINGERP2" in tags else None
+    form = name_form(header)
     names = {p: tags.get(NAME_TAGS[form][k], "") if form else "" for k, p in enumerate(PARTS)}
     return DuetFile(header=header, names=names, name_form=form, parts=parts, problems=problems,
                     markers=markers, end_raw=end_raw, tail=tail, newline=newline, bom=bom,
@@ -341,6 +353,12 @@ def split_singer_mark(text: str) -> tuple:
         return None, text
     mark = re.sub(r"\s", "", m.group(1)).upper()
     return ("both" if "+" in mark else mark), text[m.end():]
+
+
+def singer_mark(singer: str) -> str:
+    """The mark a lyrics line of `singer` (P1, P2, both) starts with -
+    what split_singer_mark() reads."""
+    return {"P1": "P1: ", "P2": "P2: ", "both": "P1+P2: "}[singer]
 
 
 def split_artist(artist: str) -> list:

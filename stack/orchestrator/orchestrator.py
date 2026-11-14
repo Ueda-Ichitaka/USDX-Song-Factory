@@ -99,6 +99,7 @@ from datetime import datetime
 
 import broken_report
 import compare_reference
+import duet
 import lyrics_divergence
 import recording_length
 import resource_monitor
@@ -2949,8 +2950,10 @@ def transcript_words_from_text(txt_text: str) -> list:
 def lyrics_review(job: dict, transcript: list, song_dir: str):
     """{"kind": "review" | "not_checkable", "note": str} for the finishing
     report, or None: compares the song's final lyrics.txt with UltraSinger's
-    own transcript (see lyrics_divergence.py). A language whisper cannot
-    transcribe (the song list's own value) is not judged but marked."""
+    own transcript (see lyrics_divergence.py); a duet's singer marks
+    ("P1: ...", duet.split_singer_mark()) are not part of the sung words. A
+    language whisper cannot transcribe (the song list's own value) is not
+    judged but marked."""
     ok, why = lyrics_divergence.language_checkable(job.get("language_raw"))
     if not ok:
         return {"kind": "not_checkable", "note": why}
@@ -2958,7 +2961,7 @@ def lyrics_review(job: dict, transcript: list, song_dir: str):
     if not transcript or not os.path.isfile(lyrics_path):
         return None
     with open(lyrics_path, encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
+        lines = [duet.split_singer_mark(line.strip())[1].strip() for line in f if line.strip()]
     note = lyrics_divergence.review_note(
         lyrics_divergence.compare_lyrics(lines, transcript))
     return {"kind": "review", "note": note} if note else None
