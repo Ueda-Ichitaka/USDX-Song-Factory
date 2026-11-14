@@ -63,6 +63,13 @@ USDB_USERNAME/USDB_PASSWORD are set), then usdb.eu (when USDB_EU_EMAIL/
 USDB_EU_PASSWORD are set) - and, if a confident match is found on either,
 reuses its notes/timing instead of generating from scratch - see
 prepare_usdb_job()/find_usdb_match()/usdb_lookup.py/usdb_eu_lookup.py.
+A duet row (duet=yes) is a job of its own: only a duet USDB upload fits it
+(used as it is, place_usdb_duet()); otherwise UltraSinger generates it apart
+(duet_staging_root()), it moves to "Artist - Title [DUET]"
+(place_generated_duet()) and the lyrics step makes the P1/P2 parts
+(repair.py --duet, with whisper's lines when there are no online lyrics);
+a failing duet step fails the job (DuetStepError, fail_finished_job()), and
+the report lists the duets (knowledge/07-DUETS.md).
 A repair job whose input folder has a lyrics.txt runs in "lyrics" mode
 instead (see repair.py): force-aligns that trusted text, replacing the
 existing lyrics rather than just re-timing them. Every repaired song gets
@@ -399,11 +406,25 @@ def get_usdb_eu_session():
     return _usdb_eu_session
 
 
-def find_usdb_match(band: str, title: str) -> dict:
+def usdb_version_fits(match: dict, duet: bool) -> bool:
+    """An upload fits the request when both are duets (P1/P2,
+    song_header.is_duet()) or both plain (knowledge/07-DUETS.md decision
+    10); a mismatch is logged."""
+    upload_duet = song_header.is_duet(match.get("txt") or "")
+    if upload_duet == bool(duet):
+        return True
+    out(f"  .. USDB upload {match['site']}#{match['song_id']} is "
+        f"{'a duet' if upload_duet else 'a plain song'}, the request is "
+        f"{'a duet' if duet else 'plain'} - not used")
+    return False
+
+
+def find_usdb_match(band: str, title: str, duet: bool = False) -> dict:
     """Try usdb.animux.de first (much larger, longer-established catalog
     - see 02-DESIGN.md), then usdb.eu as a second source. Returns a
     uniform {"song_id", "txt", "video_url", "cover_bytes", "site"} dict,
-    or None if neither source has (or could reach) a confident match.
+    or None if neither source has (or could reach) a confident match of
+    the requested version (duet or plain, usdb_version_fits()).
     Each source is independently optional - missing/failing credentials
     for one never block the other."""
     session, catalog = get_usdb_session_and_catalog()
@@ -411,7 +432,8 @@ def find_usdb_match(band: str, title: str) -> dict:
         match = usdb_lookup.find_usdb_song(session, catalog, band, title)
         if match is not None:
             match["site"] = "animux"
-            return match
+            if usdb_version_fits(match, duet):
+                return match
 
     eu_session = get_usdb_eu_session()
     if eu_session is not None:
@@ -423,7 +445,8 @@ def find_usdb_match(band: str, title: str) -> dict:
             # (comes straight out of the download zip).
             match["video_url"] = None
             match["site"] = "eu"
-            return match
+            if usdb_version_fits(match, duet):
+                return match
     return None
 
 
@@ -600,8 +623,8 @@ def parse_songs_file(path: str) -> list:
     """Parse songs.csv (band,title,url) or a plain songs.txt.
 
     Returns a list of dicts: {"band", "title", "url", "language",
-    "musicbrainz_id", "lyrics_url", "cover_url", "duet", "genres", "traits",
-    "style_unknown"} - url may be
+    "musicbrainz_id", "lyrics_url", "cover_url", "duet", "singer_p1",
+    "singer_p2", "genres", "traits", "style_unknown"} - url may be
     "skip". Everything after url is an optional column of the
     karaoke-dashboard export (default "" / False): language (an ISO 639-1
     code; anything else, like the dashboard's "mixed", means "detect it")
@@ -611,8 +634,9 @@ def parse_songs_file(path: str) -> list:
     run_lyrics_step()); cover_url becomes the song's cover
     (apply_cover_url()); duet is True only for "yes" - blank and "no" both
     mean a plain version (the dashboard's wants_duet() rule), and a song may
-    appear twice, once per duet value; genre/trait give the song's genres
-    and traits (song_style.style_fields()).
+    appear twice, once per duet value; singer_p1/singer_p2 name a duet's
+    singers (P1 is singer_p1, knowledge/07-DUETS.md); genre/trait give the
+    song's genres and traits (song_style.style_fields()).
     """
     entries = []
     if not path or not os.path.isfile(path):
@@ -654,6 +678,8 @@ def parse_songs_file(path: str) -> list:
                 "lyrics_url": lyrics_url,
                 "cover_url": lower.get("cover_url") or "",
                 "duet": wants_duet(lower.get("duet")),
+                "singer_p1": lower.get("singer_p1") or "",
+                "singer_p2": lower.get("singer_p2") or "",
                 **song_style.style_fields(lower),
             })
     else:
@@ -670,14 +696,16 @@ def parse_songs_file(path: str) -> list:
                 entries.append({
                     "band": band.strip(), "title": title.strip(), "url": url,
                     "language": "", "language_raw": "", "musicbrainz_id": "", "lyrics_url": "",
-                    "cover_url": "", "duet": False, **song_style.style_fields({}),
+                    "cover_url": "", "duet": False, "singer_p1": "", "singer_p2": "",
+                    **song_style.style_fields({}),
                 })
             else:
                 # no link -> cannot create, treated as skipped
                 entries.append({
                     "band": "", "title": line, "url": "skip",
                     "language": "", "language_raw": "", "musicbrainz_id": "", "lyrics_url": "",
-                    "cover_url": "", "duet": False, **song_style.style_fields({}),
+                    "cover_url": "", "duet": False, "singer_p1": "", "singer_p2": "",
+                    **song_style.style_fields({}),
                 })
 
     # normalize: empty / '-' / 'skip' links are skips
@@ -1024,7 +1052,7 @@ def usdb_has_match(job: dict) -> bool:
     if not band or not title:
         return False
     try:
-        return find_usdb_match(band, title) is not None
+        return find_usdb_match(band, title, bool(job.get("duet"))) is not None
     except Exception as exc:  # noqa: BLE001
         out(f"  !! usdb lookup for {job_display_name(job)} failed: {exc}")
         return False
@@ -1044,6 +1072,15 @@ def split_by_usdb_availability(queue: list, mode: str):
         else:
             left.append(job)
     return kept, left
+
+
+def duet_song_name(job: dict) -> str:
+    """Folder and song file name of a duet: "Artist - Title [DUET]"
+    (knowledge/07-DUETS.md decision 18); the plain version keeps
+    "Artist - Title"."""
+    base = " - ".join(x for x in ((job.get("band") or "").strip(),
+                                   (job.get("title") or "").strip()) if x)
+    return safe_dirname(f"{base or job_display_name(job)} [DUET]")
 
 
 def song_label(song: dict) -> str:
@@ -1229,15 +1266,15 @@ def build_job_plan(state: State) -> list:
             language=song["language"], language_raw=song.get("language_raw", ""),
             musicbrainz_id=song["musicbrainz_id"],
             lyrics_url=song["lyrics_url"], cover_url=song["cover_url"],
-            duet=song["duet"], genres=song["genres"], traits=song["traits"],
+            duet=song["duet"], singer_p1=song["singer_p1"], singer_p2=song["singer_p2"],
+            genres=song["genres"], traits=song["traits"],
             style_unknown=song["style_unknown"])
         if url == "skip":
             job["status"] = "skipped"
-        elif song["duet"] and job["status"] != "done":
-            # duet generation (two singers, P1/P2) does not exist yet - a
-            # duet request is listed with its reason instead of being
-            # generated as a plain song (see skip_reason())
-            job["status"] = "skipped"
+        elif song["duet"] and job["status"] == "skipped":
+            # a state written before duet generation existed listed duet
+            # requests as skipped
+            job["status"] = "pending"
         jobs.append(job)
 
     broken_reports = broken_report.parse_broken_csv(BROKEN_CSV)
@@ -1312,9 +1349,6 @@ def count_statuses(jobs, kind):
         "pending": sum(1 for j in of_kind if j["status"] == "pending"),
         "skipped": sum(1 for j in of_kind if j["status"] == "skipped"),
         "needs_review": sum(1 for j in of_kind if j["status"] == "needs_review"),
-        "duet_waiting": sum(1 for j in of_kind
-                            if j["status"] == "skipped" and j.get("duet")
-                            and j.get("url") != "skip"),
     }
 
 
@@ -1401,8 +1435,7 @@ def render_progress(state_data, cpu_percent=None, ram_usage=None,
     def row(name, s):
         counts = (f"{s['done']:>3} done | {s['failed']:>2} failed | "
                   f"{s['running']:>2} running | {s['pending']:>3} pending")
-        duets = f" ({s['duet_waiting']} duet)" if s.get("duet_waiting") else ""
-        skip = f" | {s['skipped']} skipped{duets}" if s["skipped"] else ""
+        skip = f" | {s['skipped']} skipped" if s["skipped"] else ""
         review = f" | {s['needs_review']} needs review" if s["needs_review"] else ""
         return f"  {name:<9}: {counts}{skip}{review}   ({s['total']} total)"
 
@@ -1472,7 +1505,7 @@ def _folder_of(output_path) -> str:
 
 def skip_reason(job: dict, active_ids=None) -> str:
     """Why a job is skipped: a song-list row without a link can't be created;
-    a duet version waits for duet generation; a skipped record that no
+    a skipped record that no
     longer belongs to the song list is just stale (typically the row got a
     link later and was created as a new job)."""
     if active_ids is not None and job["id"] not in active_ids:
@@ -1483,8 +1516,6 @@ def skip_reason(job: dict, active_ids=None) -> str:
             return f"genre edit for {job.get('file')}: not a song file"
         return (f"genre edit: {job.get('file')} is not in input/genres/ yet "
                 "(./factory.sh pull-genres copies it from the library)")
-    if job.get("duet") and job.get("url") != "skip":
-        return "duet version requested - duet generation is not available yet"
     return "no link in the song list (empty, `-` or `skip`)"
 
 
@@ -1528,6 +1559,31 @@ def render_report(state_data, active_ids=None) -> str:
                          "likely to contain mis-heard words._")
     else:
         lines.append("_none_")
+
+    duets_done = [j for j in new_done if j.get("duet")]
+    if duets_done:
+        lines.append("")
+        lines.append(f"## Duets ({len(duets_done)})")
+        lines.append("")
+        lines.append("_Who sings each line: the lyrics' marks (`P1:`, `P2:`, `P1+P2:`), "
+                     "the singer a Genius section names, else the voice. Names `P1`/`P2`: "
+                     "nothing tied a name to a voice - give `singer_p1`/`singer_p2` in the "
+                     "song list. Unsure: most lines went by the voice and the two voices "
+                     "are alike - check by ear, mark the lines in `lyrics.txt` and run "
+                     "the song again._")
+        lines.append("")
+        lines.append("| Song | P1 | P2 | Lines by | Check |")
+        lines.append("|---|---|---|---|---|")
+        for j in sorted(duets_done, key=by_label):
+            r = j.get("duet_result")
+            if not r:
+                lines.append(f"| {j['label']} | - | - | USDB upload, used as it is | - |")
+                continue
+            a = r.get("assign") or {}
+            check = "singers unsure - check by ear" if r.get("unsure") else "-"
+            lines.append(f"| {j['label']} | {r.get('p1') or '-'} | {r.get('p2') or '-'} | "
+                         f"marks {a.get('marks', 0)}, Genius {a.get('genius', 0)}, "
+                         f"voice {a.get('voice', 0)} | {check} |")
 
     local_done = [j for j in new_done if is_local_media(j.get("url", ""))]
     if local_done:
@@ -1724,22 +1780,38 @@ def run_romanize_step(job: dict, output_path: str) -> None:
         out(f"  !! romanization step failed: {exc} (lyrics left as-is)")
 
 
-def run_lyrics_step(job: dict, output_path: str) -> str:
-    """After a successful NEW song, try to fetch trusted lyrics online and
-    force-align them in place, replacing whisper's own (possibly
-    mis-heard) transcription. Best-effort: on any failure or "not found"
-    the song simply keeps its transcribed lyrics - this must never turn a
-    working song into a failed job. Returns the lyrics_source value for
-    the finishing report ("transcribed" or "online:<source>")."""
-    if not LYRICS_ENABLED or not output_path or not os.path.isfile(output_path):
-        return "transcribed"
+class DuetStepError(RuntimeError):
+    """The duet step of a duet job failed: the job fails (knowledge/
+    07-DUETS.md decision 20) - no plain song under a duet name."""
+
+
+def transcript_lines_from_text(txt_text: str) -> list:
+    """The sung lines of an UltraStar txt (whisper's lines for a song fresh
+    out of UltraSinger): each line's syllables joined, held notes (`~`)
+    left out."""
+    lines, current = [], ""
+    for raw in txt_text.splitlines():
+        note = duet.NOTE_RE.match(raw)
+        if note:
+            current += (note.group(5) or "").replace("~", "")
+        elif raw.strip().startswith(("-", "E", "P")) and current.strip():
+            lines.append(" ".join(current.split()))
+            current = ""
+    if current.strip():
+        lines.append(" ".join(current.split()))
+    return lines
+
+
+def fetch_lyrics_file(job: dict, slug: str):
+    """Online lyrics for a new song (lyrics_fetch.py: the song list's
+    lyrics_url, else the search sources) as a JSON file in WORK_DIR, or None
+    (switched off, no artist/title, not found, failed)."""
+    if not LYRICS_ENABLED:
+        return None
     band = (job.get("band") or "").strip()
     title = (job.get("title") or "").strip()
     if not band or not title:
-        return "transcribed"
-
-    os.makedirs(WORK_DIR, exist_ok=True)
-    slug = slugify(job["id"])
+        return None
     lyrics_json = os.path.join(WORK_DIR, slug + "-lyrics.json")
     fetch_log_path = os.path.join(LOGS_DIR, slug + "-lyrics-fetch.log")
     fetch_cmd = [sys.executable, LYRICS_FETCH_PY,
@@ -1758,19 +1830,74 @@ def run_lyrics_step(job: dict, output_path: str) -> str:
                 out(f"  .. {line}")
     except Exception as exc:  # noqa: BLE001
         out(f"  !! lyrics fetch failed: {exc} (keeping transcribed lyrics)")
-        return "transcribed"
-
+        return None
     if proc.returncode != 0 or not os.path.isfile(lyrics_json):
+        return None
+    return lyrics_json
+
+
+def duet_result_from(kv: dict) -> dict:
+    """The duet keys of repair.py's REPAIR_DONE line: names, lines per
+    source, unsure."""
+    assign = {}
+    for part in (kv.get("assign") or "").split(","):
+        source, _, count = part.partition(":")
+        if source and count.isdigit():
+            assign[source] = int(count)
+    return {"p1": kv.get("p1", ""), "p2": kv.get("p2", ""), "assign": assign,
+            "unsure": kv.get("unsure") == "1"}
+
+
+def run_lyrics_step(job: dict, output_path: str) -> str:
+    """After a successful NEW song, try to fetch trusted lyrics online and
+    force-align them in place, replacing whisper's own (possibly
+    mis-heard) transcription. Best-effort: on any failure or "not found"
+    the song simply keeps its transcribed lyrics - this must never turn a
+    working song into a failed job. Returns the lyrics_source value for
+    the finishing report ("transcribed" or "online:<source>").
+
+    A duet job always runs the step (repair.py --duet with the song list's
+    singer names and the artist): without online lyrics whisper's own lines
+    are the lyrics, so every duet job ends as a duet; its assignment goes
+    to job["duet_result"]. A duet step that fails raises DuetStepError."""
+    is_duet = bool(job.get("duet"))
+    if not output_path or not os.path.isfile(output_path):
+        if is_duet:
+            raise DuetStepError("duet: no song file to make the duet from")
         return "transcribed"
 
+    os.makedirs(WORK_DIR, exist_ok=True)
+    slug = slugify(job["id"])
+    lyrics_json = fetch_lyrics_file(job, slug)
+    if lyrics_json is None and not is_duet:
+        return "transcribed"
+    online = lyrics_json is not None
+    if not online:
+        with open(output_path, encoding="utf-8", errors="replace") as f:
+            lines = transcript_lines_from_text(f.read())
+        lyrics_json = os.path.join(WORK_DIR, slug + "-transcript-lyrics.json")
+        with open(lyrics_json, "w", encoding="utf-8") as f:
+            json.dump({"source": "transcribed",
+                       "lines": [{"text": line, "start": None} for line in lines]},
+                      f, ensure_ascii=False)
+        out("  .. duet: no online lyrics - whisper's lines are the lyrics")
+
+    band = (job.get("band") or "").strip()
+    title = (job.get("title") or "").strip()
     song_dir = os.path.dirname(output_path)
     align_log_path = os.path.join(LOGS_DIR, slug + "-lyrics-align.log")
     align_cmd = [sys.executable, REPAIR_PY,
-                "--song-dir", song_dir, "--out", NEW_SONGS_DIR,
-                "--mode", "lyrics", "--lyrics-file", lyrics_json,
-                "--device", DEVICE] + traits_args(job.get("traits"))
-    if LYRICS_FILL:
+                 "--song-dir", song_dir, "--out", NEW_SONGS_DIR,
+                 "--mode", "lyrics", "--lyrics-file", lyrics_json,
+                 "--device", DEVICE] + traits_args(job.get("traits"))
+    if LYRICS_FILL and online:
         align_cmd.append("--fill-from-input")  # the new song's txt is whisper's transcript
+    if is_duet:
+        align_cmd += ["--duet", "--artist", band]
+        for key, flag in (("singer_p1", "--singer-p1"), ("singer_p2", "--singer-p2")):
+            name = (job.get(key) or "").strip()
+            if name:
+                align_cmd += [flag, name]
     # the official recording length lets repair.py cut off a video outro
     # (only from the list's own musicbrainz_id - see recording_length.py)
     mbid = (job.get("musicbrainz_id") or "").strip()
@@ -1785,23 +1912,35 @@ def run_lyrics_step(job: dict, output_path: str) -> str:
         with open(align_log_path, encoding="utf-8", errors="replace") as f:
             align_text = f.read()
     except Exception as exc:  # noqa: BLE001
+        if is_duet:
+            raise DuetStepError(f"duet step failed: {exc}") from exc
         out(f"  !! lyrics realignment failed: {exc} (keeping transcribed lyrics)")
         return "transcribed"
 
-    source = None
+    source, done = None, {}
     for line in align_text.splitlines():
         kv = parse_repair_done_line(line)
         if "lyrics_source" in kv:
-            source = kv["lyrics_source"]
+            source, done = kv["lyrics_source"], kv
     if proc2.returncode != 0 or source is None:
+        if is_duet:
+            raise DuetStepError(error_summary(align_text)
+                                or f"duet step failed (exit code {proc2.returncode})")
         out("  !! lyrics realignment did not complete (keeping transcribed lyrics)")
         return "transcribed"
 
-    out(f"  .. lyrics replaced from {source}")
     job["lyrics_notes"] = lyrics_notes_from_log(align_text)
+    if is_duet:
+        job["duet_result"] = duet_result_from(done)
+        r = job["duet_result"]
+        out(f"  .. duet: P1 {r['p1']}, P2 {r['p2']}; lines by marks {r['assign'].get('marks', 0)}, "
+            f"Genius {r['assign'].get('genius', 0)}, voice {r['assign'].get('voice', 0)}"
+            + (" - singers unsure, please check" if r["unsure"] else ""))
+    if online:
+        out(f"  .. lyrics replaced from {source}")
     for note in job["lyrics_notes"]:
         out(f"  .. {note}")
-    return f"online:{source}"
+    return f"online:{source}" if online else "transcribed"
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -2044,6 +2183,57 @@ def extract_audio_mp3(video_path: str, mp3_path: str) -> bool:
     return proc.returncode == 0 and os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0
 
 
+def replace_song_folder(src_dir: str, dst_dir: str) -> None:
+    """Move a finished song folder to `dst_dir`, replacing an older one of
+    that name (a new song replaces its folder, as UltraSinger does)."""
+    if os.path.isdir(dst_dir):
+        shutil.rmtree(dst_dir)
+    os.makedirs(os.path.dirname(dst_dir), exist_ok=True)
+    shutil.move(src_dir, dst_dir)
+
+
+def duet_staging_root(job: dict) -> str:
+    """The folder UltraSinger writes a duet job's song into: UltraSinger
+    replaces a song folder of its own name ("Artist - Title"), which is the
+    plain version's, so a duet is generated apart and moved afterwards
+    (place_generated_duet())."""
+    return os.path.join(WORK_DIR, "duet-new", slugify(job["id"]))
+
+
+def place_generated_duet(job: dict, output_path: str) -> str:
+    """The song UltraSinger generated for a duet job, from its staging
+    folder to NEW_SONGS_DIR/"Artist - Title [DUET]" (duet_song_name(),
+    an older one replaced), the song file named like the folder and marked
+    #EDITION:[DUET]-Songs (knowledge/07-DUETS.md decisions 18, 19); #TITLE
+    and the media file names stay. Returns the song file's new path. The
+    duet itself (P1/P2) is made by the lyrics step (run_lyrics_step())."""
+    name = duet_song_name(job)
+    target = os.path.join(NEW_SONGS_DIR, name)
+    replace_song_folder(os.path.dirname(output_path), target)
+    path = os.path.join(target, name + ".txt")
+    os.replace(os.path.join(target, os.path.basename(output_path)), path)
+    with open(path, encoding="utf-8", errors="replace", newline="") as f:
+        text = f.read()
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(song_header.set_tag(text, "EDITION", "[DUET]-Songs"))
+    shutil.rmtree(duet_staging_root(job), ignore_errors=True)
+    return path
+
+
+def place_usdb_duet(staging_dir: str) -> str:
+    """A duet upload (prepare_usdb_job()) as it is: the staging folder
+    ("Artist - Title [DUET]") into NEW_SONGS_DIR, its song.txt named like
+    the folder. Its #GAP is not checked - the gap repair of duets comes
+    with duet repair (knowledge/07-DUETS.md phase 7). Returns the song
+    file's path."""
+    name = os.path.basename(staging_dir.rstrip("/"))
+    target = os.path.join(NEW_SONGS_DIR, name)
+    replace_song_folder(staging_dir, target)
+    path = os.path.join(target, name + ".txt")
+    os.replace(os.path.join(target, "song.txt"), path)
+    return path
+
+
 def prepare_usdb_job(job: dict) -> dict:
     """Best-effort: try to source a NEW job from an existing USDB upload
     (usdb.animux.de, then usdb.eu - see find_usdb_match()) instead of
@@ -2057,15 +2247,19 @@ def prepare_usdb_job(job: dict) -> dict:
     #MP3 (and #AUDIO, if present) point at it; a local audio file gives no
     #VIDEO. Returns {"staging_dir", "song_id", "media"} on
     success (the caller runs repair.py --mode gap against staging_dir to
-    re-detect #GAP for whatever media actually got downloaded) or None to
-    fall back to normal generation - must never raise or fail the job."""
+    re-detect #GAP for whatever media actually got downloaded; a duet
+    upload - "duet": True, staging dir "Artist - Title [DUET]" - is placed
+    unchanged, place_usdb_duet()) or None to fall back to normal
+    generation - must never raise or fail the job. A duet request takes
+    only a duet upload, a plain one only a plain upload (find_usdb_match())."""
     if USDB_MODE == "off":
         return None
     band = (job.get("band") or "").strip()
     title = (job.get("title") or "").strip()
     if not band or not title:
         return None
-    match = find_usdb_match(band, title)
+    duet = bool(job.get("duet"))
+    match = find_usdb_match(band, title, duet)
     if match is None:
         return None
     match_label = f"{match['site']}#{match['song_id']}"
@@ -2092,7 +2286,7 @@ def prepare_usdb_job(job: dict) -> dict:
     # WORK_DIR/ itself: repair.py's own work dir for this song is
     # WORK_DIR/<song name>, and its intermediate audio files must not end
     # up in the staging dir (everything there is copied into the output)
-    song_name = safe_dirname(job_display_name(job))
+    song_name = duet_song_name(job) if duet else safe_dirname(job_display_name(job))
     staging_dir = os.path.join(WORK_DIR, "usdb", song_name)
     if os.path.isdir(staging_dir):
         shutil.rmtree(staging_dir)
@@ -2163,7 +2357,7 @@ def prepare_usdb_job(job: dict) -> dict:
     out(f"  .. sourced from USDB {match_label} - re-detecting #GAP "
         "against our own download")
     return {"staging_dir": staging_dir, "song_id": f"{match['site']}:{match['song_id']}",
-            "media": media}
+            "media": media, "duet": duet}
 
 
 # --------------------------------------------------------------------------
@@ -2505,8 +2699,11 @@ def remove_quarantined_outputs(job: dict) -> list:
 
 def ultrasinger_command(url: str, band: str = None, title: str = None,
                         language: str = None, musicbrainz_id: str = None,
-                        traits=None) -> list:
-    cmd = [sys.executable, ULTRASINGER_PY, "-i", resolve_song_input(url), "-o", NEW_SONGS_DIR]
+                        traits=None, out_dir: str = None) -> list:
+    """UltraSinger's command for a new song, writing into `out_dir`
+    (NEW_SONGS_DIR; a duet's staging folder, duet_staging_root())."""
+    cmd = [sys.executable, ULTRASINGER_PY, "-i", resolve_song_input(url),
+           "-o", out_dir or NEW_SONGS_DIR]
     # UltraSinger snaps notes to the detected key by default; measured on the
     # hand-made songs (stack/work/bench/an10.py, knowledge/03-PROGRESS.md
     # "Key snapping") it lowers the within-1-semitone (USDX Medium) match
@@ -2711,7 +2908,7 @@ class JobRunner:
             return ultrasinger_command(
                 self.job["url"], self.job.get("band"), self.job.get("title"),
                 self.job.get("language"), self.job.get("musicbrainz_id"),
-                traits=self.job.get("traits"))
+                traits=self.job.get("traits"), out_dir=self._new_out_dir())
         if self._repair_prep:
             return repair_command(
                 self._repair_prep["song_dir"], self._repair_prep["mode"],
@@ -2720,6 +2917,15 @@ class JobRunner:
         return repair_command(
             self.job["song_dir"], self.job.get("mode"), self.job.get("lyrics_file"),
             language=self.job.get("language"), traits=self.job.get("traits"))
+
+    def _generates_duet(self) -> bool:
+        return (self.job["kind"] == "new" and bool(self.job.get("duet"))
+                and not self._usdb_match)
+
+    def _new_out_dir(self) -> str:
+        """Where a new song is written: NEW_SONGS_DIR, a generated duet
+        apart (duet_staging_root())."""
+        return duet_staging_root(self.job) if self._generates_duet() else NEW_SONGS_DIR
 
     def _stream(self, pipe, logfile):
         for raw in iter(pipe.readline, b""):
@@ -2751,6 +2957,14 @@ class JobRunner:
                         "quarantined_output": None, "repair_mode_result": None,
                         "lyrics_source_result": None, "usdb_song_id": None}
 
+        if self._usdb_match and self._usdb_match.get("duet"):
+            path = place_usdb_duet(self._usdb_match["staging_dir"])
+            out(f"  .. USDB duet upload used as it is: {path}")
+            return {"status": "done", "error": None, "output_path": path, "duration_s": 0.0,
+                    "quarantined_output": None, "repair_mode_result": None,
+                    "lyrics_source_result": None, "media_source": media_source(self.job, self._usdb_match),
+                    "usdb_song_id": self._usdb_match["song_id"]}
+
         prep_result = self._prepare_repair_source()
         if prep_result is not None:
             if prep_result["status"] == "done":
@@ -2763,7 +2977,10 @@ class JobRunner:
                     "repair_mode_result": self.job.get("mode") if prep_result["status"] == "done" else None,
                     "lyrics_source_result": None, "usdb_song_id": None}
 
-        out_dir = NEW_SONGS_DIR if self.job["kind"] == "new" else REPAIRED_DIR
+        out_dir = self._new_out_dir() if self.job["kind"] == "new" else REPAIRED_DIR
+        if self._generates_duet():
+            shutil.rmtree(out_dir, ignore_errors=True)
+            os.makedirs(out_dir, exist_ok=True)
         before = snapshot_output(out_dir)
 
         cmd = self.command()
@@ -2863,6 +3080,12 @@ class JobRunner:
             if status == "done" and unchanged and not changed:
                 status = "needs_review"
                 error = "nothing changed: " + "; ".join(unchanged)
+            if status == "done" and self._generates_duet():
+                if output_path and os.path.isfile(output_path):
+                    output_path = place_generated_duet(self.job, output_path)
+                    out(f"  .. duet song folder: {os.path.dirname(output_path)}")
+                else:
+                    status, error = "failed", "duet: UltraSinger wrote no song file"
 
         # a failed job must never leave partial/broken output in the live
         # tree - quarantine anything the job created before it died
@@ -3009,6 +3232,25 @@ def finish_done_job(job: dict, result: dict) -> None:
     apply_song_tags(job, result)
 
 
+def fail_finished_job(job: dict, result: dict, reason: str) -> None:
+    """A job whose step after the run failed (the duet step,
+    DuetStepError): failed with the reason, its song folder quarantined
+    to FAILED_DIR/<kind>/ like a failed run's."""
+    job["status"] = "failed"
+    job["error"] = reason
+    folder = os.path.dirname(result["output_path"])
+    dst = unused_path(os.path.join(FAILED_DIR, job["kind"], os.path.basename(folder)))
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    try:
+        shutil.move(folder, dst)
+        job["quarantined_output"] = dst
+        track_quarantined(job, {"quarantined_outputs": [dst]})
+        out(f"  !! {reason} - job failed, its output moved to {dst}")
+    except OSError as exc:
+        out(f"  !! {reason} - job failed; could not quarantine {folder}: {exc}")
+    job["output_path"] = None
+
+
 def cmd_run(state, selection=None, control=None):
     global USDB_MODE
     control = control or CONTROL or Control()
@@ -3104,7 +3346,10 @@ def cmd_run(state, selection=None, control=None):
             out(f"    output: {result['output_path']}")
 
         if result["status"] == "done" and result["output_path"] and job["kind"] != "genre":
-            finish_done_job(job, result)
+            try:
+                finish_done_job(job, result)
+            except DuetStepError as exc:
+                fail_finished_job(job, result, str(exc))
             state.save()
 
     if control.is_terminating():

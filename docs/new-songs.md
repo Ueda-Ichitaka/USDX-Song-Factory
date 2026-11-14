@@ -99,10 +99,22 @@ Lacrimosa,Lichtgestalt,https://www.youtube.com/watch?v=XYZ,de,,,,
 * **`duet`** - `yes`, `no` or empty. Only `yes` asks for a duet version; empty
   means the same as `no`. A song may appear twice, once with `yes` and once
   without - these are two separate jobs (the duet one is labelled
-  `Artist - Title (Duet)`). **Duet generation does not exist yet:** a duet
-  row is listed as skipped with the reason "duet generation is not available
-  yet" (progress view: `2 skipped (1 duet)`), and the plain row is created
-  as usual.
+  `Artist - Title (Duet)`). The duet goes to its own folder
+  `Artist - Title [DUET]/` (song file `Artist - Title [DUET].txt`, plain
+  `#TITLE`, `#EDITION:[DUET]-Songs`); the plain version keeps
+  `Artist - Title/`. A duet USDB upload is taken only for a duet row, a plain
+  upload only for a plain row. A generated duet gets its two parts (P1, P2)
+  in the lyrics step: who sings a line comes from marks in the lyrics
+  (`P1:`, `P2:`, `P1+P2:` at the start of a line, e.g. in a `lyrics_url`
+  file), else from a Genius section naming its singer, else from the voice;
+  without online lyrics whisper's own lines are used. When that step fails
+  (for example every line went to one singer), the job fails with the
+  reason. The finishing report lists the duets under "Duets". Background:
+  [knowledge/07-DUETS.md](../knowledge/07-DUETS.md).
+* **`singer_p1`**, **`singer_p2`** - the names of a duet's two singers
+  (`#P1:`/`#P2:`, P1 is `singer_p1`). Without them the names come from Genius
+  or the artist (`Eminem feat. Rihanna`) - but only when a Genius section
+  ties a name to a voice; otherwise the parts are named `P1` and `P2`.
 * **`genre`** and **`trait`** - set by an admin on the dashboard. Each cell
   may hold several comma-joined values (CSV-quoted:
   `"metal,folk","harsh_vocals,loud_high_instruments"`); their order means

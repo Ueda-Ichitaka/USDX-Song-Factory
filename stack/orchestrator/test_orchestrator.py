@@ -1967,7 +1967,7 @@ _saved_mode = orch.USDB_MODE
 lookups = []
 
 
-def _spy_find(band, title):
+def _spy_find(band, title, duet=False):
     lookups.append((band, title))
     return {"site": "animux", "song_id": "1", "video_url": "https://x", "txt": "", "cover_bytes": None}
 
@@ -1986,7 +1986,7 @@ check("prepare_usdb_job: with the explicit --no-usdb override (mode off) it "
 # usdb selection: pending new songs without a USDB match stay pending;
 # generated selection: the ones USDB HAS stay pending
 try:
-    orch.find_usdb_match = lambda band, title: (
+    orch.find_usdb_match = lambda band, title, duet=False: (
         {"site": "animux", "song_id": "9"} if title == "Rauta" else None)
     queue = [
         {"id": "new|a", "kind": "new", "band": "Korpiklaani", "title": "Rauta", "label": "Korpiklaani - Rauta"},
@@ -2010,7 +2010,7 @@ check("split_by_usdb_availability auto: nothing is held back",
       len(kept_auto) == 3 and left_auto == [])
 
 try:
-    def _boom(band, title):
+    def _boom(band, title, duet=False):
         raise RuntimeError("usdb down")
     orch.find_usdb_match = _boom
     kept2, left2 = orch.split_by_usdb_availability(
@@ -2298,6 +2298,23 @@ check("parse_songs_file: duet is True only for yes (case/space-insensitive)",
 check("parse_songs_file: cover_url is read (empty when missing)",
       _dash[0]["cover_url"] == "https://img/faun.jpg" and _dash[1]["cover_url"] == ""
       and _dash[5]["cover_url"] == "")
+check("parse_songs_file: no singer columns -> singer_p1/singer_p2 empty",
+      all(e["singer_p1"] == "" and e["singer_p2"] == "" for e in _dash))
+
+# the duet's singer names (07-DUETS.md decision 11, a dashboard request)
+_singer_csv = os.path.join(TMP_DATA, "singer-requests.csv")
+with open(_singer_csv, "w", encoding="utf-8") as f:
+    f.write("band name,song name,youtube link,duet,singer_p1,singer_p2\n"
+            "Eminem feat. Rihanna,Love The Way You Lie,https://yt/ltwyl,yes,Rihanna, Eminem \n"
+            "Faun,Tanz mit mir,https://yt/faun,yes,,\n")
+_singers = orch.parse_songs_file(_singer_csv)
+check(f"parse_songs_file: singer_p1/singer_p2 are read and trimmed (got {_singers})",
+      [(e["singer_p1"], e["singer_p2"]) for e in _singers] == [("Rihanna", "Eminem"), ("", "")])
+_plain_list = os.path.join(TMP_DATA, "plain-songs.txt")
+with open(_plain_list, "w", encoding="utf-8") as f:
+    f.write("A - B - https://yt/ab\nno link here\n")
+check("parse_songs_file: a plain song list has empty singer names",
+      all(e["singer_p1"] == "" and e["singer_p2"] == "" for e in orch.parse_songs_file(_plain_list)))
 
 _extra_csv = os.path.join(TMP_DATA, "extra-cells.csv")
 with open(_extra_csv, "w", encoding="utf-8") as f:
@@ -2336,11 +2353,15 @@ try:
           _duet_jobs["new|https://yt/faun"]["status"] == "pending"
           and _duet_jobs["new|https://yt/faun"]["cover_url"] == "https://img/faun.jpg"
           and _duet_jobs["new|https://yt/faun"]["duet"] is False)
-    check("build_job_plan: a duet version is not run (duet generation does not exist yet)",
-          _duet_jobs["new|https://yt/faun|duet"]["status"] == "skipped"
+    check("build_job_plan: a duet version is generated (pending)",
+          _duet_jobs["new|https://yt/faun|duet"]["status"] == "pending"
           and _duet_jobs["new|https://yt/faun|duet"]["duet"] is True)
-    check("skip_reason: a duet version says why it is not generated",
-          "duet" in orch.skip_reason(_duet_jobs["new|https://yt/faun|duet"]).lower())
+    check("build_job_plan: the job carries the singer names (empty without the columns)",
+          _duet_jobs["new|https://yt/faun|duet"]["singer_p1"] == ""
+          and _duet_jobs["new|https://yt/faun|duet"]["singer_p2"] == "")
+    check("skip_reason: a duet row without a link says just that",
+          orch.skip_reason({"id": "new|skip|X - Y (Duet)", "kind": "new", "url": "skip",
+                            "duet": True}).startswith("no link in the song list"))
     check("current_job_ids: the duet job counts as current (not an orphan)",
           "new|https://yt/faun|duet" in orch.current_job_ids())
     _duet_jobs["new|https://yt/faun"]["status"] = "done"
@@ -2348,8 +2369,16 @@ try:
     check("build_job_plan: re-planning keeps a finished plain version done",
           _again["new|https://yt/faun"]["status"] == "done")
     _p = orch.render_progress(_duet_state.data)
-    check(f"render_progress: skipped duet versions are named as such (got {_p!r})",
-          "duet" in _p.lower())
+    check(f"render_progress: duet versions count like every other job (got {_p!r})",
+          "duet" not in _p.lower() and "skipped" not in _p)
+    # a state from before duet generation: the duet job was recorded as skipped
+    _old_state = orch.State()
+    _old_state.data["jobs"]["new|https://yt/faun|duet"] = {
+        "id": "new|https://yt/faun|duet", "kind": "new", "status": "skipped", "attempts": 0,
+        "label": "Faun - Tanz mit mir (Duet)", "url": "https://yt/faun", "duet": True}
+    _old = {j["id"]: j for j in orch.build_job_plan(_old_state)}
+    check("build_job_plan: a duet job skipped before duet generation existed is pending now",
+          _old["new|https://yt/faun|duet"]["status"] == "pending")
 finally:
     orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV = _orig_songs, _orig_input, _orig_broken
 
@@ -3503,6 +3532,326 @@ finally:
     (orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV, orch.GENRES_DIR, orch.GENRE_EDITS,
      orch.GENRES_OUT_DIR, orch.stdin_listener) = _g_saved
     shutil.rmtree(_g_dir)
+
+# --------------------------------------------------------------------------
+# duet generation (knowledge/07-DUETS.md phase 5): the duet's name, USDB
+# uploads that match the request (decision 10), a duet upload used unchanged
+# --------------------------------------------------------------------------
+
+import contextlib as _ctx  # noqa: E402
+import io as _io  # noqa: E402
+
+check("duet_song_name: 'Artist - Title [DUET]' (decision 18)",
+      orch.duet_song_name({"band": "Eminem feat. Rihanna", "title": "Love The Way You Lie"})
+      == "Eminem feat. Rihanna - Love The Way You Lie [DUET]"
+      and orch.duet_song_name({"band": "AC/DC", "title": "X"}) == "AC-DC - X [DUET]")
+
+_PLAIN_UP = "#TITLE:x\n#ARTIST:y\n#BPM:100\n: 0 1 0 a\nE\n"
+_DUET_UP = "#TITLE:x\n#ARTIST:y\n#P1:A\n#P2:B\n#BPM:100\nP1\n: 0 1 0 a\nP2\n: 2 1 0 b\nE\n"
+_usdb_saved = (orch.get_usdb_session_and_catalog, orch.usdb_lookup.find_usdb_song,
+               orch.get_usdb_eu_session, orch.usdb_eu_lookup.find_usdb_eu_song)
+
+
+def _usdb_with(animux_txt, eu_txt):
+    orch.get_usdb_session_and_catalog = lambda: ("S", "C")
+    orch.usdb_lookup.find_usdb_song = lambda s, c, b, t: (
+        {"song_id": "1", "txt": animux_txt, "video_url": None} if animux_txt else None)
+    orch.get_usdb_eu_session = lambda: "E"
+    orch.usdb_eu_lookup.find_usdb_eu_song = lambda s, b, t: (
+        {"song_id": "2", "txt": eu_txt} if eu_txt else None)
+
+
+try:
+    _usdb_with(_PLAIN_UP, _DUET_UP)
+    _log = _io.StringIO()
+    with _ctx.redirect_stdout(_log):
+        _m_duet = orch.find_usdb_match("y", "x", duet=True)
+    check(f"find_usdb_match: a duet request skips a plain upload and takes the duet one (got {_m_duet})",
+          _m_duet is not None and _m_duet["site"] == "eu" and _m_duet["song_id"] == "2")
+    check(f"find_usdb_match: the skipped upload is logged (got {_log.getvalue()!r})",
+          "animux#1 is a plain song, the request is a duet" in _log.getvalue())
+    check("find_usdb_match: a plain request takes the plain upload (default: plain)",
+          orch.find_usdb_match("y", "x")["site"] == "animux"
+          and orch.find_usdb_match("y", "x", duet=False)["site"] == "animux")
+    _usdb_with(_DUET_UP, None)
+    _log = _io.StringIO()
+    with _ctx.redirect_stdout(_log):
+        _m_none = orch.find_usdb_match("y", "x", duet=False)
+    check("find_usdb_match: only a duet upload for a plain request -> none (the song is generated)",
+          _m_none is None and "animux#1 is a duet, the request is plain" in _log.getvalue())
+    check("usdb_has_match: asks for the job's own version",
+          orch.usdb_has_match({"band": "y", "title": "x", "duet": True})
+          and not orch.usdb_has_match({"band": "y", "title": "x", "duet": False}))
+finally:
+    (orch.get_usdb_session_and_catalog, orch.usdb_lookup.find_usdb_song,
+     orch.get_usdb_eu_session, orch.usdb_eu_lookup.find_usdb_eu_song) = _usdb_saved
+
+_saved_find = orch.find_usdb_match
+_find_args = []
+try:
+    orch.find_usdb_match = lambda band, title, duet=False: _find_args.append(duet)
+    orch.prepare_usdb_job({"id": "new|u|duet", "band": "y", "title": "x", "duet": True, "url": "https://yt/u"})
+    check("prepare_usdb_job: looks for an upload of the request's version", _find_args == [True])
+finally:
+    orch.find_usdb_match = _saved_find
+
+# a duet upload for a duet request is used unchanged (its gap check as a duet
+# comes with duet repair, phase 7): no repair.py, the staging folder becomes
+# "Artist - Title [DUET]"; the plain version's folder stays as it is
+_stage = os.path.join(TMP_DATA, "work", "usdb", "Y - X [DUET]")
+os.makedirs(_stage, exist_ok=True)
+with open(os.path.join(_stage, "song.txt"), "w", encoding="utf-8") as f:
+    f.write(_DUET_UP)
+with open(os.path.join(_stage, "cover.jpg"), "wb") as f:
+    f.write(b"jpg")
+_plain_dir = os.path.join(orch.NEW_SONGS_DIR, "Y - X")
+os.makedirs(_plain_dir, exist_ok=True)
+with open(os.path.join(_plain_dir, "Y - X.txt"), "w", encoding="utf-8") as f:
+    f.write(_PLAIN_UP)
+_saved_prep, _saved_popen = orch.prepare_usdb_job, orch.subprocess.Popen
+try:
+    orch.prepare_usdb_job = lambda job: {"staging_dir": _stage, "song_id": "eu:2",
+                                         "media": "song list link", "duet": True}
+
+    def _no_popen(*a, **k):
+        raise AssertionError("no subprocess for a duet upload")
+    orch.subprocess.Popen = _no_popen
+    _ud_job = {"id": "new|https://yt/u|duet", "kind": "new", "label": "Y - X (Duet)", "band": "Y",
+               "title": "X", "url": "https://yt/u", "duet": True, "attempts": 1}
+    _ud = orch.JobRunner(_ud_job, orch.Control()).run()
+    _ud_path = os.path.join(orch.NEW_SONGS_DIR, "Y - X [DUET]", "Y - X [DUET].txt")
+    check(f"JobRunner: a duet upload is placed unchanged as 'Artist - Title [DUET]' (got {_ud})",
+          _ud["status"] == "done" and _ud["output_path"] == _ud_path
+          and open(_ud_path, encoding="utf-8").read() == _DUET_UP
+          and os.path.isfile(os.path.join(orch.NEW_SONGS_DIR, "Y - X [DUET]", "cover.jpg"))
+          and _ud["usdb_song_id"] == "eu:2")
+    check("JobRunner: the plain version's folder is left alone",
+          open(os.path.join(_plain_dir, "Y - X.txt"), encoding="utf-8").read() == _PLAIN_UP)
+finally:
+    orch.prepare_usdb_job, orch.subprocess.Popen = _saved_prep, _saved_popen
+
+# --- 5.4 a duet generated by UltraSinger: written into a staging folder (UltraSinger
+# replaces a folder of its own name - the plain version's), then moved to
+# "Artist - Title [DUET]" with #EDITION:[DUET]-Songs (decisions 18, 19)
+check("ultrasinger_command: -o names the folder UltraSinger writes into",
+      (lambda c: c[c.index("-o") + 1])(orch.ultrasinger_command("https://yt/x", out_dir="/w/stage"))
+      == "/w/stage")
+_dj = {"id": "new|https://yt/u|duet", "kind": "new", "label": "Y - X (Duet)", "band": "Y",
+       "title": "X", "url": "https://yt/u", "duet": True, "attempts": 1}
+_stage_root = orch.duet_staging_root(_dj)
+check(f"duet_staging_root: under WORK_DIR, one per job (got {_stage_root})",
+      _stage_root.startswith(os.path.join(orch.WORK_DIR, "duet-new") + os.sep)
+      and _stage_root != orch.duet_staging_root(dict(_dj, id="new|https://yt/v|duet")))
+
+_fake_us = os.path.join(TMP_DATA, "fake_ultrasinger.py")
+with open(_fake_us, "w", encoding="utf-8") as f:
+    f.write(
+        "import os, sys\n"
+        "a = sys.argv\n"
+        "out = a[a.index('-o') + 1]\n"
+        "name = a[a.index('--force_artist') + 1] + ' - ' + a[a.index('--force_title') + 1]\n"
+        "d = os.path.join(out, name)\n"
+        "os.makedirs(d, exist_ok=True)\n"
+        "open(os.path.join(d, name + '.mp3'), 'wb').write(b'mp3')\n"
+        "p = os.path.join(d, name + '.txt')\n"
+        "open(p, 'w').write('#TITLE:X\\n#ARTIST:Y\\n#MP3:' + name + '.mp3\\n#BPM:100\\n"
+        ": 0 4 0 Hal\\n: 4 4 0 lo \\n- 10\\n: 10 4 0 Welt\\nE\\n')\n"
+        "print('Creating UltraStar file ' + p, flush=True)\n"
+        "sys.exit(int(os.environ.get('FAKE_US_EXIT', '0')))\n")
+_saved_us = (orch.ULTRASINGER_PY, orch.ULTRASINGER_CWD, orch.prepare_usdb_job)
+try:
+    orch.ULTRASINGER_PY, orch.ULTRASINGER_CWD = _fake_us, TMP_DATA
+    orch.prepare_usdb_job = lambda job: None
+    _gen = orch.JobRunner(dict(_dj), orch.Control()).run()
+    _gen_path = os.path.join(orch.NEW_SONGS_DIR, "Y - X [DUET]", "Y - X [DUET].txt")
+    _gen_text = open(_gen_path, encoding="utf-8").read() if os.path.isfile(_gen_path) else ""
+    check(f"JobRunner: a generated duet lands in 'Artist - Title [DUET]' (got {_gen})",
+          _gen["status"] == "done" and _gen["output_path"] == _gen_path
+          and os.path.isfile(os.path.join(orch.NEW_SONGS_DIR, "Y - X [DUET]", "Y - X.mp3")))
+    check(f"JobRunner: plain #TITLE, #EDITION:[DUET]-Songs, the media name kept (got {_gen_text!r})",
+          "#TITLE:X\n" in _gen_text and "#EDITION:[DUET]-Songs\n" in _gen_text
+          and "#MP3:Y - X.mp3\n" in _gen_text)
+    check("JobRunner: the plain version's folder is untouched, the staging folder is gone",
+          open(os.path.join(orch.NEW_SONGS_DIR, "Y - X", "Y - X.txt"), encoding="utf-8").read() == _PLAIN_UP
+          and not os.path.exists(os.path.join(_stage_root, "Y - X")))
+    os.environ["FAKE_US_EXIT"] = "1"
+    _bad = orch.JobRunner(dict(_dj, id="new|https://yt/w|duet"), orch.Control()).run()
+    check(f"JobRunner: a failed duet generation is quarantined, nothing moves to the songs (got {_bad})",
+          _bad["status"] == "failed" and _bad.get("quarantined_output")
+          and _bad["quarantined_output"].startswith(os.path.join(orch.FAILED_DIR, "new"))
+          and open(_gen_path, encoding="utf-8").read() == _gen_text)
+finally:
+    os.environ.pop("FAKE_US_EXIT", None)
+    orch.ULTRASINGER_PY, orch.ULTRASINGER_CWD, orch.prepare_usdb_job = _saved_us
+
+check("transcript_lines_from_text: whisper's lines of a song file, held notes joined",
+      orch.transcript_lines_from_text("#TITLE:x\n#BPM:100\n: 0 4 0 Hal\n: 4 4 0 lo \n: 8 2 0 Welt\n"
+                                      "- 10\n: 10 4 0 Wie \n: 14 4 2 ~ \n: 18 2 0 geht's\nE\n")
+      == ["Hallo Welt", "Wie geht's"])
+
+# --- the duet lyrics step: online lyrics (with Genius' singers) or, without
+# them, whisper's own lines - every duet job ends as a duet; a failing duet
+# step fails the job (decision 20)
+_dsong = os.path.join(TMP_DATA, "duet-step", "Y - X [DUET]")
+os.makedirs(_dsong, exist_ok=True)
+_dsong_txt = os.path.join(_dsong, "Y - X [DUET].txt")
+with open(_dsong_txt, "w", encoding="utf-8") as f:
+    f.write("#TITLE:X\n#ARTIST:Y\n#BPM:100\n: 0 4 0 Hal\n: 4 4 0 lo \n- 10\n: 10 4 0 Welt\nE\n")
+_ds_calls = []
+
+
+def _duet_step_run(found=True, align_ok=True):
+    def fake(cmd, **kw):
+        _ds_calls.append(cmd)
+        if cmd[1] == orch.LYRICS_FETCH_PY:
+            if not found:
+                return _FakeCompleted(1)
+            with open(cmd[cmd.index("--out") + 1], "w", encoding="utf-8") as fh:
+                fh.write('{"source": "genius", "lines": [{"text": "hi", "start": null, "singers": ["Y"]}]}')
+            return _FakeCompleted(0)
+        if cmd[1] == orch.REPAIR_PY:
+            lyrics = cmd[cmd.index("--lyrics-file") + 1]
+            _ds_calls.append(("lyrics", open(lyrics, encoding="utf-8").read()))
+            if not align_ok:
+                kw["stdout"].write(b"[UltraSinger] Error: duet: every line went to one singer "
+                                   b"(P2 without a line) - mark the lines\n")
+                return _FakeCompleted(1)
+            kw["stdout"].write(b"REPAIR_DONE output=/data/x.txt mode=lyrics aligned=5/5 lyrics_source="
+                               + (b"genius" if found else b"transcribed")
+                               + b" duet=1 assign=marks:0,genius:3,voice:7 unsure=1 p1=Rihanna p2=Eminem\n")
+            return _FakeCompleted(0)
+        return _FakeCompleted(0)
+    return fake
+
+
+_saved_sub = orch.subprocess.run
+try:
+    _ds_job = {"id": "new|https://yt/d|duet", "band": "Eminem feat. Rihanna", "title": "LTWYL",
+               "duet": True, "singer_p1": "Rihanna", "singer_p2": ""}
+    orch.subprocess.run = _duet_step_run(found=True)
+    _src = orch.run_lyrics_step(_ds_job, _dsong_txt)
+    _align = next(c for c in _ds_calls if c[1] == orch.REPAIR_PY)
+    check(f"run_lyrics_step duet: repair.py --duet with the names given and the artist (got {_align})",
+          "--duet" in _align and _align[_align.index("--singer-p1") + 1] == "Rihanna"
+          and "--singer-p2" not in _align
+          and _align[_align.index("--artist") + 1] == "Eminem feat. Rihanna")
+    check(f"run_lyrics_step duet: online lyrics -> online:<source>, the assignment kept (got {_src}, "
+          f"{_ds_job.get('duet_result')})",
+          _src == "online:genius" and _ds_job.get("duet_result") == {
+              "p1": "Rihanna", "p2": "Eminem", "assign": {"marks": 0, "genius": 3, "voice": 7},
+              "unsure": True})
+
+    for _enabled in (True, False):
+        _ds_calls.clear()
+        orch.subprocess.run = _duet_step_run(found=False)
+        _saved_enabled = orch.LYRICS_ENABLED
+        orch.LYRICS_ENABLED = _enabled
+        try:
+            _src2 = orch.run_lyrics_step(dict(_ds_job), _dsong_txt)
+        finally:
+            orch.LYRICS_ENABLED = _saved_enabled
+        _align2 = next((c for c in _ds_calls if c[1] == orch.REPAIR_PY), [])
+        _lyr2 = next((c[1] for c in _ds_calls if c[0] == "lyrics"), "")
+        check(f"run_lyrics_step duet ({'no lyrics found' if _enabled else 'LYRICS_ENABLED=0'}): whisper's "
+              f"lines become the lyrics, still a duet (got {_src2}, {_lyr2!r})",
+              _src2 == "transcribed" and "--duet" in _align2 and "--fill-from-input" not in _align2
+              and [l["text"] for l in _json.loads(_lyr2 or "{}").get("lines", [])] == ["Hallo", "Welt"])
+
+    orch.subprocess.run = _duet_step_run(found=True, align_ok=False)
+    try:
+        orch.run_lyrics_step(dict(_ds_job), _dsong_txt)
+        _raised = None
+    except orch.DuetStepError as exc:
+        _raised = str(exc)
+    check(f"run_lyrics_step duet: a failing duet step raises with the reason (got {_raised!r})",
+          _raised is not None and "every line went to one singer" in _raised)
+    _ds_calls.clear()
+    orch.subprocess.run = _duet_step_run(found=True)
+    orch.run_lyrics_step({"id": "new|p", "band": "Y", "title": "X"}, _dsong_txt)
+    _align3 = next(c for c in _ds_calls if c[1] == orch.REPAIR_PY)
+    check("run_lyrics_step: a plain song gets no duet arguments",
+          not {"--duet", "--singer-p1", "--artist"} & set(_align3))
+finally:
+    orch.subprocess.run = _saved_sub
+
+# cmd_run(): a duet step that fails after UltraSinger succeeded fails the job and
+# quarantines its folder
+_fr_dir = tempfile.mkdtemp()
+_fr_saved = (orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV, orch.JobRunner,
+             orch.finish_done_job, orch.stdin_listener)
+
+
+class _FakeDuetRunner:
+    def __init__(self, job, control=None):
+        self.job = job
+
+    def run(self):
+        song = os.path.join(orch.NEW_SONGS_DIR, "Q - R [DUET]")
+        os.makedirs(song, exist_ok=True)
+        with open(os.path.join(song, "Q - R [DUET].txt"), "w") as fh:
+            fh.write("#TITLE:R\n")
+        return {"status": "done", "error": None, "duration_s": 1.0,
+                "output_path": os.path.join(song, "Q - R [DUET].txt"),
+                "quarantined_output": None, "repair_mode_result": None}
+
+
+def _failing_finish(job, result):
+    raise orch.DuetStepError("duet: every line went to one singer")
+
+
+try:
+    with open(os.path.join(_fr_dir, "songs.csv"), "w", encoding="utf-8") as fh:
+        fh.write("band,title,url,duet\nQ,R,https://yt/qr,yes\n")
+    orch.SONGS_FILE = os.path.join(_fr_dir, "songs.csv")
+    orch.REPAIRS_DIR = os.path.join(_fr_dir, "input")
+    orch.BROKEN_CSV = os.path.join(_fr_dir, "broken.csv")
+    orch.JobRunner = _FakeDuetRunner
+    orch.finish_done_job = _failing_finish
+    orch.stdin_listener = lambda *args: None
+    _fr_state = orch.State()
+    orch.cmd_run(_fr_state, control=orch.Control())
+    _fr_job = _fr_state.data["jobs"]["new|https://yt/qr|duet"]
+    check(f"cmd_run: a failed duet step fails the job with its reason (got {_fr_job['status']}, "
+          f"{_fr_job.get('error')})",
+          _fr_job["status"] == "failed" and "every line went to one singer" in (_fr_job.get("error") or ""))
+    check(f"cmd_run: the song folder is quarantined, not left in the songs (got {_fr_job.get('quarantined_output')})",
+          not os.path.exists(os.path.join(orch.NEW_SONGS_DIR, "Q - R [DUET]"))
+          and (_fr_job.get("quarantined_output") or "").startswith(os.path.join(orch.FAILED_DIR, "new"))
+          and os.path.isdir(_fr_job["quarantined_output"]) and _fr_job.get("output_path") is None)
+finally:
+    (orch.SONGS_FILE, orch.REPAIRS_DIR, orch.BROKEN_CSV, orch.JobRunner,
+     orch.finish_done_job, orch.stdin_listener) = _fr_saved
+    shutil.rmtree(_fr_dir)
+
+# --- 5.5 the report lists the duets: names, how the lines were assigned,
+# unsure ones to check by ear
+_rep_state = {"jobs": {
+    "new|a|duet": {"id": "new|a|duet", "kind": "new", "status": "done", "label": "A - B (Duet)",
+                   "duet": True, "lyrics_source": "online:genius",
+                   "output_path": "/data/output/new/A - B [DUET]/A - B [DUET].txt",
+                   "duet_result": {"p1": "Rihanna", "p2": "Eminem",
+                                   "assign": {"marks": 0, "genius": 30, "voice": 12}, "unsure": False}},
+    "new|c|duet": {"id": "new|c|duet", "kind": "new", "status": "done", "label": "C - D (Duet)",
+                   "duet": True, "lyrics_source": "transcribed",
+                   "output_path": "/data/output/new/C - D [DUET]/C - D [DUET].txt",
+                   "duet_result": {"p1": "P1", "p2": "P2",
+                                   "assign": {"marks": 0, "genius": 0, "voice": 40}, "unsure": True}},
+    "new|e|duet": {"id": "new|e|duet", "kind": "new", "status": "done", "label": "E - F (Duet)",
+                   "duet": True, "lyrics_source": "usdb:eu:7",
+                   "output_path": "/data/output/new/E - F [DUET]/E - F [DUET].txt"},
+    "new|g": {"id": "new|g", "kind": "new", "status": "done", "label": "G - H",
+              "lyrics_source": "online:genius", "output_path": "/data/output/new/G - H/G - H.txt"},
+}}
+_rep = orch.render_report(_rep_state)
+_duet_part = _rep.split("## Duets", 1)[1].split("\n## ", 1)[0] if "## Duets" in _rep else ""
+check(f"render_report: a Duets part with the three duets, not the plain song (got {_duet_part!r})",
+      _duet_part.startswith(" (3)") and "G - H" not in _duet_part)
+check("render_report: a duet row has the names and the lines per source",
+      "| A - B (Duet) | Rihanna | Eminem | marks 0, Genius 30, voice 12 | - |" in _duet_part)
+check("render_report: an unsure duet is marked for checking by ear",
+      "| C - D (Duet) | P1 | P2 | marks 0, Genius 0, voice 40 | singers unsure - check by ear |" in _duet_part)
+check("render_report: a USDB duet upload is listed as used unchanged",
+      "| E - F (Duet) | - | - | USDB upload, used as it is | - |" in _duet_part)
 
 print()
 if failures:
